@@ -4262,7 +4262,7 @@ self_install() {
     echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
     info "安装完成！新终端直接输入 ${BOLD}v${NC} 即可启动"
     echo -e "  ${DIM}当前终端
-    可执行：source ~/.bashrc${NC}"
+可执行：source ~/.bashrc${NC}"
     echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
 }
 
