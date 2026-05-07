@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # ============================================================
-#  VPS 开荒脚本 V1.18 — 银趴火山帮
+#  VPS 开荒脚本 V1.20 — 银趴火山帮
 #  功能：SSH管理 / Fail2ban / BBR TCP 调优
 # ============================================================
 
@@ -70,7 +70,7 @@ print_header() {
     clear
     echo ""
     box_top
-    box_title "VPS 开荒脚本 V1.18"
+    box_title "VPS 开荒脚本 V1.20"
     box_line "  ··银趴火山帮··" "  ${DIM}··银趴火山帮··${NC}"
     box_sep
     box_title "$1"
@@ -1107,7 +1107,7 @@ fail2ban_menu() {
         clear
         echo ""
         box_top
-        box_title "VPS 开荒脚本 V1.18"
+        box_title "VPS 开荒脚本 V1.20"
         box_line "  ··银趴火山帮··" "  ${DIM}··银趴火山帮··${NC}"
         box_sep
         box_title "Fail2ban 管理"
@@ -1442,20 +1442,12 @@ bbr_generate_config() {
           MIN_FREE=$6 SWAPPINESS=$7 TCP_RMEM_DEFAULT=$8
     cat << EOF
 # BBR TCP 调优配置 — 生成时间：$(date)
-kernel.pid_max = 65535
-kernel.panic = 1
-kernel.sysrq = 176
-kernel.numa_balancing = 0
-kernel.sched_autogroup_enabled = 0
 vm.swappiness = ${SWAPPINESS}
-vm.dirty_ratio = 20
 vm.dirty_background_ratio = 5
-vm.overcommit_memory = 1
 vm.min_free_kbytes = ${MIN_FREE}
 net.core.default_qdisc = fq
 net.core.netdev_max_backlog = 8192
 net.core.somaxconn = 8192
-net.core.optmem_max = 1048576
 net.core.rmem_max = ${RMEM}
 net.core.wmem_max = ${WMEM}
 net.core.rmem_default = 262144
@@ -1465,28 +1457,22 @@ net.ipv4.tcp_wmem = 32768 ${TCP_RMEM_DEFAULT} ${WMEM}
 net.ipv4.tcp_mem = ${TCP_MEM}
 net.ipv4.tcp_congestion_control = bbr
 net.ipv4.tcp_fastopen = 3
-net.ipv4.tcp_timestamps = 1
-net.ipv4.tcp_window_scaling = 1
 net.ipv4.tcp_adv_win_scale = ${ADV_WIN}
-net.ipv4.tcp_moderate_rcvbuf = 1
 net.ipv4.tcp_no_metrics_save = 1
 net.ipv4.tcp_notsent_lowat = ${NOTSENT}
 net.ipv4.tcp_mtu_probing = 1
-net.ipv4.tcp_sack = 1
 net.ipv4.tcp_ecn = 2
 net.ipv4.tcp_tw_reuse = 1
 net.ipv4.tcp_fin_timeout = 10
 net.ipv4.tcp_slow_start_after_idle = 0
 net.ipv4.tcp_max_tw_buckets = 32768
 net.ipv4.tcp_max_syn_backlog = 8192
-net.ipv4.tcp_syncookies = 1
 net.ipv4.tcp_keepalive_time = 60
 net.ipv4.tcp_keepalive_intvl = 10
 net.ipv4.tcp_keepalive_probes = 5
 net.ipv4.ip_local_port_range = 1024 65535
-net.ipv4.icmp_echo_ignore_broadcasts = 1
-net.ipv4.conf.all.rp_filter = 1
-net.ipv4.conf.default.rp_filter = 1
+net.ipv4.conf.all.arp_announce = 2
+net.ipv4.conf.default.arp_announce = 2
 EOF
 }
 
@@ -1565,19 +1551,21 @@ bbr_menu_bandwidth() {
     print_header "BBR 自动配置 — 选择带宽"
     echo -e "  内存：${BOLD}${MEM_LBL}${NC}  延迟：${BOLD}${LAT_LBL}${NC}"
     echo ""
-    echo -e "  ${GREEN}1${NC}) 200 Mbps"
-    echo -e "  ${GREEN}2${NC}) 500 Mbps"
-    echo -e "  ${GREEN}3${NC}) 1 Gbps  (1024 Mbps)"
-    echo -e "  ${GREEN}4${NC}) 2 Gbps  (2048 Mbps)"
+    echo -e "  ${GREEN}1${NC}) 100 Mbps"
+    echo -e "  ${GREEN}2${NC}) 200 Mbps"
+    echo -e "  ${GREEN}3${NC}) 500 Mbps"
+    echo -e "  ${GREEN}4${NC}) 1 Gbps  (1024 Mbps)"
+    echo -e "  ${GREEN}5${NC}) 2 Gbps  (2048 Mbps)"
     echo -e "  ${RED}0${NC}) 返回"
     echo -e "  ${RED}00${NC}) 退出脚本"
     echo ""
-    read -rp "  请选择 [0-4]: " CH
+    read -rp "  请选择 [0-5]: " CH
     case "$CH" in
-        1) bbr_auto_calc "$MEM_MB" "$LAT_MS" 200  "$MEM_LBL" "$LAT_LBL" "200Mbps" ;;
-        2) bbr_auto_calc "$MEM_MB" "$LAT_MS" 500  "$MEM_LBL" "$LAT_LBL" "500Mbps" ;;
-        3) bbr_auto_calc "$MEM_MB" "$LAT_MS" 1024 "$MEM_LBL" "$LAT_LBL" "1Gbps" ;;
-        4) bbr_auto_calc "$MEM_MB" "$LAT_MS" 2048 "$MEM_LBL" "$LAT_LBL" "2Gbps" ;;
+        1) bbr_auto_calc "$MEM_MB" "$LAT_MS" 100  "$MEM_LBL" "$LAT_LBL" "100Mbps" ;;
+        2) bbr_auto_calc "$MEM_MB" "$LAT_MS" 200  "$MEM_LBL" "$LAT_LBL" "200Mbps" ;;
+        3) bbr_auto_calc "$MEM_MB" "$LAT_MS" 500  "$MEM_LBL" "$LAT_LBL" "500Mbps" ;;
+        4) bbr_auto_calc "$MEM_MB" "$LAT_MS" 1024 "$MEM_LBL" "$LAT_LBL" "1Gbps" ;;
+        5) bbr_auto_calc "$MEM_MB" "$LAT_MS" 2048 "$MEM_LBL" "$LAT_LBL" "2Gbps" ;;
         0) return ;;
         00) clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;
         *) warn "无效选项" ;;
@@ -1679,6 +1667,18 @@ bbr_menu_manual() {
 # ── tc 限速菜单 ───────────────────────────────────────────
 bbr_menu_tc() {
     print_header "限速设置（tc）"
+
+    if is_openvz; then
+        echo ""
+        warn "检测到当前运行于 ${BOLD}OpenVZ 容器${NC} 中"
+        warn "OpenVZ 共享内核，tc 流量控制通常被宿主机限制，无法正常使用"
+        echo ""
+        echo -e "  ${DIM}如需限速，请联系 VPS 提供商在宿主机层面配置${NC}"
+        echo ""
+        read -rp "  按 Enter 返回..." _
+        return
+    fi
+
     local DEV; DEV=$(ip route | awk '/^default/{print $5}')
     local TX_Q; TX_Q=$(ls /sys/class/net/"$DEV"/queues/ 2>/dev/null | grep "^tx-" | wc -l)
     local IS_MQ=0
@@ -4407,7 +4407,7 @@ self_check_first_run() {
     clear
     echo ""
     box_top
-    box_title "VPS 开荒脚本 V1.18"
+    box_title "VPS 开荒脚本 V1.20"
     box_line "  ··银趴火山帮··" "  ${DIM}··银趴火山帮··${NC}"
     box_sep
     box_title "首次运行检测"
@@ -4492,7 +4492,7 @@ main_menu() {
         clear
         echo ""
         box_top
-        box_title "VPS 开荒脚本 V1.18"
+        box_title "VPS 开荒脚本 V1.20"
         box_line "  ··银趴火山帮··" "  ${DIM}··银趴火山帮··${NC}"
         box_sep
         # 收集状态数据
