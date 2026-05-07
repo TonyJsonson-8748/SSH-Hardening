@@ -4262,3 +4262,48 @@ self_install() {
     echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
     info "安装完成！新终端直接输入 ${BOLD}v${NC} 即可启动"
     echo -e "  ${DIM}当前终端
+echo ""
+                echo -e "  ${DIM}--- $JAIL_CONF（只读）---${NC}"
+                echo ""
+                cat "$JAIL_CONF" | less
+            else
+                error "未找到 $JAIL_CONF"
+            fi
+            ;;
+        0) return ;;
+        00) clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;
+        *) warn "无效选项"; return ;;
+    esac
+}
+
+# ── 主菜单循环 ──────────────────────────────────────────
+main_menu() {
+    while true; do
+        print_header "主菜单"
+        echo -e "  ${CYAN}1.${NC} 查看已有公钥        ${CYAN}6.${NC} 安装 Fail2ban"
+        echo -e "  ${CYAN}2.${NC} 添加 SSH 公钥       ${CYAN}7.${NC} 配置 Fail2ban 参数"
+        echo -e "  ${CYAN}3.${NC} 生成 SSH 密钥对     ${CYAN}8.${NC} 编辑 Fail2ban 配置"
+        echo -e "  ${CYAN}4.${NC} 修改 SSH 端口       ${CYAN}9.${NC} 查看 Fail2ban 状态"
+        echo -e "  ${CYAN}5.${NC} 设置登录模式        ${RED}0.${NC} 退出脚本"
+        echo ""
+        read -rp "  请选择操作 [0-9]: " CHOICE
+        case "$CHOICE" in
+            1) show_keys ;;
+            2) add_key ;;
+            3) generate_key ;;
+            4) change_port ;;
+            5) set_login_mode ;;
+            6) f2b_install ;;
+            7) f2b_config_params ;;
+            8) f2b_edit_config ;;
+            9) f2b_status ;;
+            0) clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;
+            *) warn "无效选项，请重新选择" ; sleep 1 ;;
+        esac
+        echo ""
+        read -rp "  按 Enter 返回主菜单..." _
+    done
+}
+
+# 执行主菜单
+main_menu
