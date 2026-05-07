@@ -4262,48 +4262,261 @@ self_install() {
     echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
     info "安装完成！新终端直接输入 ${BOLD}v${NC} 即可启动"
     echo -e "  ${DIM}当前终端
-echo ""
-                echo -e "  ${DIM}--- $JAIL_CONF（只读）---${NC}"
-                echo ""
-                cat "$JAIL_CONF" | less
-            else
-                error "未找到 $JAIL_CONF"
-            fi
+    可执行：source ~/.bashrc${NC}"
+    echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+}
+
+# ── 强制从 GitHub 更新脚本 ────────────────────────────────
+self_update() {
+    print_header "强制更新脚本"
+    echo -e "  ${DIM}${SCRIPT_URL}${NC}"
+    echo ""
+
+    local TMP_FILE; TMP_FILE=$(mktemp /tmp/vps_update_XXXXXX.sh)
+
+    info "正在下载最新版本..."
+    if ! curl -fsSL "$SCRIPT_URL" -o "$TMP_FILE" 2>/dev/null; then
+        rm -f "$TMP_FILE"
+        error "下载失败，请检查网络连接"
+        echo -e "  ${DIM}手动更新：curl -fsSL ${SCRIPT_URL} -o ${LOCAL_SCRIPT} && chmod +x ${LOCAL_SCRIPT}${NC}"
+        return
+    fi
+
+    # 验证语法
+    if ! bash -n "$TMP_FILE" 2>/dev/null; then
+        rm -f "$TMP_FILE"
+        error "下载的文件语法有误，已取消更新"
+        return
+    fi
+
+    # 版本对比
+    local NEW_VER; NEW_VER=$(grep -oE 'V[0-9]+\.[0-9]+' "$TMP_FILE" | head -1)
+    local CUR_VER; CUR_VER=$(grep -oE 'V[0-9]+\.[0-9]+' "${LOCAL_SCRIPT}" 2>/dev/null | head -1)
+    echo -e "  当前版本：${BOLD}${CUR_VER:-未知}${NC}  →  最新版本：${GREEN}${BOLD}${NEW_VER:-未知}${NC}"
+    echo ""
+
+    # 覆盖安装
+    cp "$TMP_FILE" "$LOCAL_SCRIPT"
+    chmod +x "$LOCAL_SCRIPT"
+    cp "$TMP_FILE" /tmp/ssh_hardening.sh 2>/dev/null
+    rm -f "$TMP_FILE"
+
+    # 确保 v 命令还在
+    ln -sf "$LOCAL_SCRIPT" /usr/local/bin/v 2>/dev/null
+    ln -sf "$LOCAL_SCRIPT" /usr/local/bin/V 2>/dev/null
+
+    info "更新完成 ✓"
+    warn "即将用新版本重启脚本..."
+    sleep 1
+    exec "$LOCAL_SCRIPT"
+}
+
+# ── 删除本地脚本和快捷键 ─────────────────────────────────
+self_uninstall() {
+    print_header "删除本地脚本和快捷键"
+    warn "将删除以下内容："
+    echo -e "  ${DIM}${LOCAL_SCRIPT}${NC}"
+    echo -e "  ${DIM}/usr/local/bin/v${NC}"
+    echo -e "  ${DIM}/usr/local/bin/V${NC}"
+    echo -e "  ${DIM}各 shell 配置文件中的 alias v=...${NC}"
+    echo ""
+    read -rp "  确认删除？(Y/n，默认Y): " CONFIRM
+    [ -z "$CONFIRM" ] && CONFIRM="y"
+    if ! echo "$CONFIRM" | grep -qiE '^y(es)?$'; then warn "已取消"; return; fi
+
+    rm -f "$LOCAL_SCRIPT" && info "已删除 ${LOCAL_SCRIPT} ✓"
+    rm -f /usr/local/bin/v /usr/local/bin/V && info "已删除系统命令 v/V ✓"
+
+    for RC in /root/.bashrc /root/.bash_profile ~/.bashrc ~/.bash_profile ~/.zshrc; do
+        [ -f "$RC" ] || continue
+        if grep -q "alias v=" "$RC" 2>/dev/null; then
+            grep -v "alias v=\|alias V=\|VPS 开荒脚本快捷键" "$RC" > "${RC}.tmp" \
+                && mv "${RC}.tmp" "$RC"
+            info "已清理 ${RC} ✓"
+        fi
+    done
+
+    echo ""
+    info "清理完成，快捷键 v 已移除"
+    warn "当前会话仍可使用 alias，重新登录后完全生效"
+    echo ""
+    read -rp "  按 Enter 返回..." _
+    return
+}
+
+# ── 首次运行检测是否已安装快捷键 ─────────────────────────
+self_check_first_run() {
+    [ -f /usr/local/bin/v ] && return
+    [ -f "$LOCAL_SCRIPT" ] && return
+
+    clear
+    echo ""
+    box_top
+    box_title "VPS 开荒脚本 V1.20"
+    box_line "  ··银趴火山帮··" "  ${DIM}··银趴火山帮··${NC}"
+    box_sep
+    box_title "首次运行检测"
+    box_bot
+    echo ""
+    echo -e "  ${YELLOW}检测到脚本未安装到本地${NC}"
+    echo -e "  安装后可随时输入 ${BOLD}v${NC} 快速启动"
+    echo ""
+    echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+    echo -e "  ${GREEN}1${NC}) 立即安装（推荐）"
+    echo -e "  ${GREEN}0${NC}) 跳过，直接进入"
+    echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+    echo ""
+    read -rp "  请选择 [0-1]: " CH
+    case "$CH" in
+        1)
+            self_install
+            echo ""
+            read -rp "  按 Enter 继续进入主菜单..." _
             ;;
-        0) return ;;
-        00) clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;
-        *) warn "无效选项"; return ;;
+        *) ;;
     esac
 }
 
-# ── 主菜单循环 ──────────────────────────────────────────
-main_menu() {
+self_manage_menu() {
     while true; do
-        print_header "主菜单"
-        echo -e "  ${CYAN}1.${NC} 查看已有公钥        ${CYAN}6.${NC} 安装 Fail2ban"
-        echo -e "  ${CYAN}2.${NC} 添加 SSH 公钥       ${CYAN}7.${NC} 配置 Fail2ban 参数"
-        echo -e "  ${CYAN}3.${NC} 生成 SSH 密钥对     ${CYAN}8.${NC} 编辑 Fail2ban 配置"
-        echo -e "  ${CYAN}4.${NC} 修改 SSH 端口       ${CYAN}9.${NC} 查看 Fail2ban 状态"
-        echo -e "  ${CYAN}5.${NC} 设置登录模式        ${RED}0.${NC} 退出脚本"
+        print_header "脚本管理"
+
+        local IS_INSTALLED=false
+        local CUR_VER=""
+        if [ -f "$LOCAL_SCRIPT" ]; then
+            IS_INSTALLED=true
+            CUR_VER=$(grep -oE 'V[0-9]+\.[0-9]+' "$LOCAL_SCRIPT" | head -1)
+        fi
+        local HAS_CMD=false
+        [ -f /usr/local/bin/v ] && HAS_CMD=true
+
+        echo -e "  本地路径：${BOLD}${LOCAL_SCRIPT}${NC}"
+        if [ "$IS_INSTALLED" = true ]; then
+            echo -e "  状  态  ：${GREEN}${BOLD}已安装${NC}  版本：${BOLD}${CUR_VER:-未知}${NC}"
+        else
+            echo -e "  状  态  ：${YELLOW}${BOLD}未安装${NC}"
+        fi
+        echo -e "  快捷键 v：${BOLD}$([ "$HAS_CMD" = true ] && echo "${GREEN}已设置${NC}" || echo "${YELLOW}未设置${NC}")${NC}"
         echo ""
-        read -rp "  请选择操作 [0-9]: " CHOICE
-        case "$CHOICE" in
-            1) show_keys ;;
-            2) add_key ;;
-            3) generate_key ;;
-            4) change_port ;;
-            5) set_login_mode ;;
-            6) f2b_install ;;
-            7) f2b_config_params ;;
-            8) f2b_edit_config ;;
-            9) f2b_status ;;
-            0) clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;
-            *) warn "无效选项，请重新选择" ; sleep 1 ;;
+        echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+        echo -e "  ${GREEN}1${NC}) 安装脚本 + 设置快捷键 v"
+        echo -e "  ${GREEN}2${NC}) 强制从 GitHub 更新到最新版"
+        echo -e "  ${YELLOW}3${NC}) 删除本地脚本和快捷键"
+        echo -e "  ${RED}0${NC}) 返回"
+        echo -e "  ${RED}00${NC}) 退出脚本"
+        echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+        echo ""
+        read -rp "  请选择 [0-3]: " CH
+
+        case "$CH" in
+            1) self_install ;;
+            2) self_update ;;
+            3) self_uninstall ;;
+            0) return ;;
+            00) clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;
+            *) warn "无效选项"; sleep 1; continue ;;
         esac
-        echo ""
-        read -rp "  按 Enter 返回主菜单..." _
+
+        [ "${CH}" != "0" ] && [ "${CH}" != "3" ] && { echo ""; read -rp "  按 Enter 返回..." _; }
     done
 }
 
-# 执行主菜单
+
+# ══════════════════════════════════════════════════════════
+#  主菜单
+# ══════════════════════════════════════════════════════════
+main_menu() {
+    while true; do
+        local CUR_PORT CUR_PWD CUR_PUBKEY KEYCOUNT
+        CUR_PORT=$(get_config "Port")
+        CUR_PWD=$(get_config "PasswordAuthentication")
+        CUR_PUBKEY=$(get_config "PubkeyAuthentication")
+        KEYCOUNT=$(grep -cE '^(ssh-rsa|ssh-ed25519|ecdsa-sha2|sk-ssh|ssh-dss) ' "$AUTH_KEYS" 2>/dev/null || echo 0)
+        local F2B_STAT; F2B_STAT=$(f2b_status)
+
+        clear
+        echo ""
+        box_top
+        box_title "VPS 开荒脚本 V1.20"
+        box_line "  ··银趴火山帮··" "  ${DIM}··银趴火山帮··${NC}"
+        box_sep
+        # 收集状态数据
+        local FW_TYPE FW_STAT FW_COLOR
+        FW_TYPE=$(fw_detect)
+        if [ "$FW_TYPE" = "none" ]; then
+            FW_STAT="未安装"; FW_COLOR="$YELLOW"
+        elif [ "$(fw_running "$FW_TYPE")" = "active" ]; then
+            FW_STAT="${FW_TYPE} active"; FW_COLOR="$GREEN"
+        else
+            FW_STAT="${FW_TYPE} inactive"; FW_COLOR="$RED"
+        fi
+        local BBR_CC; BBR_CC=$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null || echo "未知")
+        local TC_RATE; TC_RATE=$(tc qdisc show dev "$(ip route | awk '/^default/{print $5}')" 2>/dev/null | grep -oE '(maxrate|rate) [^ ]+' | head -1 | awk '{print $2}'); [ -z "$TC_RATE" ] && TC_RATE="无限速"
+        local CADDY_ST; CADDY_ST=$(caddy_status)
+        local CADDY_COLOR CADDY_LABEL
+        case "$CADDY_ST" in
+            running)       CADDY_COLOR="$GREEN";  CADDY_LABEL="running" ;;
+            stopped)       CADDY_COLOR="$RED";    CADDY_LABEL="stopped" ;;
+            not_installed) CADDY_COLOR="$YELLOW"; CADDY_LABEL="未安装" ;;
+        esac
+        # 按顺序显示
+        box_line "  端口 ${CUR_PORT:-22}  |  公钥数 ${KEYCOUNT}" \
+                 "  端口 ${BOLD}${CUR_PORT:-22}${NC}  |  公钥数 ${BOLD}${KEYCOUNT}${NC}"
+        box_line "  密码登录 ${CUR_PWD:-未设置}  |  公钥认证 ${CUR_PUBKEY:-未设置}" \
+                 "  密码登录 ${BOLD}${CUR_PWD:-未设置}${NC}  |  公钥认证 ${BOLD}${CUR_PUBKEY:-未设置}${NC}"
+        box_line "  BBR: ${BBR_CC}  |  限速: ${TC_RATE}" \
+                 "  BBR: ${BOLD}${BBR_CC}${NC}  |  限速: ${BOLD}${TC_RATE}${NC}"
+        if [ "$F2B_STAT" = "running" ]; then
+            box_line "  Fail2ban: running" "  Fail2ban: ${GREEN}${BOLD}running${NC}"
+        elif [ "$F2B_STAT" = "stopped" ]; then
+            box_line "  Fail2ban: stopped" "  Fail2ban: ${RED}${BOLD}stopped${NC}"
+        else
+            box_line "  Fail2ban: 未安装"  "  Fail2ban: ${YELLOW}${BOLD}未安装${NC}"
+        fi
+        box_line "  防火墙: ${FW_STAT}" "  防火墙: ${FW_COLOR}${BOLD}${FW_STAT}${NC}"
+        box_line "  Caddy: ${CADDY_LABEL}" "  Caddy: ${CADDY_COLOR}${BOLD}${CADDY_LABEL}${NC}"
+        local SYS_TIME SYS_TZ
+        SYS_TIME=$(date '+%Y-%m-%d %H:%M:%S')
+        SYS_TZ=$(timedatectl show --property=Timezone --value 2>/dev/null || date '+%Z')
+        box_line "  时间: ${SYS_TIME}  ${SYS_TZ}" "  时间: ${BOLD}${SYS_TIME}${NC}  ${DIM}${SYS_TZ}${NC}"
+        box_sep
+        box_line "  1) SSH 工具集"   "  ${GREEN}1${NC}) SSH 工具集"
+        box_line "  2) Fail2ban 管理" "  ${GREEN}2${NC}) Fail2ban 管理"
+        box_line "  3) BBR TCP 调优" "  ${GREEN}3${NC}) BBR TCP 调优"
+        box_line "  4) 防火墙管理"   "  ${GREEN}4${NC}) 防火墙管理"
+        box_line "  5) DNS 优化"     "  ${GREEN}5${NC}) DNS 优化"
+        box_line "  6) 系统换源"     "  ${GREEN}6${NC}) 系统换源"
+        box_line "  7) IPv4/IPv6 配置" "  ${GREEN}7${NC}) IPv4/IPv6 配置"
+        box_line "  8) Caddy 管理"    "  ${GREEN}8${NC}) Caddy 管理"
+        box_line "  9) 端口转发"     "  ${GREEN}9${NC}) 端口转发"
+        box_line "  t) 时间同步"     "  ${GREEN}t${NC}) 时间同步"
+        box_line "  s) Swap 管理"    "  ${GREEN}s${NC}) Swap 管理"
+        box_line "  m) 脚本管理"     "  ${GREEN}m${NC}) 脚本管理（安装/更新）"
+        box_line "  0) 退出"         "  ${RED}0${NC}) 退出"
+        box_bot
+        echo ""
+        read -rp "  请选择功能 [0-9/t/s/m]: " CHOICE
+
+        case "$CHOICE" in
+            1) ssh_tools_menu ;;
+            2) fail2ban_menu ;;
+            3) bbr_menu ;;
+            4) firewall_menu ;;
+            5) dns_menu ;;
+            6) mirror_menu ;;
+            7) ip_config_menu ;;
+            8) caddy_menu ;;
+            9) portfwd_menu ;;
+            t|T) timesync_menu ;;
+            s|S) swap_menu ;;
+            m|M) self_manage_menu ;;
+            0) clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;
+            *) warn "无效选项，请重新输入。"; sleep 1 ;;
+        esac
+        # 子菜单返回后直接刷新主菜单，不需要按 Enter
+        continue
+    done
+}
+
+self_check_first_run
 main_menu
