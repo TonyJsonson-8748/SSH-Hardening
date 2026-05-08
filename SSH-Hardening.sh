@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # ============================================================
-#  VPS 开荒脚本 V1.20 — 银趴火山帮
+#  VPS 开荒脚本 V1.21 — 银趴火山帮
 #  功能：SSH管理 / Fail2ban / BBR TCP 调优
 # ============================================================
 
@@ -70,7 +70,7 @@ print_header() {
     clear
     echo ""
     box_top
-    box_title "VPS 开荒脚本 V1.20"
+    box_title "VPS 开荒脚本 V1.21"
     box_line "  ··银趴火山帮··" "  ${DIM}··银趴火山帮··${NC}"
     box_sep
     box_title "$1"
@@ -1107,7 +1107,7 @@ fail2ban_menu() {
         clear
         echo ""
         box_top
-        box_title "VPS 开荒脚本 V1.20"
+        box_title "VPS 开荒脚本 V1.21"
         box_line "  ··银趴火山帮··" "  ${DIM}··银趴火山帮··${NC}"
         box_sep
         box_title "Fail2ban 管理"
@@ -3961,28 +3961,60 @@ ts_set_custom_tz() {
 ts_enable_ntp() {
     print_header "开启 NTP 自动同步"
 
-    if command -v timedatectl &>/dev/null && pidof systemd &>/dev/null; then
+    # 检测 CanNTP — 判断是否有 timesyncd
+    local CAN_NTP
+    CAN_NTP=$(timedatectl show --property=CanNTP --value 2>/dev/null || echo "no")
+
+    if [ "$CAN_NTP" = "yes" ] && command -v systemctl &>/dev/null         && systemctl list-units --type=service 2>/dev/null | grep -q "systemd-timesyncd"; then
+        # systemd-timesyncd 可用
         timedatectl set-ntp true 2>/dev/null
         systemctl enable systemd-timesyncd --quiet 2>/dev/null
-        systemctl start  systemd-timesyncd 2>/dev/null
-        info "systemd-timesyncd NTP 自动同步已开启 ✓"
+        systemctl restart systemd-timesyncd 2>/dev/null
+        info "systemd-timesyncd NTP 已开启 ✓"
     elif command -v chronyc &>/dev/null; then
-        svc_enable chronyd
-        systemctl start chronyd 2>/dev/null || rc-service chronyd start 2>/dev/null
+        # chrony 已安装，自动探测服务名
+        local CHRONY_SVC="chronyd"
+        systemctl list-unit-files 2>/dev/null | grep -q "^chrony.service" && CHRONY_SVC="chrony"
+        svc_enable "$CHRONY_SVC"
+        systemctl start "$CHRONY_SVC" 2>/dev/null || rc-service "$CHRONY_SVC" start 2>/dev/null || true
+        sleep 1
+        chronyc makestep &>/dev/null && info "chrony 强制同步 ✓"
         info "chrony NTP 自动同步已开启 ✓"
     else
-        info "安装 chrony..."
-        pkg_install chrony &>/dev/null
-        svc_enable chronyd
-        systemctl start chronyd 2>/dev/null || rc-service chronyd start 2>/dev/null
-        info "chrony 已安装并开启自动同步 ✓"
+        # 都没有，安装 chrony
+        info "正在安装 chrony..."
+        if pkg_install chrony; then
+            # Debian 服务名是 chrony，CentOS/Alpine 是 chronyd
+            local CHRONY_SVC="chronyd"
+            systemctl list-unit-files 2>/dev/null | grep -q "^chrony.service" && CHRONY_SVC="chrony"
+            svc_enable "$CHRONY_SVC"
+            systemctl start "$CHRONY_SVC" 2>/dev/null || rc-service "$CHRONY_SVC" start 2>/dev/null || true
+            sleep 2
+            chronyc makestep &>/dev/null && info "chrony 强制同步 ✓"
+            info "chrony 已安装并开启自动同步 ✓"
+        else
+            error "chrony 安装失败，请手动执行：apt-get install -y chrony"
+            return
+        fi
     fi
 
     echo ""
-    sleep 1
+    sleep 2
+    # 验证同步状态
     local SYNC_ST
     SYNC_ST=$(timedatectl show --property=NTPSynchronized --value 2>/dev/null || echo "unknown")
-    [ "$SYNC_ST" = "yes" ] && info "NTP 状态：已同步 ✓" || warn "NTP 状态：同步中（可能需要几秒）"
+    if [ "$SYNC_ST" = "yes" ]; then
+        info "NTP 状态：已同步 ✓"
+        info "当前时间：$(date '+%Y-%m-%d %H:%M:%S %Z')"
+    else
+        warn "NTP 状态：同步中（chrony 可能需要几秒完成首次同步）"
+        # 尝试 chrony 状态
+        if command -v chronyc &>/dev/null; then
+            chronyc tracking 2>/dev/null | grep -E "Reference|System time|Last offset" | while IFS= read -r l; do
+                echo -e "  ${DIM}$l${NC}"
+            done
+        fi
+    fi
 }
 
 
@@ -4407,7 +4439,7 @@ self_check_first_run() {
     clear
     echo ""
     box_top
-    box_title "VPS 开荒脚本 V1.20"
+    box_title "VPS 开荒脚本 V1.21"
     box_line "  ··银趴火山帮··" "  ${DIM}··银趴火山帮··${NC}"
     box_sep
     box_title "首次运行检测"
@@ -4492,7 +4524,7 @@ main_menu() {
         clear
         echo ""
         box_top
-        box_title "VPS 开荒脚本 V1.20"
+        box_title "VPS 开荒脚本 V1.21"
         box_line "  ··银趴火山帮··" "  ${DIM}··银趴火山帮··${NC}"
         box_sep
         # 收集状态数据
@@ -4531,6 +4563,17 @@ main_menu() {
         SYS_TIME=$(date '+%Y-%m-%d %H:%M:%S')
         SYS_TZ=$(timedatectl show --property=Timezone --value 2>/dev/null || date '+%Z')
         box_line "  时间: ${SYS_TIME}  ${SYS_TZ}" "  时间: ${BOLD}${SYS_TIME}${NC}  ${DIM}${SYS_TZ}${NC}"
+        # 检查是否有新版本提醒
+        local UPDATE_NOTICE=""
+        if [ -f /tmp/.vps_new_version ]; then
+            local NEW_VER; NEW_VER=$(cat /tmp/.vps_new_version 2>/dev/null)
+            if [ -n "$NEW_VER" ]; then
+                UPDATE_NOTICE="$NEW_VER"
+            fi
+        fi
+        if [ -n "$UPDATE_NOTICE" ]; then
+            box_line "  🔔 新版本 ${UPDATE_NOTICE} 可用！(m→2 更新)"                      "  ${YELLOW}${BOLD}🔔 新版本 ${UPDATE_NOTICE} 可用！${NC}  ${DIM}m→2 一键更新${NC}"
+        fi
         box_sep
         box_line "  1) SSH 工具集"   "  ${GREEN}1${NC}) SSH 工具集"
         box_line "  2) Fail2ban 管理" "  ${GREEN}2${NC}) Fail2ban 管理"
@@ -4570,5 +4613,27 @@ main_menu() {
     done
 }
 
+
+# ── 检查远程版本是否有更新 ────────────────────────────────
+self_check_update() {
+    # 后台静默检查，超时 5 秒，不影响主菜单加载
+    local REMOTE_VER
+    REMOTE_VER=$(curl -fsSL --max-time 5 "$SCRIPT_URL" 2>/dev/null         | grep -oE 'VPS 开荒脚本 V[0-9]+\.[0-9]+' | head -1         | grep -oE 'V[0-9]+\.[0-9]+')
+    [ -z "$REMOTE_VER" ] && return
+
+    local CUR_VER
+    CUR_VER=$(grep -oE 'VPS 开荒脚本 V[0-9]+\.[0-9]+' "$0" 2>/dev/null | head -1 | grep -oE 'V[0-9]+\.[0-9]+')
+    [ -z "$CUR_VER" ] && return
+
+    # 版本不同才提示
+    [ "$REMOTE_VER" = "$CUR_VER" ] && return
+
+    # 写入临时文件让主菜单读取
+    echo "$REMOTE_VER" > /tmp/.vps_new_version 2>/dev/null
+}
+
+# ── 首次运行：检测安装 + 触发后台版本检测 ────────────────
 self_check_first_run
+# 后台检测新版本（不阻塞主菜单）
+self_check_update &
 main_menu
