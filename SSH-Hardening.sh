@@ -4555,9 +4555,7 @@ ddns_install() {
 
     local DDNS_DOMAIN="${DDNS_SUB}.${DDNS_ZONE}"
 
-    echo -ne "  Cloudflare API Token: "
-    read -rs DDNS_TOKEN
-    echo ""
+    read -rp "  Cloudflare API Token: " DDNS_TOKEN
     [ -z "$DDNS_TOKEN" ] && { warn "已取消"; return; }
 
     echo ""
