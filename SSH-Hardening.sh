@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # ============================================================
-#  VPS 开荒脚本 V1.22 — 银趴火山帮
+#  VPS 开荒脚本 V1.23 — 银趴火山帮
 #  功能：SSH管理 / Fail2ban / BBR TCP 调优
 # ============================================================
 
@@ -70,7 +70,7 @@ print_header() {
     clear
     echo ""
     box_top
-    box_title "VPS 开荒脚本 V1.22"
+    box_title "VPS 开荒脚本 V1.23"
     box_line "  ··银趴火山帮··" "  ${DIM}··银趴火山帮··${NC}"
     box_sep
     box_title "$1"
@@ -1107,7 +1107,7 @@ fail2ban_menu() {
         clear
         echo ""
         box_top
-        box_title "VPS 开荒脚本 V1.22"
+        box_title "VPS 开荒脚本 V1.23"
         box_line "  ··银趴火山帮··" "  ${DIM}··银趴火山帮··${NC}"
         box_sep
         box_title "Fail2ban 管理"
@@ -4388,6 +4388,8 @@ self_update() {
     ln -sf "$LOCAL_SCRIPT" /usr/local/bin/V 2>/dev/null
 
     info "更新完成 ✓"
+    # 清除更新提示，避免新版本启动后还显示旧提示
+    rm -f /tmp/.vps_new_version 2>/dev/null
     warn "即将用新版本重启脚本..."
     sleep 1
     exec "$LOCAL_SCRIPT"
@@ -4439,7 +4441,7 @@ self_check_first_run() {
     clear
     echo ""
     box_top
-    box_title "VPS 开荒脚本 V1.22"
+    box_title "VPS 开荒脚本 V1.23"
     box_line "  ··银趴火山帮··" "  ${DIM}··银趴火山帮··${NC}"
     box_sep
     box_title "首次运行检测"
@@ -4908,7 +4910,7 @@ main_menu() {
         clear
         echo ""
         box_top
-        box_title "VPS 开荒脚本 V1.22"
+        box_title "VPS 开荒脚本 V1.23"
         box_line "  ··银趴火山帮··" "  ${DIM}··银趴火山帮··${NC}"
         box_sep
         # 收集状态数据
@@ -5020,7 +5022,10 @@ self_check_update() {
     [ -z "$CUR_VER" ] && return
 
     # 版本不同才提示
-    [ "$REMOTE_VER" = "$CUR_VER" ] && return
+    if [ "$REMOTE_VER" = "$CUR_VER" ]; then
+        rm -f /tmp/.vps_new_version 2>/dev/null
+        return
+    fi
 
     # 写入临时文件让主菜单读取
     echo "$REMOTE_VER" > /tmp/.vps_new_version 2>/dev/null
