@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # ============================================================
-#  VPS 开荒脚本 V1.23 — 银趴火山帮
+#  VPS 开荒脚本 V1.24 — 银趴火山帮
 #  功能：SSH管理 / Fail2ban / BBR TCP 调优
 # ============================================================
 
@@ -70,7 +70,7 @@ print_header() {
     clear
     echo ""
     box_top
-    box_title "VPS 开荒脚本 V1.23"
+    box_title "VPS 开荒脚本 V1.24"
     box_line "  ··银趴火山帮··" "  ${DIM}··银趴火山帮··${NC}"
     box_sep
     box_title "$1"
@@ -1107,7 +1107,7 @@ fail2ban_menu() {
         clear
         echo ""
         box_top
-        box_title "VPS 开荒脚本 V1.23"
+        box_title "VPS 开荒脚本 V1.24"
         box_line "  ··银趴火山帮··" "  ${DIM}··银趴火山帮··${NC}"
         box_sep
         box_title "Fail2ban 管理"
@@ -4441,7 +4441,7 @@ self_check_first_run() {
     clear
     echo ""
     box_top
-    box_title "VPS 开荒脚本 V1.23"
+    box_title "VPS 开荒脚本 V1.24"
     box_line "  ··银趴火山帮··" "  ${DIM}··银趴火山帮··${NC}"
     box_sep
     box_title "首次运行检测"
@@ -4817,7 +4817,7 @@ ddns_menu() {
 
         print_header "Cloudflare DDNS"
 
-        # 已安装时显示域名信息
+        # 已安装时显示域名信息；未安装但有历史配置也显示
         if [ "$D_ST" != "not_installed" ] && [ -f "$DDNS_ZONE_FILE" ]; then
             local D_DOMAIN D_ZONE
             D_DOMAIN=$(grep "^DOMAIN=" "$DDNS_ZONE_FILE" | cut -d= -f2)
@@ -4825,9 +4825,18 @@ ddns_menu() {
             echo -e "  状态 : ${D_COLOR}${BOLD}${D_LABEL}${NC}"
             echo -e "  域名 : ${BOLD}${D_DOMAIN}${NC}"
             echo -e "  定时 : ${DIM}每5分钟自动更新${NC}"
-            # 显示最新日志一行
             local LAST_LOG; LAST_LOG=$(tail -1 "$DDNS_LOG" 2>/dev/null || tail -1 "$HOME/ddns.log" 2>/dev/null)
             [ -n "$LAST_LOG" ] && echo -e "  最新 : ${DIM}${LAST_LOG}${NC}"
+        elif [ -f "$DDNS_ZONE_FILE" ]; then
+            local D_DOMAIN
+            D_DOMAIN=$(grep "^DOMAIN=" "$DDNS_ZONE_FILE" | cut -d= -f2)
+            local D_TOKEN_HINT=""
+            [ -f "$DDNS_TOKEN_FILE" ] && D_TOKEN_HINT="${DIM}Token 已保存${NC}" || D_TOKEN_HINT="${YELLOW}Token 未找到${NC}"
+            echo -e "  状态 : ${D_COLOR}${BOLD}${D_LABEL}${NC}"
+            echo -e "  域名 : ${BOLD}${D_DOMAIN}${NC}"
+            echo -e "  Token : $D_TOKEN_HINT"
+            echo ""
+            echo -e "  ${DIM}检测到历史配置，可重新安装恢复定时任务${NC}"
         else
             echo -e "  状态 : ${D_COLOR}${BOLD}${D_LABEL}${NC}"
             echo ""
@@ -4910,7 +4919,7 @@ main_menu() {
         clear
         echo ""
         box_top
-        box_title "VPS 开荒脚本 V1.23"
+        box_title "VPS 开荒脚本 V1.24"
         box_line "  ··银趴火山帮··" "  ${DIM}··银趴火山帮··${NC}"
         box_sep
         # 收集状态数据
