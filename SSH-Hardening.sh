@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # ============================================================
-#  VPS 开荒脚本 V1.24 — 银趴火山帮
+#  VPS 开荒脚本 V1.25 — 银趴火山帮
 #  功能：SSH管理 / Fail2ban / BBR TCP 调优
 # ============================================================
 
@@ -70,7 +70,7 @@ print_header() {
     clear
     echo ""
     box_top
-    box_title "VPS 开荒脚本 V1.24"
+    box_title "VPS 开荒脚本 V1.25"
     box_line "  ··银趴火山帮··" "  ${DIM}··银趴火山帮··${NC}"
     box_sep
     box_title "$1"
@@ -478,7 +478,7 @@ generate_key() {
     KEY_COMMENT="${KEY_COMMENT:-ssh-key-$(date +%Y%m%d)}"
 
     local TMP_DIR KEY_FILE
-    TMP_DIR=$(mktemp -d)
+    TMP_DIR=$(mktemp -d 2>/dev/null || { mkdir -p "/tmp/vps_tmp_$$" && echo "/tmp/vps_tmp_$$"; })
     KEY_FILE="$TMP_DIR/id_${KEY_TYPE}"
 
     echo ""
@@ -1107,7 +1107,7 @@ fail2ban_menu() {
         clear
         echo ""
         box_top
-        box_title "VPS 开荒脚本 V1.24"
+        box_title "VPS 开荒脚本 V1.25"
         box_line "  ··银趴火山帮··" "  ${DIM}··银趴火山帮··${NC}"
         box_sep
         box_title "Fail2ban 管理"
@@ -2970,7 +2970,7 @@ caddy_install_binary() {
         *) error "不支持的架构：$ARCH"; return 1 ;;
     esac
 
-    local TMP; TMP=$(mktemp -d)
+    local TMP; TMP=$(mktemp -d 2>/dev/null || { mkdir -p "/tmp/caddy_tmp_$$" && echo "/tmp/caddy_tmp_$$"; })
     local URL="https://github.com/caddyserver/caddy/releases/latest/download/caddy_linux_${ARCH}.tar.gz"
 
     if curl -fsSL "$URL" -o "$TMP/caddy.tar.gz"; then
@@ -4354,7 +4354,7 @@ self_update() {
     echo -e "  ${DIM}${SCRIPT_URL}${NC}"
     echo ""
 
-    local TMP_FILE; TMP_FILE=$(mktemp /tmp/vps_update_XXXXXX.sh)
+    local TMP_FILE; TMP_FILE="/tmp/vps_update_$$.sh"
 
     info "正在下载最新版本..."
     if ! curl -fsSL "$SCRIPT_URL" -o "$TMP_FILE" 2>/dev/null; then
@@ -4441,7 +4441,7 @@ self_check_first_run() {
     clear
     echo ""
     box_top
-    box_title "VPS 开荒脚本 V1.24"
+    box_title "VPS 开荒脚本 V1.25"
     box_line "  ··银趴火山帮··" "  ${DIM}··银趴火山帮··${NC}"
     box_sep
     box_title "首次运行检测"
@@ -4919,7 +4919,7 @@ main_menu() {
         clear
         echo ""
         box_top
-        box_title "VPS 开荒脚本 V1.24"
+        box_title "VPS 开荒脚本 V1.25"
         box_line "  ··银趴火山帮··" "  ${DIM}··银趴火山帮··${NC}"
         box_sep
         # 收集状态数据
