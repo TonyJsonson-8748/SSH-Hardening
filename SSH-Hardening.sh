@@ -4457,8 +4457,8 @@ self_update() {
     fi
 
     # 版本对比
-    local NEW_VER; NEW_VER=$(grep -oE 'V[0-9]+\.[0-9]+' "$TMP_FILE" | head -1)
-    local CUR_VER; CUR_VER=$(grep -oE 'V[0-9]+\.[0-9]+' "${LOCAL_SCRIPT}" 2>/dev/null | head -1)
+    local NEW_VER; NEW_VER=$(grep -oE 'V[0-9]+\.[0-9]+\.[0-9]+|V[0-9]+\.[0-9]+' "$TMP_FILE" | head -1)
+    local CUR_VER; CUR_VER=$(grep -oE 'V[0-9]+\.[0-9]+\.[0-9]+|V[0-9]+\.[0-9]+' "${LOCAL_SCRIPT}" 2>/dev/null | head -1)
     echo -e "  当前版本：${BOLD}${CUR_VER:-未知}${NC}  →  最新版本：${GREEN}${BOLD}${NEW_VER:-未知}${NC}"
     echo ""
 
@@ -4559,7 +4559,7 @@ self_manage_menu() {
         local CUR_VER=""
         if [ -f "$LOCAL_SCRIPT" ]; then
             IS_INSTALLED=true
-            CUR_VER=$(grep -oE 'V[0-9]+\.[0-9]+' "$LOCAL_SCRIPT" | head -1)
+            CUR_VER=$(grep -oE 'V[0-9]+\.[0-9]+\.[0-9]+|V[0-9]+\.[0-9]+' "$LOCAL_SCRIPT" | head -1)
         fi
         local HAS_CMD=false
         [ -f /usr/local/bin/v ] && HAS_CMD=true
@@ -5153,8 +5153,8 @@ self_update() {
     fi
 
     # 版本对比
-    local NEW_VER; NEW_VER=$(grep -oE 'V[0-9]+\.[0-9]+' "$TMP_FILE" | head -1)
-    local CUR_VER; CUR_VER=$(grep -oE 'V[0-9]+\.[0-9]+' "${LOCAL_SCRIPT}" 2>/dev/null | head -1)
+    local NEW_VER; NEW_VER=$(grep -oE 'V[0-9]+\.[0-9]+\.[0-9]+|V[0-9]+\.[0-9]+' "$TMP_FILE" | head -1)
+    local CUR_VER; CUR_VER=$(grep -oE 'V[0-9]+\.[0-9]+\.[0-9]+|V[0-9]+\.[0-9]+' "${LOCAL_SCRIPT}" 2>/dev/null | head -1)
     echo -e "  当前版本：${BOLD}${CUR_VER:-未知}${NC}  →  最新版本：${GREEN}${BOLD}${NEW_VER:-未知}${NC}"
     echo ""
 
@@ -5255,7 +5255,7 @@ self_manage_menu() {
         local CUR_VER=""
         if [ -f "$LOCAL_SCRIPT" ]; then
             IS_INSTALLED=true
-            CUR_VER=$(grep -oE 'V[0-9]+\.[0-9]+' "$LOCAL_SCRIPT" | head -1)
+            CUR_VER=$(grep -oE 'V[0-9]+\.[0-9]+\.[0-9]+|V[0-9]+\.[0-9]+' "$LOCAL_SCRIPT" | head -1)
         fi
         local HAS_CMD=false
         [ -f /usr/local/bin/v ] && HAS_CMD=true
