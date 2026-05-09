@@ -1354,8 +1354,8 @@ bbr_print_status() {
     TCP_RMEM_MB=$(( ${TCP_RMEM_MAX:-0} / 1048576 ))
     TCP_WMEM_MB=$(( ${TCP_WMEM_MAX:-0} / 1048576 ))
 
-    echo -e "  网卡 ${BOLD}$DEV${NC}  |  拥塞控制 ${BOLD}$BBR${NC}  |  限速 ${BOLD}$RATE${NC}  |  initcwnd ${BOLD}$CWND${NC}"
-    echo -e "  rmem_max ${BOLD}${RMEM_MB}MB${NC}  |  wmem_max ${BOLD}${WMEM_MB}MB${NC}  |  tcp_rmem max ${BOLD}${TCP_RMEM_MB}MB${NC}  |  tcp_wmem max ${BOLD}${TCP_WMEM_MB}MB${NC}"
+    echo -e "  ${CYAN}网卡${NC} ${BOLD}$DEV${NC}  ${CYAN}CC${NC} ${BOLD}$BBR${NC}  ${CYAN}cwnd${NC} ${BOLD}$CWND${NC}  ${CYAN}限速${NC} ${BOLD}$RATE${NC}"
+    echo -e "  ${CYAN}缓冲${NC} rmem ${BOLD}${RMEM_MB}MB${NC}  wmem ${BOLD}${WMEM_MB}MB${NC}  tcp_r ${BOLD}${TCP_RMEM_MB}MB${NC}  tcp_w ${BOLD}${TCP_WMEM_MB}MB${NC}"
 }
 
 # ── 备份 sysctl ───────────────────────────────────────────
