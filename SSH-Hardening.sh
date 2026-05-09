@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # ============================================================
-#  VPS 开荒脚本 V3.0.0 — 银趴火山帮
+#  VPS 开荒脚本 V3.0.1 — 银趴火山帮
 #  功能：SSH管理 / Fail2ban / BBR TCP 调优
 # ============================================================
 
@@ -90,7 +90,7 @@ print_header() {
     safe_clear
     echo ""
     box_top
-    box_title "VPS 开荒脚本 V3.0.0"
+    box_title "VPS 开荒脚本 V3.0.1"
     box_line "  ··银趴火山帮··" "  ${DIM}··银趴火山帮··${NC}"
     box_sep
     box_title "$1"
@@ -1127,7 +1127,7 @@ fail2ban_menu() {
         safe_clear
         echo ""
         box_top
-        box_title "VPS 开荒脚本 V3.0.0"
+        box_title "VPS 开荒脚本 V3.0.1"
         box_line "  ··银趴火山帮··" "  ${DIM}··银趴火山帮··${NC}"
         box_sep
         box_title "Fail2ban 管理"
@@ -1514,15 +1514,16 @@ bbr_confirm_apply() {
     echo -e "  swappiness   : ${BOLD}${SWAP}${NC}"
     echo -e "  ${YELLOW}──────────────────────────────────────────${NC}"
     echo ""
-    read -rp "  确认应用？(Y/n，默认Y): " CONFIRM
-    [ -z "${CONFIRM}" ] && CONFIRM="y"
-    if ! echo "${CONFIRM}" | grep -qiE '^y(es)?$'; then warn "已取消"; return; fi
-
+    # 先提示备份（默认Y）
     if [ -f "$SYSCTL_FILE" ]; then
-        read -rp "  是否备份旧的 sysctl.conf？(Y/n，默认Y): " DO_BAK
+        read -rp "  备份当前 sysctl 配置？(Y/n，默认Y): " DO_BAK
         [ -z "$DO_BAK" ] && DO_BAK="y"
         echo "$DO_BAK" | grep -qiE '^y(es)?$' && bbr_backup_sysctl
+        echo ""
     fi
+    read -rp "  确认应用以上配置？(Y/n，默认Y): " CONFIRM
+    [ -z "${CONFIRM}" ] && CONFIRM="y"
+    if ! echo "${CONFIRM}" | grep -qiE '^y(es)?$'; then warn "已取消"; return; fi
 
     local CONFIG
     CONFIG=$(bbr_generate_config "$RMEM" "$WMEM" "$TCP_MEM" "$NOTSENT" "$ADV_WIN" "$MIN_FREE" "$SWAP" "$TCP_RMEM_DEFAULT")
@@ -4525,7 +4526,7 @@ self_check_first_run() {
     clear
     echo ""
     box_top
-    box_title "VPS 开荒脚本 V3.0.0"
+    box_title "VPS 开荒脚本 V3.0.1"
     box_line "  ··银趴火山帮··" "  ${DIM}··银趴火山帮··${NC}"
     box_sep
     box_title "首次运行检测"
@@ -5221,7 +5222,7 @@ self_check_first_run() {
     clear
     echo ""
     box_top
-    box_title "VPS 开荒脚本 V3.0.0"
+    box_title "VPS 开荒脚本 V3.0.1"
     box_line "  ··银趴火山帮··" "  ${DIM}··银趴火山帮··${NC}"
     box_sep
     box_title "首次运行检测"
@@ -5700,7 +5701,7 @@ main_menu() {
         volcano_art_banner
         echo ""
         box_top
-        box_title "VPS 开荒脚本 V3.0.0"
+        box_title "VPS 开荒脚本 V3.0.1"
         box_line "  ··银趴火山帮··" "  ${DIM}··银趴火山帮··${NC}"
         box_sep
         # 收集状态数据
