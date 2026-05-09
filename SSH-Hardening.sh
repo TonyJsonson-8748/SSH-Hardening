@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # ============================================================
-#  VPS 开荒脚本 V1.25 — 银趴火山帮
+#  VPS 开荒脚本 V1.27 — 银趴火山帮
 #  功能：SSH管理 / Fail2ban / BBR TCP 调优
 # ============================================================
 
@@ -20,6 +20,13 @@ NC=$'\033[0m'
 info()  { echo -e "  ${GREEN}✔${NC}  $1"; }
 warn()  { echo -e "  ${YELLOW}⚠${NC}  $1"; }
 error() { echo -e "  ${RED}✘${NC}  $1"; }
+
+# 兼容 dumb 终端（OpenWrt / tmux 等不支持 clear 的环境）
+safe_clear() {
+    if [ -n "${TERM:-}" ] && [ "$TERM" != "dumb" ]; then
+        clear 2>/dev/null || true
+    fi
+}
 
 # ── 可见宽度计算（用 python3，中文=2，ASCII=1）────────────
 vis_len() {
@@ -67,10 +74,10 @@ box_empty() {
 
 # 统一标题栏
 print_header() {
-    clear
+    safe_clear
     echo ""
     box_top
-    box_title "VPS 开荒脚本 V1.25"
+    box_title "VPS 开荒脚本 V1.27"
     box_line "  ··银趴火山帮··" "  ${DIM}··银趴火山帮··${NC}"
     box_sep
     box_title "$1"
@@ -590,7 +597,7 @@ set_login_mode() {
             apply_and_restart && info "已切换：仅密码登录 ✓"
             ;;
         0) return ;;
-        00) clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;
+        00) safe_clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;
         *) return ;;
     esac
 }
@@ -918,7 +925,7 @@ f2b_config_params() {
             esac
             ;;
         0) return ;;
-        00) clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;
+        00) safe_clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;
         *) warn "无效选项"; return ;;
     esac
 
@@ -1036,7 +1043,7 @@ JAILEOF
             fi
             ;;
         0) return ;;
-        00) clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;
+        00) safe_clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;
         *) warn "无效选项" ;;
     esac
 }
@@ -1082,7 +1089,7 @@ fail2ban_menu() {
             case "$CHOICE" in
                 1) f2b_install; echo ""; read -rp "  按 Enter 继续..." _ ;;
                 0) return ;;
-                00) clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;
+                00) safe_clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;
                 *) warn "无效选项"; sleep 1 ;;
             esac
             continue
@@ -1104,10 +1111,10 @@ fail2ban_menu() {
             BANNED_COUNT="-"; TOTAL_FAIL="-"
         fi
 
-        clear
+        safe_clear
         echo ""
         box_top
-        box_title "VPS 开荒脚本 V1.25"
+        box_title "VPS 开荒脚本 V1.27"
         box_line "  ··银趴火山帮··" "  ${DIM}··银趴火山帮··${NC}"
         box_sep
         box_title "Fail2ban 管理"
@@ -1178,7 +1185,7 @@ fail2ban_menu() {
                 sleep 1; continue
                 ;;
             0) return ;;
-            00) clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;
+            00) safe_clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;
             *) warn "无效选项"; sleep 1; continue ;;
         esac
 
@@ -1310,7 +1317,7 @@ f2b_logs() {
 # ══════════════════════════════════════════════════════════
 
 SERVICE_TC="/etc/systemd/system/tc-fq.service"
-SYSCTL_FILE="/etc/sysctl.conf"
+SYSCTL_FILE="/etc/sysctl.d/99-vps-bbr.conf"
 
 # ── 状态显示 ──────────────────────────────────────────────
 bbr_print_status() {
@@ -1368,7 +1375,7 @@ bbr_restore_sysctl() {
     read -rp "  请选择: " CH
     case "$CH" in
         0) return ;;
-        00) clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;
+        00) safe_clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;
         d|D)
             read -rp "  确认清除全部 ${#BACKUPS[@]} 个备份？(Y/n，默认Y): " C
             [ "$C" = "yes" ] && rm -f "${SYSCTL_FILE}.bak."* && info "已清除全部备份" || warn "已取消"
@@ -1389,10 +1396,10 @@ bbr_restore_sysctl() {
 # ── 应用 sysctl ───────────────────────────────────────────
 bbr_apply_sysctl() {
     local CONFIG="$1"
-    rm -f "$SYSCTL_FILE"
+    mkdir -p "$(dirname "$SYSCTL_FILE")" 2>/dev/null || true
     echo "$CONFIG" > "$SYSCTL_FILE"
     sysctl -p "$SYSCTL_FILE" > /dev/null 2>&1
-    info "sysctl 配置已应用 ✓"
+    info "sysctl 配置已应用到 ${SYSCTL_FILE} ✓"
 }
 
 # ── 应用 tc 限速 ──────────────────────────────────────────
@@ -1567,7 +1574,7 @@ bbr_menu_bandwidth() {
         4) bbr_auto_calc "$MEM_MB" "$LAT_MS" 1024 "$MEM_LBL" "$LAT_LBL" "1Gbps" ;;
         5) bbr_auto_calc "$MEM_MB" "$LAT_MS" 2048 "$MEM_LBL" "$LAT_LBL" "2Gbps" ;;
         0) return ;;
-        00) clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;
+        00) safe_clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;
         *) warn "无效选项" ;;
     esac
 }
@@ -1590,7 +1597,7 @@ bbr_menu_latency() {
         2) bbr_menu_bandwidth "$MEM_MB" 150 "$MEM_LBL" "100-200ms" ;;
         3) bbr_menu_bandwidth "$MEM_MB" 250 "$MEM_LBL" "200ms以上" ;;
         0) return ;;
-        00) clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;
+        00) safe_clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;
         *) warn "无效选项" ;;
     esac
 }
@@ -1610,7 +1617,7 @@ bbr_menu_auto() {
         2) bbr_menu_latency 1024 "1GB" ;;
         3) bbr_menu_latency 2048 "2GB" ;;
         0) return ;;
-        00) clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;
+        00) safe_clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;
         *) warn "无效选项" ;;
     esac
 }
@@ -1651,7 +1658,7 @@ bbr_menu_manual() {
         5) RMEM=67108864;  WMEM=67108864;  ADV_WIN=3; NOTSENT=524288; TCP_RMEM_DEFAULT=1048576; BUF_LBL=64 ;;
         6) RMEM=134217728; WMEM=134217728; ADV_WIN=3; NOTSENT=524288; TCP_RMEM_DEFAULT=1048576; BUF_LBL=128 ;;
         0) return ;;
-        00) clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;
+        00) safe_clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;
         *) warn "无效选项"; return ;;
     esac
 
@@ -1717,7 +1724,7 @@ bbr_menu_tc() {
             ;;
         7) RATE=0 ;;
         0) return ;;
-        00) clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;
+        00) safe_clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;
         *) warn "无效选项"; return ;;
     esac
 
@@ -1791,7 +1798,7 @@ bbr_menu_initcwnd() {
             fi
             ;;
         0) return ;;
-        00) clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;
+        00) safe_clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;
         *) warn "无效选项"; return ;;
     esac
 
@@ -1821,33 +1828,120 @@ EOF
 }
 
 # ── BBR 主菜单 ────────────────────────────────────────────
+
+# ── 一键 TCP 预设（三种场景）────────────────────────────
+volcano_tcp_profile() {
+    local PROFILE="${1:-balanced}"
+    local RMEM WMEM TCP_MEM NOTSENT ADV_WIN MIN_FREE SWAP TCP_RMEM_DEFAULT LABEL BUF_MB
+    case "$PROFILE" in
+        balanced)
+            RMEM=67108864; WMEM=67108864; TCP_MEM="65536 131072 262144"
+            NOTSENT=262144; ADV_WIN=2; MIN_FREE=65536; SWAP=10
+            TCP_RMEM_DEFAULT=1048576; BUF_MB=64
+            LABEL="均衡跨境  — 网页/代理/日常综合（推荐）" ;;
+        latency)
+            RMEM=33554432; WMEM=33554432; TCP_MEM="49152 98304 196608"
+            NOTSENT=131072; ADV_WIN=1; MIN_FREE=65536; SWAP=10
+            TCP_RMEM_DEFAULT=524288; BUF_MB=32
+            LABEL="低延迟交互 — SSH/游戏/远程桌面/小包优先" ;;
+        throughput)
+            RMEM=134217728; WMEM=134217728; TCP_MEM="131072 262144 524288"
+            NOTSENT=524288; ADV_WIN=3; MIN_FREE=131072; SWAP=5
+            TCP_RMEM_DEFAULT=1048576; BUF_MB=128
+            LABEL="高吞吐传输 — 大带宽/高延迟/下载上传优先" ;;
+        *) error "未知预设：$PROFILE"; return 1 ;;
+    esac
+
+    echo -e "  预设：${BOLD}${LABEL}${NC}"
+    echo -e "  缓冲：${BOLD}${BUF_MB}MB${NC}  拥塞控制：${BOLD}BBR + fq${NC}"
+    echo ""
+    bbr_backup_sysctl
+    local CONFIG
+    CONFIG=$(bbr_generate_config "$RMEM" "$WMEM" "$TCP_MEM" "$NOTSENT" "$ADV_WIN" "$MIN_FREE" "$SWAP" "$TCP_RMEM_DEFAULT")
+    bbr_apply_sysctl "$CONFIG"
+    info "TCP 预设「${PROFILE}」已应用 ✓"
+}
+
+# ── 智能 TCP 调优向导 ────────────────────────────────────
+bbr_smart_wizard() {
+    print_header "智能 TCP 调优向导"
+    local MEM_KB MEM_MB KERNEL CUR_CC
+    MEM_KB=$(grep MemTotal /proc/meminfo 2>/dev/null | awk '{print $2}')
+    MEM_MB=$(( ${MEM_KB:-0} / 1024 ))
+    KERNEL=$(uname -r 2>/dev/null || echo "未知")
+    CUR_CC=$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null || echo "未知")
+
+    echo -e "  ${BOLD}当前环境${NC}"
+    echo -e "  内存：${GREEN}${MEM_MB}MB${NC}  内核：${GREEN}${KERNEL}${NC}  拥塞控制：${GREEN}${CUR_CC}${NC}"
+    echo ""
+    echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+    echo -e "  ${GREEN}1${NC}) 均衡跨境   — 默认推荐，适合大多数 VPS"
+    echo -e "  ${GREEN}2${NC}) 低延迟交互  — SSH/游戏/远程桌面"
+    echo -e "  ${GREEN}3${NC}) 高吞吐传输  — 大带宽/下载上传优先"
+    echo -e "  ${GREEN}4${NC}) 自动推荐   — 根据当前内存智能选择"
+    echo -e "  ${RED}0${NC}) 返回"
+    echo -e "  ${RED}00${NC}) 退出脚本"
+    echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+    echo ""
+    read -rp "  请选择 [0-4]: " CH
+
+    local PROFILE=""
+    case "$CH" in
+        1) PROFILE="balanced" ;;
+        2) PROFILE="latency" ;;
+        3) PROFILE="throughput" ;;
+        4)
+            if [ "$MEM_MB" -lt 768 ]; then
+                PROFILE="latency"
+                warn "小内存机器，推荐低延迟/轻量参数"
+            elif [ "$MEM_MB" -lt 1536 ]; then
+                PROFILE="balanced"
+                info "1GB 左右机器，推荐均衡模式"
+            else
+                PROFILE="balanced"
+                info "2GB+ 机器，推荐均衡；大流量场景可选高吞吐"
+            fi
+            ;;
+        0) return ;;
+        00) safe_clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;
+        *) warn "无效选项"; return ;;
+    esac
+
+    echo ""
+    read -rp "  确认应用「${PROFILE}」？(Y/n，默认Y): " CONFIRM
+    [ -z "$CONFIRM" ] && CONFIRM="y"
+    if ! echo "$CONFIRM" | grep -qiE '^y(es)?$'; then warn "已取消"; return; fi
+    volcano_tcp_profile "$PROFILE"
+}
+
 bbr_menu() {
     while true; do
         print_header "BBR TCP 调优"
         bbr_print_status
         echo ""
         echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
-        echo -e "  ${GREEN}1${NC}) 自动配置（根据内存 / 延迟 / 带宽计算）"
-        echo -e "  ${GREEN}2${NC}) 手动选择缓冲区大小"
-        echo -e "  ${GREEN}3${NC}) 限速设置（tc）"
-        echo -e "  ${GREEN}4${NC}) initcwnd 设置"
-        echo -e "  ${GREEN}5${NC}) 备份 sysctl.conf"
-        echo -e "  ${GREEN}6${NC}) 还原 sysctl.conf"
-        echo -e "  ${RED}0${NC}) 返回主菜单"
-            echo -e "  ${RED}00${NC}) 退出脚本"
+        echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+        echo -e "  ${GREEN}1${NC}) 智能向导（推荐）"
+        echo -e "  ${GREEN}2${NC}) 自动配置（内存/延迟/带宽）"
+        echo -e "  ${GREEN}3${NC}) 手动选择缓冲区大小"
+        echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+        echo -e "  ${GREEN}4${NC}) 限速设置（tc）   ${GREEN}5${NC}) initcwnd 设置"
+        echo -e "  ${GREEN}6${NC}) 备份 TCP 配置    ${GREEN}7${NC}) 还原 TCP 配置"
+        echo -e "  ${RED}0${NC}) 返回主菜单        ${RED}00${NC}) 退出脚本"
         echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
         echo ""
-        read -rp "  请选择 [0-6]: " CH
+        read -rp "  请选择 [0-7]: " CH
 
         case "$CH" in
-            1) bbr_menu_auto ;;
-            2) bbr_menu_manual ;;
-            3) bbr_menu_tc ;;
-            4) bbr_menu_initcwnd ;;
-            5) bbr_backup_sysctl ;;
-            6) bbr_restore_sysctl ;;
+            1) bbr_smart_wizard ;;
+            2) bbr_menu_auto ;;
+            3) bbr_menu_manual ;;
+            4) bbr_menu_tc ;;
+            5) bbr_menu_initcwnd ;;
+            6) bbr_backup_sysctl ;;
+            7) bbr_restore_sysctl ;;
             0) return ;;
-            00) clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;
+            00) safe_clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;
             *) warn "无效选项"; sleep 1; continue ;;
         esac
 
@@ -2044,17 +2138,12 @@ ufw_menu() {
         else
             echo -e "  ${GREEN}1${NC}) 开启防火墙"
         fi
-        echo -e "  ${GREEN}2${NC}) 查看当前规则"
-        echo -e "  ${GREEN}3${NC}) 添加端口规则"
-        echo -e "  ${GREEN}4${NC}) 删除端口规则"
-        echo -e "  ${GREEN}5${NC}) 拉黑 IP（黑名单）"
-        echo -e "  ${GREEN}6${NC}) 放行 IP（白名单）"
-        echo -e "  ${GREEN}7${NC}) 删除 IP 规则"
+        echo -e "  ${GREEN}2${NC}) 查看规则         ${GREEN}3${NC}) 添加端口"
+        echo -e "  ${GREEN}4${NC}) 删除端口         ${GREEN}5${NC}) 拉黑IP"
+        echo -e "  ${GREEN}6${NC}) 放行IP           ${GREEN}7${NC}) 删除IP规则"
         echo -e "  ${GREEN}8${NC}) 一键放行常用端口"
-        echo -e "  ${YELLOW}9${NC}) 卸载 ufw"
-        echo -e "  ${CYAN}u${NC}) 安装/更新 ufw"
-        echo -e "  ${RED}0${NC}) 返回"
-        echo -e "  ${RED}00${NC}) 退出脚本"
+        echo -e "  ${CYAN}u${NC}) 安装/更新        ${YELLOW}9${NC}) 卸载 ufw"
+        echo -e "  ${RED}0${NC}) 返回              ${RED}00${NC}) 退出脚本"
         echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
         echo ""
         read -rp "  请选择 [0-9/u]: " CH
@@ -2114,7 +2203,7 @@ ufw_menu() {
                 fi
                 ;;
             0) return ;;
-            00) clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;
+            00) safe_clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;
             *) warn "无效选项"; sleep 1; continue ;;
         esac
 
@@ -2311,7 +2400,7 @@ fwd_menu() {
                 fi
                 ;;
             0) return ;;
-            00) clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;
+            00) safe_clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;
             *) warn "无效选项"; sleep 1; continue ;;
         esac
 
@@ -2343,7 +2432,7 @@ firewall_menu() {
                 1) fw_install "ufw";       echo ""; read -rp "  按 Enter 继续..." _ ;;
                 2) fw_install "firewalld"; echo ""; read -rp "  按 Enter 继续..." _ ;;
                 0) return ;;
-                00) clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;
+                00) safe_clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;
                 *) warn "无效选项"; sleep 1 ;;
             esac
             continue
@@ -2374,14 +2463,10 @@ ssh_tools_menu() {
                  "  密码登录 ${BOLD}${CUR_PWD:-未设置}${NC}  |  公钥认证 ${BOLD}${CUR_PUBKEY:-未设置}${NC}"
         echo ""
         echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
-        echo -e "  ${GREEN}1${NC}) 查看已有公钥"
-        echo -e "  ${GREEN}2${NC}) 添加公钥"
-        echo -e "  ${GREEN}3${NC}) 删除公钥"
-        echo -e "  ${GREEN}4${NC}) 生成密钥对"
-        echo -e "  ${GREEN}5${NC}) 设置登录方式"
-        echo -e "  ${GREEN}6${NC}) 修改 SSH 端口"
-        echo -e "  ${RED}0${NC}) 返回主菜单"
-        echo -e "  ${RED}00${NC}) 退出脚本"
+        echo -e "  ${GREEN}1${NC}) 查看已有公钥     ${GREEN}2${NC}) 添加公钥"
+        echo -e "  ${GREEN}3${NC}) 删除公钥         ${GREEN}4${NC}) 生成密钥对"
+        echo -e "  ${GREEN}5${NC}) 设置登录方式     ${GREEN}6${NC}) 修改 SSH 端口"
+        echo -e "  ${RED}0${NC}) 返回主菜单        ${RED}00${NC}) 退出脚本"
         echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
         echo ""
         read -rp "  请选择 [0-6]: " CHOICE
@@ -2395,7 +2480,7 @@ ssh_tools_menu() {
             5) set_login_mode ;;
             6) change_port ;;
             0) return ;;
-            00) clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;
+            00) safe_clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;
             *) warn "无效选项"; sleep 1; NEED_PAUSE=0 ;;
         esac
 
@@ -2531,7 +2616,7 @@ dns_menu() {
                 info "DNS 配置已保存"
                 ;;
             0) return ;;
-            00) clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;
+            00) safe_clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;
             *) warn "无效选项"; sleep 1; continue ;;
         esac
 
@@ -2631,7 +2716,7 @@ mirror_menu() {
                     4) mirror_apply_ubuntu "https://mirrors.ustc.edu.cn/ubuntu" ;;
                     5) mirror_apply_ubuntu "http://archive.ubuntu.com/ubuntu" ;;
                     0) return ;;
-                    00) clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;
+                    00) safe_clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;
                     *) warn "无效选项"; sleep 1; continue ;;
                 esac
                 ;;
@@ -2654,7 +2739,7 @@ mirror_menu() {
                     4) mirror_apply_debian "https://mirrors.ustc.edu.cn/debian" ;;
                     5) mirror_apply_debian "http://deb.debian.org/debian" ;;
                     0) return ;;
-                    00) clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;
+                    00) safe_clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;
                     *) warn "无效选项"; sleep 1; continue ;;
                 esac
                 ;;
@@ -2673,7 +2758,7 @@ mirror_menu() {
                     2) mirror_apply_centos "edu" ;;
                     3) mirror_apply_centos "intl" ;;
                     0) return ;;
-                    00) clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;
+                    00) safe_clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;
                     *) warn "无效选项"; sleep 1; continue ;;
                 esac
                 ;;
@@ -2785,7 +2870,7 @@ ip_disable_v6() {
     [ -z "${CONFIRM}" ] && CONFIRM="y"
     if ! echo "${CONFIRM}" | grep -qiE '^y(es)?$'; then warn "已取消"; return; fi
 
-    local SYSCTL_FILE="/etc/sysctl.conf"
+    local SYSCTL_FILE="/etc/sysctl.d/99-vps-bbr.conf"
 
     # 写入 sysctl
     for KEY in net.ipv6.conf.all.disable_ipv6 net.ipv6.conf.default.disable_ipv6 net.ipv6.conf.lo.disable_ipv6; do
@@ -2811,7 +2896,7 @@ ip_disable_v6() {
 
 ip_enable_v6() {
     print_header "开启 IPv6"
-    local SYSCTL_FILE="/etc/sysctl.conf"
+    local SYSCTL_FILE="/etc/sysctl.d/99-vps-bbr.conf"
 
     # 移除或改为 0
     for KEY in net.ipv6.conf.all.disable_ipv6 net.ipv6.conf.default.disable_ipv6 net.ipv6.conf.lo.disable_ipv6; do
@@ -2858,12 +2943,10 @@ ip_config_menu() {
         echo -e "  优先级：$V4_PREF"
         echo ""
         echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
-        echo -e "  ${GREEN}1${NC}) 查看 IPv4 / IPv6 详细状态"
-        echo -e "  ${GREEN}2${NC}) 设置 IPv4 优先"
-        echo -e "  ${GREEN}3${NC}) 关闭 IPv6"
+        echo -e "  ${GREEN}1${NC}) 查看IPv4/IPv6状态"
+        echo -e "  ${GREEN}2${NC}) 设置IPv4优先      ${GREEN}3${NC}) 关闭 IPv6"
         echo -e "  ${GREEN}4${NC}) 开启 IPv6"
-        echo -e "  ${RED}0${NC}) 返回"
-        echo -e "  ${RED}00${NC}) 退出脚本"
+        echo -e "  ${RED}0${NC}) 返回              ${RED}00${NC}) 退出脚本"
         echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
         echo ""
         read -rp "  请选择 [0-4]: " CH
@@ -2874,7 +2957,7 @@ ip_config_menu() {
             3) ip_disable_v6 ;;
             4) ip_enable_v6 ;;
             0) return ;;
-            00) clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;
+            00) safe_clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;
             *) warn "无效选项"; sleep 1; continue ;;
         esac
 
@@ -3425,7 +3508,7 @@ caddy_menu() {
             case "$CH" in
                 1) caddy_install; echo ""; read -rp "  按 Enter 继续..." _ ;;
                 0) return ;;
-                00) clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;
+                00) safe_clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;
                 *) warn "无效选项"; sleep 1 ;;
             esac
             continue
@@ -3437,23 +3520,18 @@ caddy_menu() {
         echo -e "  服务: ${C_COLOR}${BOLD}${C_ST}${NC}  版本: ${BOLD}${C_VER:-未知}${NC}  站点数: ${BOLD}${SITE_COUNT}${NC}"
         echo ""
         echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
-        echo -e "  ${GREEN}1${NC}) 查看所有站点"
-        echo -e "  ${GREEN}2${NC}) 添加反向代理站点"
-        echo -e "  ${GREEN}3${NC}) 添加静态网站"
-        echo -e "  ${GREEN}4${NC}) 删除站点"
-        echo -e "  ${GREEN}5${NC}) SSL 证书状态"
-        echo -e "  ${GREEN}6${NC}) 查看访问日志"
-        echo -e "  ${GREEN}7${NC}) 编辑 Caddyfile"
-        echo -e "  ${GREEN}8${NC}) 重载配置"
+        echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+        echo -e "  ${GREEN}1${NC}) 查看站点         ${GREEN}2${NC}) 添加反向代理"
+        echo -e "  ${GREEN}3${NC}) 添加静态网站     ${GREEN}4${NC}) 删除站点"
+        echo -e "  ${GREEN}5${NC}) SSL证书状态      ${GREEN}6${NC}) 查看日志"
+        echo -e "  ${GREEN}7${NC}) 编辑Caddyfile    ${GREEN}8${NC}) 重载配置"
         if [ "$C_ST" = "running" ]; then
             echo -e "  ${YELLOW}9${NC}) 停止服务"
         else
             echo -e "  ${GREEN}9${NC}) 启动服务"
         fi
-        echo -e "  ${YELLOW}d${NC}) 卸载 Caddy"
-        echo -e "  ${CYAN}u${NC}) 安装/更新 Caddy"
-        echo -e "  ${RED}0${NC}) 返回"
-        echo -e "  ${RED}00${NC}) 退出脚本"
+        echo -e "  ${CYAN}u${NC}) 安装/更新        ${YELLOW}d${NC}) 卸载 Caddy"
+        echo -e "  ${RED}0${NC}) 返回              ${RED}00${NC}) 退出脚本"
         echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
         echo ""
         read -rp "  请选择: " CH
@@ -3488,7 +3566,7 @@ caddy_menu() {
                 ;;
             d|D) caddy_uninstall ;;
             0) return ;;
-            00) clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;
+            00) safe_clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;
             *) warn "无效选项"; sleep 1; continue ;;
         esac
 
@@ -3721,7 +3799,7 @@ portfwd_menu() {
             case "$CH" in
                 1) pkg_install iptables && info "iptables 安装成功 ✓" || error "安装失败" ;;
                 0) return ;;
-                00) clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;
+                00) safe_clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;
             esac
             echo ""; read -rp "  按 Enter 继续..." _
             continue
@@ -3744,11 +3822,9 @@ portfwd_menu() {
         pf_list
         echo ""
         echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
-        echo -e "  ${GREEN}1${NC}) 添加端口转发"
-        echo -e "  ${GREEN}2${NC}) 删除端口转发"
+        echo -e "  ${GREEN}1${NC}) 添加端口转发     ${GREEN}2${NC}) 删除端口转发"
         echo -e "  ${YELLOW}3${NC}) 清空所有规则"
-        echo -e "  ${RED}0${NC}) 返回"
-        echo -e "  ${RED}00${NC}) 退出脚本"
+        echo -e "  ${RED}0${NC}) 返回              ${RED}00${NC}) 退出脚本"
         echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
         echo ""
         read -rp "  请选择 [0-3]: " CH
@@ -3758,7 +3834,7 @@ portfwd_menu() {
             2) pf_del ;;
             3) pf_flush ;;
             0) return ;;
-            00) clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;
+            00) safe_clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;
             *) warn "无效选项"; sleep 1; continue ;;
         esac
 
@@ -3796,13 +3872,10 @@ timesync_menu() {
         echo -e "  NTP状态 ：${NTP_STATUS}"
         echo ""
         echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
-        echo -e "  ${GREEN}1${NC}) 强制同步时间（立即同步）"
-        echo -e "  ${GREEN}2${NC}) 设置为北京时区（Asia/Shanghai）"
-        echo -e "  ${GREEN}3${NC}) 同步时间 + 设置北京时区（一键）"
-        echo -e "  ${GREEN}4${NC}) 设置其他时区"
-        echo -e "  ${GREEN}5${NC}) 开启 NTP 自动同步"
-        echo -e "  ${RED}0${NC}) 返回"
-        echo -e "  ${RED}00${NC}) 退出脚本"
+        echo -e "  ${GREEN}1${NC}) 强制同步时间"
+        echo -e "  ${GREEN}2${NC}) 设置北京时区      ${GREEN}3${NC}) 一键同步+北京时区"
+        echo -e "  ${GREEN}4${NC}) 设置其他时区      ${GREEN}5${NC}) 开启NTP自动同步"
+        echo -e "  ${RED}0${NC}) 返回              ${RED}00${NC}) 退出脚本"
         echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
         echo ""
         read -rp "  请选择 [0-5]: " CH
@@ -3814,7 +3887,7 @@ timesync_menu() {
             4) ts_set_custom_tz ;;
             5) ts_enable_ntp ;;
             0) return ;;
-            00) clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;
+            00) safe_clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;
             *) warn "无效选项"; sleep 1; continue ;;
         esac
 
@@ -4106,7 +4179,7 @@ swap_create() {
             fi
             ;;
         0) return ;;
-        00) clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;
+        00) safe_clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;
         *) warn "无效选项"; return ;;
     esac
 
@@ -4242,7 +4315,7 @@ swap_set_swappiness() {
             fi
             ;;
         0) return ;;
-        00) clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;
+        00) safe_clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;
         *) warn "无效选项"; return ;;
     esac
 
@@ -4266,11 +4339,9 @@ swap_menu() {
         print_header "Swap 管理"
         swap_show_status
         echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
-        echo -e "  ${GREEN}1${NC}) 创建/更换 Swap"
-        echo -e "  ${GREEN}2${NC}) 删除 Swap"
+        echo -e "  ${GREEN}1${NC}) 创建/更换 Swap   ${GREEN}2${NC}) 删除 Swap"
         echo -e "  ${GREEN}3${NC}) 设置 Swappiness"
-        echo -e "  ${RED}0${NC}) 返回"
-        echo -e "  ${RED}00${NC}) 退出脚本"
+        echo -e "  ${RED}0${NC}) 返回              ${RED}00${NC}) 退出脚本"
         echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
         echo ""
         read -rp "  请选择 [0-3]: " CH
@@ -4280,7 +4351,7 @@ swap_menu() {
             2) swap_delete ;;
             3) swap_set_swappiness ;;
             0) return ;;
-            00) clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;
+            00) safe_clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;
             *) warn "无效选项"; sleep 1; continue ;;
         esac
 
@@ -4441,7 +4512,7 @@ self_check_first_run() {
     clear
     echo ""
     box_top
-    box_title "VPS 开荒脚本 V1.25"
+    box_title "VPS 开荒脚本 V1.27"
     box_line "  ··银趴火山帮··" "  ${DIM}··银趴火山帮··${NC}"
     box_sep
     box_title "首次运行检测"
@@ -4489,10 +4560,9 @@ self_manage_menu() {
         echo ""
         echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
         echo -e "  ${GREEN}1${NC}) 安装脚本 + 设置快捷键 v"
-        echo -e "  ${GREEN}2${NC}) 强制从 GitHub 更新到最新版"
+        echo -e "  ${GREEN}2${NC}) 从 GitHub 更新最新版"
         echo -e "  ${YELLOW}3${NC}) 删除本地脚本和快捷键"
-        echo -e "  ${RED}0${NC}) 返回"
-        echo -e "  ${RED}00${NC}) 退出脚本"
+        echo -e "  ${RED}0${NC}) 返回              ${RED}00${NC}) 退出脚本"
         echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
         echo ""
         read -rp "  请选择 [0-3]: " CH
@@ -4502,7 +4572,7 @@ self_manage_menu() {
             2) self_update ;;
             3) self_uninstall ;;
             0) return ;;
-            00) clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;
+            00) safe_clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;
             *) warn "无效选项"; sleep 1; continue ;;
         esac
 
@@ -4884,7 +4954,7 @@ ddns_menu() {
             case "$CH" in
                 1) ddns_install ;;
                 0) return ;;
-                00) clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;
+                00) safe_clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;
                 *) warn "无效选项"; sleep 1; continue ;;
             esac
         else
@@ -4894,7 +4964,7 @@ ddns_menu() {
                 3) ddns_reconfig ;;
                 4) ddns_uninstall ;;
                 0) return ;;
-                00) clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;
+                00) safe_clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;
                 *) warn "无效选项"; sleep 1; continue ;;
             esac
         fi
@@ -4916,10 +4986,10 @@ main_menu() {
         KEYCOUNT=$(grep -cE '^(ssh-rsa|ssh-ed25519|ecdsa-sha2|sk-ssh|ssh-dss) ' "$AUTH_KEYS" 2>/dev/null || echo 0)
         local F2B_STAT; F2B_STAT=$(f2b_status)
 
-        clear
+        safe_clear
         echo ""
         box_top
-        box_title "VPS 开荒脚本 V1.25"
+        box_title "VPS 开荒脚本 V1.27"
         box_line "  ··银趴火山帮··" "  ${DIM}··银趴火山帮··${NC}"
         box_sep
         # 收集状态数据
@@ -4941,31 +5011,31 @@ main_menu() {
             stopped)       CADDY_COLOR="$RED";    CADDY_LABEL="stopped" ;;
             not_installed) CADDY_COLOR="$YELLOW"; CADDY_LABEL="未安装" ;;
         esac
-        # 按顺序显示
-        box_line "  端口 ${CUR_PORT:-22}  |  公钥数 ${KEYCOUNT}"                  "  端口 ${BOLD}${CUR_PORT:-22}${NC}  |  公钥数 ${BOLD}${KEYCOUNT}${NC}"
-        box_line "  密码登录 ${CUR_PWD:-未设置}  |  公钥认证 ${CUR_PUBKEY:-未设置}"                  "  密码登录 ${BOLD}${CUR_PWD:-未设置}${NC}  |  公钥认证 ${BOLD}${CUR_PUBKEY:-未设置}${NC}"
-        box_line "  BBR: ${BBR_CC}  |  限速: ${TC_RATE}"                  "  BBR: ${BOLD}${BBR_CC}${NC}  |  限速: ${BOLD}${TC_RATE}${NC}"
-        if [ "$F2B_STAT" = "running" ]; then
-            box_line "  Fail2ban: running" "  Fail2ban: ${GREEN}${BOLD}running${NC}"
-        elif [ "$F2B_STAT" = "stopped" ]; then
-            box_line "  Fail2ban: stopped" "  Fail2ban: ${RED}${BOLD}stopped${NC}"
-        else
-            box_line "  Fail2ban: 未安装"  "  Fail2ban: ${YELLOW}${BOLD}未安装${NC}"
-        fi
-        box_line "  防火墙: ${FW_STAT}" "  防火墙: ${FW_COLOR}${BOLD}${FW_STAT}${NC}"
-        box_line "  Caddy: ${CADDY_LABEL}" "  Caddy: ${CADDY_COLOR}${BOLD}${CADDY_LABEL}${NC}"
+        # 状态栏 — SSH
+        local PWD_ICON PUBKEY_ICON
+        [ "$CUR_PWD" = "no" ]  && PWD_ICON="${GREEN}✔${NC}" || PWD_ICON="${YELLOW}●${NC}"
+        [ "$CUR_PUBKEY" = "yes" ] && PUBKEY_ICON="${GREEN}✔${NC}" || PUBKEY_ICON="${YELLOW}●${NC}"
+        box_line "  SSH  端口:${CUR_PORT:-22}  公钥:${KEYCOUNT}个"                  "  ${CYAN}SSH${NC}  端口:${BOLD}${CUR_PORT:-22}${NC}  公钥:${BOLD}${KEYCOUNT}${NC}个  密码:${PWD_ICON}  密钥:${PUBKEY_ICON}"
+        # 状态栏 — 网络
+        box_line "  BBR: ${BBR_CC}  限速: ${TC_RATE}"                  "  ${CYAN}NET${NC}  BBR:${BOLD}${BBR_CC}${NC}  限速:${BOLD}${TC_RATE}${NC}"
+        # 状态栏 — 服务
+        local F2B_ICON FW_ICON CADDY_ICON
+        [ "$F2B_STAT" = "running" ] && F2B_ICON="${GREEN}●${NC}" || { [ "$F2B_STAT" = "stopped" ] && F2B_ICON="${RED}●${NC}" || F2B_ICON="${YELLOW}○${NC}"; }
+        [ "$FW_COLOR" = "$GREEN" ] && FW_ICON="${GREEN}●${NC}" || { [ "$FW_STAT" = "未安装" ] && FW_ICON="${YELLOW}○${NC}" || FW_ICON="${RED}●${NC}"; }
+        [ "$CADDY_COLOR" = "$GREEN" ] && CADDY_ICON="${GREEN}●${NC}" || { [ "$CADDY_LABEL" = "未安装" ] && CADDY_ICON="${YELLOW}○${NC}" || CADDY_ICON="${RED}●${NC}"; }
+        box_line "  SVC  F2B FW Caddy"                  "  ${CYAN}SVC${NC}  F2B:${F2B_ICON}  防火墙:${FW_ICON}  Caddy:${CADDY_ICON}"
+        # 状态栏 — 时间 + DDNS
         local SYS_TIME SYS_TZ
         SYS_TIME=$(date '+%Y-%m-%d %H:%M:%S')
         SYS_TZ=$(timedatectl show --property=Timezone --value 2>/dev/null || date '+%Z')
-        box_line "  时间: ${SYS_TIME}  ${SYS_TZ}" "  时间: ${BOLD}${SYS_TIME}${NC}  ${DIM}${SYS_TZ}${NC}"
         local DDNS_ST; DDNS_ST=$(ddns_status)
         local DDNS_COLOR DDNS_LABEL
         case "$DDNS_ST" in
-            running)       DDNS_COLOR="$GREEN";  DDNS_LABEL="运行中" ;;
-            stopped)       DDNS_COLOR="$RED";    DDNS_LABEL="已停止" ;;
-            not_installed) DDNS_COLOR="$YELLOW"; DDNS_LABEL="未安装" ;;
+            running)       DDNS_COLOR="$GREEN";  DDNS_LABEL="${GREEN}●${NC}" ;;
+            stopped)       DDNS_COLOR="$RED";    DDNS_LABEL="${RED}●${NC}" ;;
+            not_installed) DDNS_COLOR="$YELLOW"; DDNS_LABEL="${YELLOW}○${NC}" ;;
         esac
-        box_line "  DDNS: ${DDNS_LABEL}" "  DDNS: ${DDNS_COLOR}${BOLD}${DDNS_LABEL}${NC}"
+        box_line "  ${SYS_TIME} ${SYS_TZ}  DDNS"                  "  ${DIM}${SYS_TIME} ${SYS_TZ}${NC}  DDNS:${DDNS_LABEL}"
         # 检查是否有新版本提醒
         local UPDATE_NOTICE=""
         if [ -f /tmp/.vps_new_version ]; then
@@ -5010,7 +5080,7 @@ main_menu() {
             s|S) swap_menu ;;
             m|M) self_manage_menu ;;
             d|D) ddns_menu ;;
-            0) clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;
+            0) safe_clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;
             *) warn "无效选项，请重新输入。"; sleep 1 ;;
         esac
         # 子菜单返回后直接刷新主菜单，不需要按 Enter
