@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # ============================================================
-#  VPS 开荒脚本 V3.0.1 — 银趴火山帮
+#  VPS 开荒脚本 V3.0.2 — 银趴火山帮
 #  功能：SSH管理 / Fail2ban / BBR TCP 调优
 # ============================================================
 
@@ -90,7 +90,7 @@ print_header() {
     safe_clear
     echo ""
     box_top
-    box_title "VPS 开荒脚本 V3.0.1"
+    box_title "VPS 开荒脚本 V3.0.2"
     box_line "  ··银趴火山帮··" "  ${DIM}··银趴火山帮··${NC}"
     box_sep
     box_title "$1"
@@ -1127,7 +1127,7 @@ fail2ban_menu() {
         safe_clear
         echo ""
         box_top
-        box_title "VPS 开荒脚本 V3.0.1"
+        box_title "VPS 开荒脚本 V3.0.2"
         box_line "  ··银趴火山帮··" "  ${DIM}··银趴火山帮··${NC}"
         box_sep
         box_title "Fail2ban 管理"
@@ -4526,7 +4526,7 @@ self_check_first_run() {
     clear
     echo ""
     box_top
-    box_title "VPS 开荒脚本 V3.0.1"
+    box_title "VPS 开荒脚本 V3.0.2"
     box_line "  ··银趴火山帮··" "  ${DIM}··银趴火山帮··${NC}"
     box_sep
     box_title "首次运行检测"
@@ -5222,7 +5222,7 @@ self_check_first_run() {
     clear
     echo ""
     box_top
-    box_title "VPS 开荒脚本 V3.0.1"
+    box_title "VPS 开荒脚本 V3.0.2"
     box_line "  ··银趴火山帮··" "  ${DIM}··银趴火山帮··${NC}"
     box_sep
     box_title "首次运行检测"
@@ -5585,103 +5585,6 @@ ddns_reconfig() {
 }
 
 # ── DDNS 主菜单 ───────────────────────────────────────────
-ddns_menu() {
-    while true; do
-        local D_ST; D_ST=$(ddns_status)
-        local D_COLOR D_LABEL
-        case "$D_ST" in
-            running)       D_COLOR="$GREEN";  D_LABEL="运行中" ;;
-            stopped)       D_COLOR="$RED";    D_LABEL="已停止" ;;
-            not_installed) D_COLOR="$YELLOW"; D_LABEL="未安装" ;;
-        esac
-
-        print_header "Cloudflare DDNS"
-
-        # 已安装时显示域名信息；未安装但有历史配置也显示
-        if [ "$D_ST" != "not_installed" ] && [ -f "$DDNS_ZONE_FILE" ]; then
-            local D_DOMAIN D_ZONE
-            D_DOMAIN=$(grep "^DOMAIN=" "$DDNS_ZONE_FILE" | cut -d= -f2)
-            D_ZONE=$(grep "^ZONE=" "$DDNS_ZONE_FILE" | cut -d= -f2)
-            echo -e "  状态 : ${D_COLOR}${BOLD}${D_LABEL}${NC}"
-            echo -e "  域名 : ${BOLD}${D_DOMAIN}${NC}"
-            echo -e "  定时 : ${DIM}每5分钟自动更新${NC}"
-            local LAST_LOG; LAST_LOG=$(tail -1 "$DDNS_LOG" 2>/dev/null || tail -1 "$HOME/ddns.log" 2>/dev/null)
-            [ -n "$LAST_LOG" ] && echo -e "  最新 : ${DIM}${LAST_LOG}${NC}"
-        elif [ -f "$DDNS_ZONE_FILE" ]; then
-            local D_DOMAIN
-            D_DOMAIN=$(grep "^DOMAIN=" "$DDNS_ZONE_FILE" | cut -d= -f2)
-            local D_TOKEN_HINT=""
-            [ -f "$DDNS_TOKEN_FILE" ] && D_TOKEN_HINT="${DIM}Token 已保存${NC}" || D_TOKEN_HINT="${YELLOW}Token 未找到${NC}"
-            echo -e "  状态 : ${D_COLOR}${BOLD}${D_LABEL}${NC}"
-            echo -e "  域名 : ${BOLD}${D_DOMAIN}${NC}"
-            echo -e "  Token : $D_TOKEN_HINT"
-            echo ""
-            echo -e "  ${DIM}检测到历史配置，可重新安装恢复定时任务${NC}"
-        else
-            echo -e "  状态 : ${D_COLOR}${BOLD}${D_LABEL}${NC}"
-            echo ""
-            echo -e "  ${DIM}将动态 DNS 解析到本机 IP，适合家宽/动态 IP 场景${NC}"
-            echo ""
-            echo -e "  ${BOLD}安装前准备：${NC}"
-            echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
-            echo -e "  ${GREEN}①${NC} 域名已托管到 Cloudflare"
-            echo -e "     将域名 NS 记录指向 Cloudflare 提供的 nameserver"
-            echo ""
-            echo -e "  ${GREEN}②${NC} 创建 API Token（需要以下权限）："
-            echo -e "     ${DIM}→ 登录 https://dash.cloudflare.com${NC}"
-            echo -e "     ${DIM}→ 右上角头像 → My Profile → API Tokens${NC}"
-            echo -e "     ${DIM}→ Create Token → Custom Token${NC}"
-            echo -e "     ${DIM}→ 权限：Zone / DNS / Edit${NC}"
-            echo -e "     ${DIM}→ Zone Resources：Include / Specific zone / 你的域名${NC}"
-            echo -e "     ${DIM}→ 点击 Continue to summary → Create Token${NC}"
-            echo -e "     ${DIM}→ 复制 Token（只显示一次！）${NC}"
-            echo ""
-            echo -e "  ${GREEN}③${NC} 准备子域名（如 home.example.com 的 home 部分）"
-            echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
-        fi
-
-        echo ""
-        echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
-
-        if [ "$D_ST" = "not_installed" ]; then
-            echo -e "  ${GREEN}1${NC}) 开始安装配置 DDNS"
-            echo -e "  ${RED}0${NC}) 返回"
-            echo -e "  ${RED}00${NC}) 退出脚本"
-        else
-            echo -e "  ${GREEN}1${NC}) 手动立即更新"
-            echo -e "  ${GREEN}2${NC}) 查看日志"
-            echo -e "  ${GREEN}3${NC}) 修改配置（更换域名/Token）"
-            echo -e "  ${YELLOW}4${NC}) 卸载 DDNS"
-            echo -e "  ${RED}0${NC}) 返回"
-            echo -e "  ${RED}00${NC}) 退出脚本"
-        fi
-
-        echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
-        echo ""
-        read -rp "  请选择: " CH
-
-        if [ "$D_ST" = "not_installed" ]; then
-            case "$CH" in
-                1) ddns_install ;;
-                0) return ;;
-                00) safe_clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;
-                *) warn "无效选项"; sleep 1; continue ;;
-            esac
-        else
-            case "$CH" in
-                1) ddns_run_now ;;
-                2) ddns_view_logs ;;
-                3) ddns_reconfig ;;
-                4) ddns_uninstall ;;
-                0) return ;;
-                00) safe_clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;
-                *) warn "无效选项"; sleep 1; continue ;;
-            esac
-        fi
-
-        [ "${CH}" != "0" ] && { echo ""; read -rp "  按 Enter 返回..." _; }
-    done
-}
 
 
 # ══════════════════════════════════════════════════════════
@@ -5701,7 +5604,7 @@ main_menu() {
         volcano_art_banner
         echo ""
         box_top
-        box_title "VPS 开荒脚本 V3.0.1"
+        box_title "VPS 开荒脚本 V3.0.2"
         box_line "  ··银趴火山帮··" "  ${DIM}··银趴火山帮··${NC}"
         box_sep
         # 收集状态数据
