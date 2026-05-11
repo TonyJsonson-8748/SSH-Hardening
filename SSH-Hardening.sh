@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # ============================================================
-#  VPS 开荒脚本 V3.0.2 — 银趴火山帮
+#  VPS 开荒脚本 V3.0.3 — 银趴火山帮
 #  功能：SSH管理 / Fail2ban / BBR TCP 调优
 # ============================================================
 
@@ -90,7 +90,7 @@ print_header() {
     safe_clear
     echo ""
     box_top
-    box_title "VPS 开荒脚本 V3.0.2"
+    box_title "VPS 开荒脚本 V3.0.3"
     box_line "  ··银趴火山帮··" "  ${DIM}··银趴火山帮··${NC}"
     box_sep
     box_title "$1"
@@ -1127,7 +1127,7 @@ fail2ban_menu() {
         safe_clear
         echo ""
         box_top
-        box_title "VPS 开荒脚本 V3.0.2"
+        box_title "VPS 开荒脚本 V3.0.3"
         box_line "  ··银趴火山帮··" "  ${DIM}··银趴火山帮··${NC}"
         box_sep
         box_title "Fail2ban 管理"
@@ -4488,6 +4488,7 @@ self_uninstall() {
     echo -e "  ${DIM}${LOCAL_SCRIPT}${NC}"
     echo -e "  ${DIM}/usr/local/bin/v${NC}"
     echo -e "  ${DIM}/usr/local/bin/V${NC}"
+    echo -e "  ${DIM}/usr/local/bin/V${NC}"
     echo -e "  ${DIM}各 shell 配置文件中的 alias v=...${NC}"
     echo ""
     read -rp "  确认删除？(Y/n，默认Y): " CONFIRM
@@ -4526,7 +4527,7 @@ self_check_first_run() {
     clear
     echo ""
     box_top
-    box_title "VPS 开荒脚本 V3.0.2"
+    box_title "VPS 开荒脚本 V3.0.3"
     box_line "  ··银趴火山帮··" "  ${DIM}··银趴火山帮··${NC}"
     box_sep
     box_title "首次运行检测"
@@ -5184,6 +5185,7 @@ self_uninstall() {
     echo -e "  ${DIM}${LOCAL_SCRIPT}${NC}"
     echo -e "  ${DIM}/usr/local/bin/v${NC}"
     echo -e "  ${DIM}/usr/local/bin/V${NC}"
+    echo -e "  ${DIM}/usr/local/bin/V${NC}"
     echo -e "  ${DIM}各 shell 配置文件中的 alias v=...${NC}"
     echo ""
     read -rp "  确认删除？(Y/n，默认Y): " CONFIRM
@@ -5222,7 +5224,7 @@ self_check_first_run() {
     clear
     echo ""
     box_top
-    box_title "VPS 开荒脚本 V3.0.2"
+    box_title "VPS 开荒脚本 V3.0.3"
     box_line "  ··银趴火山帮··" "  ${DIM}··银趴火山帮··${NC}"
     box_sep
     box_title "首次运行检测"
@@ -5604,7 +5606,7 @@ main_menu() {
         volcano_art_banner
         echo ""
         box_top
-        box_title "VPS 开荒脚本 V3.0.2"
+        box_title "VPS 开荒脚本 V3.0.3"
         box_line "  ··银趴火山帮··" "  ${DIM}··银趴火山帮··${NC}"
         box_sep
         # 收集状态数据
