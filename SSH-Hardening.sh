@@ -4407,14 +4407,30 @@ self_install() {
     info "脚本已安装到 ${LOCAL_SCRIPT} ✓"
 
     # 创建系统级命令 v / V（最可靠，无需 source）
-    ln -sf "$LOCAL_SCRIPT" /usr/local/bin/v 2>/dev/null && info "系统命令 v 已创建 ✓"
-    ln -sf "$LOCAL_SCRIPT" /usr/local/bin/V 2>/dev/null && info "系统命令 V 已创建 ✓"
+    # 检测 v/V 是否已被其他脚本占用
+    for _CMD in v V; do
+        local _TARGET="/usr/local/bin/${_CMD}"
+        if [ -L "$_TARGET" ] && [ "$(readlink "$_TARGET")" != "$LOCAL_SCRIPT" ]; then
+            warn "快捷键 ${_CMD} 已被其他脚本占用（$(readlink "$_TARGET")），跳过"
+        elif [ -f "$_TARGET" ] && [ ! -L "$_TARGET" ]; then
+            warn "快捷键 ${_CMD} 是独立文件（非软链接），跳过以避免覆盖"
+        else
+            ln -sf "$LOCAL_SCRIPT" "$_TARGET" 2>/dev/null && info "系统命令 ${_CMD} 已创建 ✓"
+        fi
+    done
 
     # 写入 alias 到 shell 配置（增强兼容性）
     local WROTE_ALIAS=false
     for RC in /root/.bashrc /root/.bash_profile ~/.bashrc ~/.bash_profile ~/.zshrc; do
         [ -f "$RC" ] || continue
-        if ! grep -q "alias v=" "$RC" 2>/dev/null; then
+        # 检测 alias v 是否已被其他脚本写入
+        if grep -q "alias v=" "$RC" 2>/dev/null; then
+            if grep "alias v=" "$RC" | grep -q "$LOCAL_SCRIPT"; then
+                : # 已是本脚本，跳过
+            else
+                warn "alias v 在 ${RC} 中已被其他脚本占用，跳过"
+            fi
+        else
             {
                 echo ""
                 echo "# VPS 开荒脚本快捷键"
@@ -4504,8 +4520,9 @@ self_uninstall() {
     # 清理 shell 配置文件中的 alias
     for RC in /root/.bashrc /root/.bash_profile ~/.bashrc ~/.bash_profile ~/.zshrc; do
         [ -f "$RC" ] || continue
-        if grep -q "alias v=" "$RC" 2>/dev/null; then
-            grep -v "alias v=\|alias V=\|VPS 开荒脚本快捷键" "$RC" > "${RC}.tmp"                 && mv "${RC}.tmp" "$RC"
+        if grep -q "VPS 开荒脚本快捷键" "$RC" 2>/dev/null; then
+            grep -v "alias v=\|alias V=\|VPS 开荒脚本快捷键" "$RC" > "${RC}.tmp" \
+                && mv "${RC}.tmp" "$RC"
             info "已清理 ${RC} ✓"
         fi
     done
@@ -5104,14 +5121,30 @@ self_install() {
     info "脚本已安装到 ${LOCAL_SCRIPT} ✓"
 
     # 创建系统级命令 v / V（最可靠，无需 source）
-    ln -sf "$LOCAL_SCRIPT" /usr/local/bin/v 2>/dev/null && info "系统命令 v 已创建 ✓"
-    ln -sf "$LOCAL_SCRIPT" /usr/local/bin/V 2>/dev/null && info "系统命令 V 已创建 ✓"
+    # 检测 v/V 是否已被其他脚本占用
+    for _CMD in v V; do
+        local _TARGET="/usr/local/bin/${_CMD}"
+        if [ -L "$_TARGET" ] && [ "$(readlink "$_TARGET")" != "$LOCAL_SCRIPT" ]; then
+            warn "快捷键 ${_CMD} 已被其他脚本占用（$(readlink "$_TARGET")），跳过"
+        elif [ -f "$_TARGET" ] && [ ! -L "$_TARGET" ]; then
+            warn "快捷键 ${_CMD} 是独立文件（非软链接），跳过以避免覆盖"
+        else
+            ln -sf "$LOCAL_SCRIPT" "$_TARGET" 2>/dev/null && info "系统命令 ${_CMD} 已创建 ✓"
+        fi
+    done
 
     # 写入 alias 到 shell 配置（增强兼容性）
     local WROTE_ALIAS=false
     for RC in /root/.bashrc /root/.bash_profile ~/.bashrc ~/.bash_profile ~/.zshrc; do
         [ -f "$RC" ] || continue
-        if ! grep -q "alias v=" "$RC" 2>/dev/null; then
+        # 检测 alias v 是否已被其他脚本写入
+        if grep -q "alias v=" "$RC" 2>/dev/null; then
+            if grep "alias v=" "$RC" | grep -q "$LOCAL_SCRIPT"; then
+                : # 已是本脚本，跳过
+            else
+                warn "alias v 在 ${RC} 中已被其他脚本占用，跳过"
+            fi
+        else
             {
                 echo ""
                 echo "# VPS 开荒脚本快捷键"
@@ -5201,8 +5234,9 @@ self_uninstall() {
     # 清理 shell 配置文件中的 alias
     for RC in /root/.bashrc /root/.bash_profile ~/.bashrc ~/.bash_profile ~/.zshrc; do
         [ -f "$RC" ] || continue
-        if grep -q "alias v=" "$RC" 2>/dev/null; then
-            grep -v "alias v=\|alias V=\|VPS 开荒脚本快捷键" "$RC" > "${RC}.tmp"                 && mv "${RC}.tmp" "$RC"
+        if grep -q "VPS 开荒脚本快捷键" "$RC" 2>/dev/null; then
+            grep -v "alias v=\|alias V=\|VPS 开荒脚本快捷键" "$RC" > "${RC}.tmp" \
+                && mv "${RC}.tmp" "$RC"
             info "已清理 ${RC} ✓"
         fi
     done
