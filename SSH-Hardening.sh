@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # ============================================================
-#  VPS 开荒脚本 V3.0.4 — 银趴火山帮
+#  VPS 开荒脚本 V3.0.5 — 银趴火山帮
 #  功能：SSH管理 / Fail2ban / BBR TCP 调优
 # ============================================================
 
@@ -90,7 +90,7 @@ print_header() {
     safe_clear
     echo ""
     box_top
-    box_title "VPS 开荒脚本 V3.0.4"
+    box_title "VPS 开荒脚本 V3.0.5"
     box_line "  ··银趴火山帮··" "  ${DIM}··银趴火山帮··${NC}"
     box_sep
     box_title "$1"
@@ -1127,7 +1127,7 @@ fail2ban_menu() {
         safe_clear
         echo ""
         box_top
-        box_title "VPS 开荒脚本 V3.0.4"
+        box_title "VPS 开荒脚本 V3.0.5"
         box_line "  ··银趴火山帮··" "  ${DIM}··银趴火山帮··${NC}"
         box_sep
         box_title "Fail2ban 管理"
@@ -4533,7 +4533,7 @@ self_check_first_run() {
     clear
     echo ""
     box_top
-    box_title "VPS 开荒脚本 V3.0.4"
+    box_title "VPS 开荒脚本 V3.0.5"
     box_line "  ··银趴火山帮··" "  ${DIM}··银趴火山帮··${NC}"
     box_sep
     box_title "首次运行检测"
@@ -4637,7 +4637,7 @@ ddns_log_path() {
 
 ddns_ensure_cron() {
     command -v crontab &>/dev/null && return 0
-    info "未检测到 crontab，尝试安装 cron 环境..."
+    info "未检测到 crontab，正在安装 cron..."
     if command -v apt-get &>/dev/null; then
         apt-get update -qq 2>/dev/null
         apt-get install -y cron 2>/dev/null || apt-get install -y cronie 2>/dev/null || return 1
@@ -4648,9 +4648,19 @@ ddns_ensure_cron() {
     elif command -v dnf &>/dev/null; then
         dnf install -y cronie 2>/dev/null || return 1
     else
+        error "找不到包管理器，请手动安装 cron：apt-get install -y cron"
         return 1
     fi
-    command -v crontab &>/dev/null
+    # 安装后立即启动服务
+    ddns_start_cron_service >/dev/null 2>&1 || true
+    sleep 1
+    if command -v crontab &>/dev/null; then
+        info "cron 安装并启动成功 ✓"
+        return 0
+    else
+        error "cron 安装后仍无法使用，请重新登录后重试"
+        return 1
+    fi
 }
 
 ddns_start_cron_service() {
@@ -4671,7 +4681,7 @@ ddns_status() {
     if [ ! -f "$DDNS_SCRIPT" ]; then
         echo "not_installed"
     elif ! command -v crontab &>/dev/null; then
-        echo "stopped"
+        echo "no_cron"
     elif ! crontab -l 2>/dev/null | grep -q "ddns.sh"; then
         echo "stopped"
     else
@@ -4902,9 +4912,12 @@ ddns_pause() {
 
 ddns_resume() {
     [ ! -f "$DDNS_SCRIPT" ] && { error "DDNS 未安装"; return; }
-    if ! ddns_ensure_cron; then
-        error "无法安装 cron，请手动安装后重试"
-        return
+    if ! command -v crontab &>/dev/null; then
+        info "检测到 cron 未安装，正在自动安装..."
+        if ! ddns_ensure_cron; then
+            error "cron 安装失败，请手动执行：apt-get install -y cron"
+            return
+        fi
     fi
     local LOG; LOG=$(ddns_log_path)
     local CRON_JOB="*/5 * * * * ${DDNS_SCRIPT} >> ${LOG} 2>&1"
@@ -4977,7 +4990,8 @@ ddns_menu() {
         local D_COLOR D_LABEL
         case "$D_ST" in
             running)       D_COLOR="$GREEN";  D_LABEL="运行中" ;;
-            stopped)       D_COLOR="$RED";    D_LABEL="已停止" ;;
+            stopped)       D_COLOR="$RED";    D_LABEL="已停止（cron任务未设置）" ;;
+            no_cron)       D_COLOR="$RED";    D_LABEL="已停止（cron未安装）" ;;
             not_installed) D_COLOR="$YELLOW"; D_LABEL="未安装" ;;
         esac
 
@@ -5042,6 +5056,8 @@ ddns_menu() {
             echo -e "  ${GREEN}3${NC}) 修改配置"
             if [ "$D_ST" = "running" ]; then
                 echo -e "  ${YELLOW}4${NC}) 暂停自动更新     ${YELLOW}5${NC}) 卸载 DDNS"
+            elif [ "$D_ST" = "no_cron" ]; then
+                echo -e "  ${GREEN}4${NC}) 安装 cron 并恢复  ${YELLOW}5${NC}) 卸载 DDNS"
             else
                 echo -e "  ${GREEN}4${NC}) 恢复自动更新     ${YELLOW}5${NC}) 卸载 DDNS"
             fi
@@ -5236,7 +5252,7 @@ self_check_first_run() {
     clear
     echo ""
     box_top
-    box_title "VPS 开荒脚本 V3.0.4"
+    box_title "VPS 开荒脚本 V3.0.5"
     box_line "  ··银趴火山帮··" "  ${DIM}··银趴火山帮··${NC}"
     box_sep
     box_title "首次运行检测"
@@ -5618,7 +5634,7 @@ main_menu() {
         volcano_art_banner
         echo ""
         box_top
-        box_title "VPS 开荒脚本 V3.0.4"
+        box_title "VPS 开荒脚本 V3.0.5"
         box_line "  ··银趴火山帮··" "  ${DIM}··银趴火山帮··${NC}"
         box_sep
         # 收集状态数据
