@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # ============================================================
-#  VPS 开荒脚本 V3.0.3 — 银趴火山帮
+#  VPS 开荒脚本 V3.0.4 — 银趴火山帮
 #  功能：SSH管理 / Fail2ban / BBR TCP 调优
 # ============================================================
 
@@ -90,7 +90,7 @@ print_header() {
     safe_clear
     echo ""
     box_top
-    box_title "VPS 开荒脚本 V3.0.3"
+    box_title "VPS 开荒脚本 V3.0.4"
     box_line "  ··银趴火山帮··" "  ${DIM}··银趴火山帮··${NC}"
     box_sep
     box_title "$1"
@@ -1127,7 +1127,7 @@ fail2ban_menu() {
         safe_clear
         echo ""
         box_top
-        box_title "VPS 开荒脚本 V3.0.3"
+        box_title "VPS 开荒脚本 V3.0.4"
         box_line "  ··银趴火山帮··" "  ${DIM}··银趴火山帮··${NC}"
         box_sep
         box_title "Fail2ban 管理"
@@ -4419,33 +4419,13 @@ self_install() {
         fi
     done
 
-    # 写入 alias 到 shell 配置（增强兼容性）
+    # 不写入 alias，只用软链接，避免前缀冲突其他命令（如 volss）
     local WROTE_ALIAS=false
-    for RC in /root/.bashrc /root/.bash_profile ~/.bashrc ~/.bash_profile ~/.zshrc; do
-        [ -f "$RC" ] || continue
-        # 检测 alias v 是否已被其他脚本写入
-        if grep -q "alias v=" "$RC" 2>/dev/null; then
-            if grep "alias v=" "$RC" | grep -q "$LOCAL_SCRIPT"; then
-                : # 已是本脚本，跳过
-            else
-                warn "alias v 在 ${RC} 中已被其他脚本占用，跳过"
-            fi
-        else
-            {
-                echo ""
-                echo "# VPS 开荒脚本快捷键"
-                echo "alias v='${LOCAL_SCRIPT}'"
-                echo "alias V='${LOCAL_SCRIPT}'"
-            } >> "$RC"
-            info "alias 已写入 ${RC} ✓"
-            WROTE_ALIAS=true
-        fi
-    done
 
     echo ""
     echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
     info "安装完成！新终端直接输入 ${BOLD}v${NC} 即可启动"
-    echo -e "  ${DIM}当前终端可执行：source ~/.bashrc${NC}"
+    echo -e "  ${DIM}软链接已创建，无需 source，新终端直接可用${NC}"
     echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
 }
 
@@ -4489,6 +4469,15 @@ self_update() {
     ln -sf "$LOCAL_SCRIPT" /usr/local/bin/V 2>/dev/null
 
     info "更新完成 ✓"
+    # 清理旧版写入的 alias（旧版本会写 alias v=，会拦截其他命令如 volss）
+    for RC in /root/.bashrc /root/.bash_profile ~/.bashrc ~/.bash_profile ~/.zshrc; do
+        [ -f "$RC" ] || continue
+        if grep -q "VPS 开荒脚本快捷键" "$RC" 2>/dev/null; then
+            grep -v "alias v=\|alias V=\|VPS 开荒脚本快捷键" "$RC" > "${RC}.tmp" \
+                && mv "${RC}.tmp" "$RC"
+            info "已清理旧版 alias（${RC}）✓"
+        fi
+    done
     # 清除更新提示，避免新版本启动后还显示旧提示
     rm -f /tmp/.vps_new_version 2>/dev/null
     warn "即将用新版本重启脚本..."
@@ -4517,13 +4506,13 @@ self_uninstall() {
     # 删除系统命令
     rm -f /usr/local/bin/v /usr/local/bin/V && info "已删除系统命令 v/V ✓"
 
-    # 清理 shell 配置文件中的 alias
+    # 清理 shell 配置文件中可能残留的旧版 alias
     for RC in /root/.bashrc /root/.bash_profile ~/.bashrc ~/.bash_profile ~/.zshrc; do
         [ -f "$RC" ] || continue
         if grep -q "VPS 开荒脚本快捷键" "$RC" 2>/dev/null; then
             grep -v "alias v=\|alias V=\|VPS 开荒脚本快捷键" "$RC" > "${RC}.tmp" \
                 && mv "${RC}.tmp" "$RC"
-            info "已清理 ${RC} ✓"
+            info "已清理旧版 alias（${RC}）✓"
         fi
     done
 
@@ -4544,7 +4533,7 @@ self_check_first_run() {
     clear
     echo ""
     box_top
-    box_title "VPS 开荒脚本 V3.0.3"
+    box_title "VPS 开荒脚本 V3.0.4"
     box_line "  ··银趴火山帮··" "  ${DIM}··银趴火山帮··${NC}"
     box_sep
     box_title "首次运行检测"
@@ -5133,33 +5122,13 @@ self_install() {
         fi
     done
 
-    # 写入 alias 到 shell 配置（增强兼容性）
+    # 不写入 alias，只用软链接，避免前缀冲突其他命令（如 volss）
     local WROTE_ALIAS=false
-    for RC in /root/.bashrc /root/.bash_profile ~/.bashrc ~/.bash_profile ~/.zshrc; do
-        [ -f "$RC" ] || continue
-        # 检测 alias v 是否已被其他脚本写入
-        if grep -q "alias v=" "$RC" 2>/dev/null; then
-            if grep "alias v=" "$RC" | grep -q "$LOCAL_SCRIPT"; then
-                : # 已是本脚本，跳过
-            else
-                warn "alias v 在 ${RC} 中已被其他脚本占用，跳过"
-            fi
-        else
-            {
-                echo ""
-                echo "# VPS 开荒脚本快捷键"
-                echo "alias v='${LOCAL_SCRIPT}'"
-                echo "alias V='${LOCAL_SCRIPT}'"
-            } >> "$RC"
-            info "alias 已写入 ${RC} ✓"
-            WROTE_ALIAS=true
-        fi
-    done
 
     echo ""
     echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
     info "安装完成！新终端直接输入 ${BOLD}v${NC} 即可启动"
-    echo -e "  ${DIM}当前终端可执行：source ~/.bashrc${NC}"
+    echo -e "  ${DIM}软链接已创建，无需 source，新终端直接可用${NC}"
     echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
 }
 
@@ -5203,6 +5172,15 @@ self_update() {
     ln -sf "$LOCAL_SCRIPT" /usr/local/bin/V 2>/dev/null
 
     info "更新完成 ✓"
+    # 清理旧版写入的 alias（旧版本会写 alias v=，会拦截其他命令如 volss）
+    for RC in /root/.bashrc /root/.bash_profile ~/.bashrc ~/.bash_profile ~/.zshrc; do
+        [ -f "$RC" ] || continue
+        if grep -q "VPS 开荒脚本快捷键" "$RC" 2>/dev/null; then
+            grep -v "alias v=\|alias V=\|VPS 开荒脚本快捷键" "$RC" > "${RC}.tmp" \
+                && mv "${RC}.tmp" "$RC"
+            info "已清理旧版 alias（${RC}）✓"
+        fi
+    done
     # 清除更新提示，避免新版本启动后还显示旧提示
     rm -f /tmp/.vps_new_version 2>/dev/null
     warn "即将用新版本重启脚本..."
@@ -5231,13 +5209,13 @@ self_uninstall() {
     # 删除系统命令
     rm -f /usr/local/bin/v /usr/local/bin/V && info "已删除系统命令 v/V ✓"
 
-    # 清理 shell 配置文件中的 alias
+    # 清理 shell 配置文件中可能残留的旧版 alias
     for RC in /root/.bashrc /root/.bash_profile ~/.bashrc ~/.bash_profile ~/.zshrc; do
         [ -f "$RC" ] || continue
         if grep -q "VPS 开荒脚本快捷键" "$RC" 2>/dev/null; then
             grep -v "alias v=\|alias V=\|VPS 开荒脚本快捷键" "$RC" > "${RC}.tmp" \
                 && mv "${RC}.tmp" "$RC"
-            info "已清理 ${RC} ✓"
+            info "已清理旧版 alias（${RC}）✓"
         fi
     done
 
@@ -5258,7 +5236,7 @@ self_check_first_run() {
     clear
     echo ""
     box_top
-    box_title "VPS 开荒脚本 V3.0.3"
+    box_title "VPS 开荒脚本 V3.0.4"
     box_line "  ··银趴火山帮··" "  ${DIM}··银趴火山帮··${NC}"
     box_sep
     box_title "首次运行检测"
@@ -5640,7 +5618,7 @@ main_menu() {
         volcano_art_banner
         echo ""
         box_top
-        box_title "VPS 开荒脚本 V3.0.3"
+        box_title "VPS 开荒脚本 V3.0.4"
         box_line "  ··银趴火山帮··" "  ${DIM}··银趴火山帮··${NC}"
         box_sep
         # 收集状态数据
