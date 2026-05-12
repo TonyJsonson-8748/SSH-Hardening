@@ -4951,6 +4951,83 @@ ddns_resume() {
 }
 
 # ── 卸载 DDNS ─────────────────────────────────────────────
+# ── Telegram 通知配置 ─────────────────────────────────────
+ddns_tg_config() {
+    print_header "Telegram 通知配置"
+    echo -e "  ${DIM}IP 变化时自动发送 Telegram 通知${NC}"
+    echo ""
+
+    if [ -f "$DDNS_TG_FILE" ]; then
+        local CUR_BOT CUR_CHAT
+        CUR_BOT=$(grep "^BOT_TOKEN=" "$DDNS_TG_FILE" | cut -d= -f2-)
+        CUR_CHAT=$(grep "^CHAT_ID=" "$DDNS_TG_FILE" | cut -d= -f2-)
+        echo -e "  当前状态：${GREEN}${BOLD}已配置${NC}"
+        echo -e "  Bot Token：${DIM}${CUR_BOT:0:10}…${NC}"
+        echo -e "  Chat ID  ：${BOLD}${CUR_CHAT}${NC}"
+    else
+        echo -e "  当前状态：${YELLOW}未配置${NC}"
+    fi
+
+    echo ""
+    echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+    echo -e "  ${DIM}如何获取：${NC}"
+    echo -e "  ${DIM}① Telegram 搜索 @BotFather → /newbot 创建机器人${NC}"
+    echo -e "  ${DIM}② 获取 Bot Token（格式：123456:ABC-xxx）${NC}"
+    echo -e "  ${DIM}③ 与机器人发一条消息，再访问：${NC}"
+    echo -e "  ${DIM}   https://api.telegram.org/bot<TOKEN>/getUpdates${NC}"
+    echo -e "  ${DIM}④ 从返回的 chat.id 字段获取 Chat ID${NC}"
+    echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+    echo ""
+    echo -e "  ${GREEN}1${NC}) 配置 Telegram 通知"
+    echo -e "  ${GREEN}2${NC}) 发送测试消息"
+    [ -f "$DDNS_TG_FILE" ] && echo -e "  ${YELLOW}3${NC}) 关闭 Telegram 通知"
+    echo -e "  ${RED}0${NC}) 返回"
+    echo ""
+    read -rp "  请选择: " CH
+
+    case "$CH" in
+        1)
+            echo ""
+            read -rp "  Bot Token: " TG_BOT
+            [ -z "$TG_BOT" ] && { warn "已取消"; return; }
+            read -rp "  Chat ID: " TG_CHAT
+            [ -z "$TG_CHAT" ] && { warn "已取消"; return; }
+            {
+                echo "BOT_TOKEN=${TG_BOT}"
+                echo "CHAT_ID=${TG_CHAT}"
+            } > "$DDNS_TG_FILE"
+            chmod 600 "$DDNS_TG_FILE"
+            info "Telegram 通知已配置 ✓"
+            ;;
+        2)
+            if [ ! -f "$DDNS_TG_FILE" ]; then
+                error "请先配置 Telegram 通知"; return
+            fi
+            local BOT CHAT
+            BOT=$(grep "^BOT_TOKEN=" "$DDNS_TG_FILE" | cut -d= -f2-)
+            CHAT=$(grep "^CHAT_ID=" "$DDNS_TG_FILE" | cut -d= -f2-)
+            info "发送测试消息..."
+            local RESP
+            RESP=$(curl -s --max-time 10 \
+                "https://api.telegram.org/bot${BOT}/sendMessage" \
+                --data-urlencode "chat_id=${CHAT}" \
+                --data-urlencode "text=🔔 DDNS 通知测试
+域名：$(ddns_cfg_get DOMAIN)
+时间：$(date '+%Y-%m-%d %H:%M:%S')
+✅ 通知配置成功！" \
+                -d "parse_mode=HTML")
+            echo "$RESP" | python3 -c \
+                "import sys,json; d=json.load(sys.stdin); print('发送成功 ✓' if d.get('ok') else '发送失败：' + str(d.get('description','')))" 2>/dev/null \
+                | while IFS= read -r l; do info "$l"; done
+            ;;
+        3)
+            rm -f "$DDNS_TG_FILE" && info "Telegram 通知已关闭 ✓"
+            ;;
+        0) return ;;
+        *) warn "无效选项" ;;
+    esac
+}
+
 ddns_uninstall() {
     print_header "卸载 DDNS"
     warn "将移除 crontab 定时任务、DDNS 脚本和 Token 文件"
