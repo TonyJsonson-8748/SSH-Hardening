@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # ============================================================
-#  VPS 开荒脚本 V3.0.6 — 银趴火山帮
+#  VPS 开荒脚本 V3.0.7 — 银趴火山帮
 #  功能：SSH管理 / Fail2ban / BBR TCP 调优
 # ============================================================
 
@@ -90,7 +90,7 @@ print_header() {
     safe_clear
     echo ""
     box_top
-    box_title "VPS 开荒脚本 V3.0.6"
+    box_title "VPS 开荒脚本 V3.0.7"
     box_line "  ··银趴火山帮··" "  ${DIM}··银趴火山帮··${NC}"
     box_sep
     box_title "$1"
@@ -1127,7 +1127,7 @@ fail2ban_menu() {
         safe_clear
         echo ""
         box_top
-        box_title "VPS 开荒脚本 V3.0.6"
+        box_title "VPS 开荒脚本 V3.0.7"
         box_line "  ··银趴火山帮··" "  ${DIM}··银趴火山帮··${NC}"
         box_sep
         box_title "Fail2ban 管理"
@@ -4534,7 +4534,7 @@ self_check_first_run() {
     clear
     echo ""
     box_top
-    box_title "VPS 开荒脚本 V3.0.6"
+    box_title "VPS 开荒脚本 V3.0.7"
     box_line "  ··银趴火山帮··" "  ${DIM}··银趴火山帮··${NC}"
     box_sep
     box_title "首次运行检测"
@@ -4612,6 +4612,7 @@ DDNS_SCRIPT="/root/ddns.sh"
 DDNS_TOKEN_FILE="/root/.cf_token"
 DDNS_LOG="/var/log/ddns.log"
 DDNS_ZONE_FILE="/root/.cf_zone"
+DDNS_TG_FILE="/root/.cf_tg"    # Telegram 通知配置
 
 cf_json_get() {
     local expr="$1"
@@ -4821,9 +4822,25 @@ PROXIED="__PROXIED__"
 TTL="__TTL__"
 TOKEN_FILE="/root/.cf_token"
 LOG_FILE="/var/log/ddns.log"
+TG_FILE="/root/.cf_tg"
 
 API_TOKEN=$(cat "$TOKEN_FILE" 2>/dev/null)
 [ -z "$API_TOKEN" ] && exit 1
+
+# 读取 Telegram 配置
+TG_BOT_TOKEN=""
+TG_CHAT_ID=""
+if [ -f "$TG_FILE" ]; then
+    TG_BOT_TOKEN=$(grep "^BOT_TOKEN=" "$TG_FILE" | cut -d= -f2-)
+    TG_CHAT_ID=$(grep "^CHAT_ID=" "$TG_FILE" | cut -d= -f2-)
+fi
+
+# 发送 Telegram 通知
+tg_notify() {
+    local MSG="$1"
+    [ -z "$TG_BOT_TOKEN" ] || [ -z "$TG_CHAT_ID" ] && return 0
+    curl -s --max-time 10         "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage"         -d "chat_id=${TG_CHAT_ID}"         -d "text=${MSG}"         -d "parse_mode=HTML"         > /dev/null 2>&1
+}
 
 CURRENT_IP4=$(curl -4 -s --max-time 5 https://api.ipify.org 2>/dev/null     || curl -4 -s --max-time 5 https://ifconfig.me/ip 2>/dev/null | tr -d '
  '     || curl -4 -s --max-time 5 https://ip.sb 2>/dev/null | tr -d '
@@ -4863,6 +4880,12 @@ update_record() {
     SUCCESS=$(echo "$RESULT" | python3 -c         "import sys,json; print(json.load(sys.stdin).get('success'))" 2>/dev/null)
     if [ "$SUCCESS" = "True" ]; then
         echo "[$(date '+%Y-%m-%d %H:%M:%S')] OK: ${TYPE} 更新成功 ${OLD_IP} → ${NEW_IP}" >> "$LOG_FILE"
+        tg_notify "🌐 <b>DDNS IP 已更新</b>
+域名：<code>${DOMAIN}</code>
+类型：${TYPE}
+旧IP：<code>${OLD_IP}</code>
+新IP：<code>${NEW_IP}</code>
+时间：$(date '+%Y-%m-%d %H:%M:%S')"
     else
         echo "[$(date '+%Y-%m-%d %H:%M:%S')] ERROR: ${TYPE} 更新失败 $RESULT" >> "$LOG_FILE"
         return 1
@@ -5054,7 +5077,7 @@ ddns_menu() {
             echo -e "  ${RED}0${NC}) 返回  ${RED}00${NC}) 退出脚本"
         else
             echo -e "  ${GREEN}1${NC}) 手动立即更新     ${GREEN}2${NC}) 查看日志"
-            echo -e "  ${GREEN}3${NC}) 修改配置"
+            echo -e "  ${GREEN}3${NC}) 修改配置         ${GREEN}6${NC}) Telegram 通知"
             if [ "$D_ST" = "running" ]; then
                 echo -e "  ${YELLOW}4${NC}) 暂停自动更新     ${YELLOW}5${NC}) 卸载 DDNS"
             elif [ "$D_ST" = "no_cron" ]; then
@@ -5085,6 +5108,7 @@ ddns_menu() {
                    echo "$C" | grep -qiE '^y(es)?$' && ddns_install || warn "已取消" ;;
                 4) [ "$D_ST" = "running" ] && ddns_pause || ddns_resume ;;
                 5) ddns_uninstall ;;
+                6) ddns_tg_config ;;
                 0) return ;;
                 00) safe_clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;
                 *) warn "无效选项"; sleep 1; continue ;;
@@ -5253,7 +5277,7 @@ self_check_first_run() {
     clear
     echo ""
     box_top
-    box_title "VPS 开荒脚本 V3.0.6"
+    box_title "VPS 开荒脚本 V3.0.7"
     box_line "  ··银趴火山帮··" "  ${DIM}··银趴火山帮··${NC}"
     box_sep
     box_title "首次运行检测"
@@ -5330,7 +5354,8 @@ self_manage_menu() {
 DDNS_SCRIPT="/root/ddns.sh"
 DDNS_TOKEN_FILE="/root/.cf_token"
 DDNS_LOG="/var/log/ddns.log"
-DDNS_ZONE_FILE="/root/.cf_zone"   # 保存 zone/domain 信息
+DDNS_ZONE_FILE="/root/.cf_zone"
+DDNS_TG_FILE="/root/.cf_tg"    # Telegram 通知配置   # 保存 zone/domain 信息
 
 # ── 检测 DDNS 安装状态 ────────────────────────────────────
 ddns_status() {
@@ -5635,7 +5660,7 @@ main_menu() {
         volcano_art_banner
         echo ""
         box_top
-        box_title "VPS 开荒脚本 V3.0.6"
+        box_title "VPS 开荒脚本 V3.0.7"
         box_line "  ··银趴火山帮··" "  ${DIM}··银趴火山帮··${NC}"
         box_sep
         # 收集状态数据
