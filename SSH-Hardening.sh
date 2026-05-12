@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # ============================================================
-#  VPS 开荒脚本 V3.0.5 — 银趴火山帮
+#  VPS 开荒脚本 V3.0.6 — 银趴火山帮
 #  功能：SSH管理 / Fail2ban / BBR TCP 调优
 # ============================================================
 
@@ -90,7 +90,7 @@ print_header() {
     safe_clear
     echo ""
     box_top
-    box_title "VPS 开荒脚本 V3.0.5"
+    box_title "VPS 开荒脚本 V3.0.6"
     box_line "  ··银趴火山帮··" "  ${DIM}··银趴火山帮··${NC}"
     box_sep
     box_title "$1"
@@ -1127,7 +1127,7 @@ fail2ban_menu() {
         safe_clear
         echo ""
         box_top
-        box_title "VPS 开荒脚本 V3.0.5"
+        box_title "VPS 开荒脚本 V3.0.6"
         box_line "  ··银趴火山帮··" "  ${DIM}··银趴火山帮··${NC}"
         box_sep
         box_title "Fail2ban 管理"
@@ -2452,12 +2452,13 @@ firewall_menu() {
             continue
         fi
 
-        # 已安装：进入对应子菜单（返回后重新检测）
+        # 已安装：直接进子菜单，子菜单按 0 返回后退出 firewall_menu
         case "$FW_TYPE" in
             ufw)       ufw_menu ;;
             firewalld) fwd_menu ;;
         esac
-        # 子菜单返回（可能是卸载后返回），重新循环检测
+        # 子菜单返回后（按 0 或卸载后）直接返回主菜单
+        return
     done
 }
 
@@ -4533,7 +4534,7 @@ self_check_first_run() {
     clear
     echo ""
     box_top
-    box_title "VPS 开荒脚本 V3.0.5"
+    box_title "VPS 开荒脚本 V3.0.6"
     box_line "  ··银趴火山帮··" "  ${DIM}··银趴火山帮··${NC}"
     box_sep
     box_title "首次运行检测"
@@ -5252,7 +5253,7 @@ self_check_first_run() {
     clear
     echo ""
     box_top
-    box_title "VPS 开荒脚本 V3.0.5"
+    box_title "VPS 开荒脚本 V3.0.6"
     box_line "  ··银趴火山帮··" "  ${DIM}··银趴火山帮··${NC}"
     box_sep
     box_title "首次运行检测"
@@ -5634,7 +5635,7 @@ main_menu() {
         volcano_art_banner
         echo ""
         box_top
-        box_title "VPS 开荒脚本 V3.0.5"
+        box_title "VPS 开荒脚本 V3.0.6"
         box_line "  ··银趴火山帮··" "  ${DIM}··银趴火山帮··${NC}"
         box_sep
         # 收集状态数据
