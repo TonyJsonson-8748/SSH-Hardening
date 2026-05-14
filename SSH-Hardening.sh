@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # ============================================================
-#  VPS 开荒脚本 V3.0.7 — 银趴火山帮
+#  VPS 开荒脚本 V3.0.8 — 银趴火山帮
 #  功能：SSH管理 / Fail2ban / BBR TCP 调优
 # ============================================================
 
@@ -90,7 +90,7 @@ print_header() {
     safe_clear
     echo ""
     box_top
-    box_title "VPS 开荒脚本 V3.0.7"
+    box_title "VPS 开荒脚本 V3.0.8"
     box_line "  ··银趴火山帮··" "  ${DIM}··银趴火山帮··${NC}"
     box_sep
     box_title "$1"
@@ -1127,7 +1127,7 @@ fail2ban_menu() {
         safe_clear
         echo ""
         box_top
-        box_title "VPS 开荒脚本 V3.0.7"
+        box_title "VPS 开荒脚本 V3.0.8"
         box_line "  ··银趴火山帮··" "  ${DIM}··银趴火山帮··${NC}"
         box_sep
         box_title "Fail2ban 管理"
@@ -4534,7 +4534,7 @@ self_check_first_run() {
     clear
     echo ""
     box_top
-    box_title "VPS 开荒脚本 V3.0.7"
+    box_title "VPS 开荒脚本 V3.0.8"
     box_line "  ··银趴火山帮··" "  ${DIM}··银趴火山帮··${NC}"
     box_sep
     box_title "首次运行检测"
@@ -4815,6 +4815,9 @@ ddns_install() {
     # 生成 DDNS 执行脚本
     cat > "$DDNS_SCRIPT" << 'DDNS_INNER'
 #!/bin/bash
+# 注入 PATH，确保 crontab 环境下能找到 curl / python3
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
 DOMAIN="__DOMAIN__"
 ZONE="__ZONE__"
 MODE="__MODE__"
@@ -4822,24 +4825,20 @@ PROXIED="__PROXIED__"
 TTL="__TTL__"
 TOKEN_FILE="/root/.cf_token"
 LOG_FILE="/var/log/ddns.log"
-TG_FILE="/root/.cf_tg"
 
 API_TOKEN=$(cat "$TOKEN_FILE" 2>/dev/null)
 [ -z "$API_TOKEN" ] && exit 1
 
-# 读取 Telegram 配置
-TG_BOT_TOKEN=""
-TG_CHAT_ID=""
-if [ -f "$TG_FILE" ]; then
-    TG_BOT_TOKEN=$(grep "^BOT_TOKEN=" "$TG_FILE" | cut -d= -f2-)
-    TG_CHAT_ID=$(grep "^CHAT_ID=" "$TG_FILE" | cut -d= -f2-)
-fi
-
-# 发送 Telegram 通知
+# 发送 Telegram 通知（每次调用时实时读取配置文件，避免 crontab 变量丢失）
 tg_notify() {
     local MSG="$1"
-    [ -z "$TG_BOT_TOKEN" ] || [ -z "$TG_CHAT_ID" ] && return 0
-    curl -s --max-time 10         "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage"         -d "chat_id=${TG_CHAT_ID}"         -d "text=${MSG}"         -d "parse_mode=HTML"         > /dev/null 2>&1
+    local TG_FILE="/root/.cf_tg"
+    [ -f "$TG_FILE" ] || return 0
+    local B_TOKEN C_ID
+    B_TOKEN=$(grep "^BOT_TOKEN=" "$TG_FILE" | cut -d= -f2-)
+    C_ID=$(grep "^CHAT_ID=" "$TG_FILE" | cut -d= -f2-)
+    [ -z "$B_TOKEN" ] || [ -z "$C_ID" ] && return 0
+    curl -s --max-time 15         "https://api.telegram.org/bot${B_TOKEN}/sendMessage"         -d "chat_id=${C_ID}"         -d "text=${MSG}"         -d "parse_mode=HTML" > /dev/null 2>&1
 }
 
 CURRENT_IP4=$(curl -4 -s --max-time 5 https://api.ipify.org 2>/dev/null     || curl -4 -s --max-time 5 https://ifconfig.me/ip 2>/dev/null | tr -d '
@@ -5354,7 +5353,7 @@ self_check_first_run() {
     clear
     echo ""
     box_top
-    box_title "VPS 开荒脚本 V3.0.7"
+    box_title "VPS 开荒脚本 V3.0.8"
     box_line "  ··银趴火山帮··" "  ${DIM}··银趴火山帮··${NC}"
     box_sep
     box_title "首次运行检测"
@@ -5737,7 +5736,7 @@ main_menu() {
         volcano_art_banner
         echo ""
         box_top
-        box_title "VPS 开荒脚本 V3.0.7"
+        box_title "VPS 开荒脚本 V3.0.8"
         box_line "  ··银趴火山帮··" "  ${DIM}··银趴火山帮··${NC}"
         box_sep
         # 收集状态数据
