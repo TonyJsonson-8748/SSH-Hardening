@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # ============================================================
-#  VPS 开荒脚本 V3.0.9 — 银趴火山帮
+#  VPS 开荒脚本 V3.1.0 — 银趴火山帮
 #  功能：SSH管理 / Fail2ban / BBR TCP 调优
 # ============================================================
 
@@ -90,7 +90,7 @@ print_header() {
     safe_clear
     echo ""
     box_top
-    box_title "VPS 开荒脚本 V3.0.9"
+    box_title "VPS 开荒脚本 V3.1.0"
     box_line "  ··银趴火山帮··" "  ${DIM}··银趴火山帮··${NC}"
     box_sep
     box_title "$1"
@@ -1127,7 +1127,7 @@ fail2ban_menu() {
         safe_clear
         echo ""
         box_top
-        box_title "VPS 开荒脚本 V3.0.9"
+        box_title "VPS 开荒脚本 V3.1.0"
         box_line "  ··银趴火山帮··" "  ${DIM}··银趴火山帮··${NC}"
         box_sep
         box_title "Fail2ban 管理"
@@ -4534,7 +4534,7 @@ self_check_first_run() {
     clear
     echo ""
     box_top
-    box_title "VPS 开荒脚本 V3.0.9"
+    box_title "VPS 开荒脚本 V3.1.0"
     box_line "  ··银趴火山帮··" "  ${DIM}··银趴火山帮··${NC}"
     box_sep
     box_title "首次运行检测"
@@ -5353,7 +5353,7 @@ self_check_first_run() {
     clear
     echo ""
     box_top
-    box_title "VPS 开荒脚本 V3.0.9"
+    box_title "VPS 开荒脚本 V3.1.0"
     box_line "  ··银趴火山帮··" "  ${DIM}··银趴火山帮··${NC}"
     box_sep
     box_title "首次运行检测"
@@ -5643,6 +5643,9 @@ DDNS_INNER
 
     sed -i "s/__DOMAIN__/${DDNS_DOMAIN}/g" "$DDNS_SCRIPT"
     sed -i "s/__ZONE__/${DDNS_ZONE}/g" "$DDNS_SCRIPT"
+    sed -i "s/__MODE__/${DDNS_MODE:-ipv4}/g" "$DDNS_SCRIPT"
+    sed -i "s/__PROXIED__/${DDNS_PROXIED:-false}/g" "$DDNS_SCRIPT"
+    sed -i "s/__TTL__/${DDNS_TTL:-60}/g" "$DDNS_SCRIPT"
     chmod +x "$DDNS_SCRIPT"
 
     # 创建日志文件
@@ -5770,7 +5773,7 @@ main_menu() {
         volcano_art_banner
         echo ""
         box_top
-        box_title "VPS 开荒脚本 V3.0.9"
+        box_title "VPS 开荒脚本 V3.1.0"
         box_line "  ··银趴火山帮··" "  ${DIM}··银趴火山帮··${NC}"
         box_sep
         # 收集状态数据
