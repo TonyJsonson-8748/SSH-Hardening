@@ -1,12 +1,14 @@
 #!/bin/bash
 
 # ============================================================
-#  VPS 开荒脚本 V3.1.1 — 银趴火山帮
+#  VPS 开荒脚本 V3.1.3 — 银趴火山帮
 #  功能：SSH管理 / Fail2ban / BBR TCP 调优
 # ============================================================
 
 SSHD_CONFIG="/etc/ssh/sshd_config"
-AUTH_KEYS="$HOME/.ssh/authorized_keys"
+# 优先使用 /root/.ssh/authorized_keys，兼容系统预装公钥路径
+AUTH_KEYS="${HOME}/.ssh/authorized_keys"
+[ "$(id -u)" = "0" ] && AUTH_KEYS="/root/.ssh/authorized_keys"
 
 RED=$'\033[0;31m'
 GREEN=$'\033[0;32m'
@@ -90,7 +92,7 @@ print_header() {
     safe_clear
     echo ""
     box_top
-    box_title "VPS 开荒脚本 V3.1.1"
+    box_title "VPS 开荒脚本 V3.1.3"
     box_line "  ··银趴火山帮··" "  ${DIM}··银趴火山帮··${NC}"
     box_sep
     box_title "$1"
@@ -337,13 +339,13 @@ apply_and_restart() {
 }
 
 list_keys() {
-    if [ ! -f "$AUTH_KEYS" ] || ! grep -qE '^(ssh-rsa|ssh-ed25519|ecdsa-sha2|sk-ssh|ssh-dss) ' "$AUTH_KEYS" 2>/dev/null; then
+    if [ ! -f "$AUTH_KEYS" ] || ! grep -qE '^(ssh-rsa|ssh-ed25519|ecdsa-sha2|sk-ssh|sk-ecdsa|ssh-dss) ' "$AUTH_KEYS" 2>/dev/null; then
         echo -e "  ${YELLOW}（暂无公钥）${NC}"
         return 1
     fi
     local i=1
     while IFS= read -r line; do
-        if echo "$line" | grep -qE '^(ssh-rsa|ssh-ed25519|ecdsa-sha2|sk-ssh|ssh-dss) '; then
+        if echo "$line" | grep -qE '^(ssh-rsa|ssh-ed25519|ecdsa-sha2|sk-ssh|sk-ecdsa|ssh-dss) '; then
             local TYPE COMMENT FINGER
             TYPE=$(echo "$line" | awk '{print $1}')
             COMMENT=$(echo "$line" | awk '{print $3}')
@@ -421,18 +423,27 @@ add_key() {
         warn "未输入任何内容，已取消。"
         return
     fi
-    if ! echo "$PUBKEY_INPUT" | grep -qE '^(ssh-rsa|ssh-ed25519|ecdsa-sha2|sk-ssh|ssh-dss) '; then
+    if ! echo "$PUBKEY_INPUT" | grep -qE '^(ssh-rsa|ssh-ed25519|ecdsa-sha2|sk-ssh|sk-ecdsa|ssh-dss) '; then
         error "公钥格式不正确，应以密钥类型开头（如 ssh-ed25519）。"
         return
     fi
 
     mkdir -p "$HOME/.ssh"
     chmod 700 "$HOME/.ssh"
+
+    # 检查是否已存在相同公钥（取类型+主体比较，忽略备注差异）
+    local KEY_BODY
+    KEY_BODY=$(echo "$PUBKEY_INPUT" | awk '{print $1, $2}')
+    if grep -qF "$KEY_BODY" "$AUTH_KEYS" 2>/dev/null; then
+        warn "该公钥已存在，跳过添加（避免重复）"
+        return
+    fi
+
     echo "$PUBKEY_INPUT" >> "$AUTH_KEYS"
     chmod 600 "$AUTH_KEYS"
 
     local TOTAL
-    TOTAL=$(grep -cE '^(ssh-rsa|ssh-ed25519|ecdsa-sha2|sk-ssh|ssh-dss) ' "$AUTH_KEYS")
+    TOTAL=$(grep -cE '^(ssh-rsa|ssh-ed25519|ecdsa-sha2|sk-ssh|sk-ecdsa|ssh-dss) ' "$AUTH_KEYS")
     info "公钥已添加！当前共 $TOTAL 个公钥 ✓"
 }
 
@@ -453,7 +464,7 @@ delete_key() {
 
     local i=1 TARGET_LINE=""
     while IFS= read -r line; do
-        if echo "$line" | grep -qE '^(ssh-rsa|ssh-ed25519|ecdsa-sha2|sk-ssh|ssh-dss) '; then
+        if echo "$line" | grep -qE '^(ssh-rsa|ssh-ed25519|ecdsa-sha2|sk-ssh|sk-ecdsa|ssh-dss) '; then
             if [ "$i" -eq "$DEL_NUM" ]; then TARGET_LINE="$line"; break; fi
             i=$((i+1))
         fi
@@ -539,11 +550,17 @@ generate_key() {
     [ -z "${ADD_CONFIRM}" ] && ADD_CONFIRM="y"
     if echo "${ADD_CONFIRM}" | grep -qiE '^y(es)?$'; then
         mkdir -p "$HOME/.ssh"; chmod 700 "$HOME/.ssh"
-        echo "$PUBKEY" >> "$AUTH_KEYS"; chmod 600 "$AUTH_KEYS"
-        local TOTAL
-        TOTAL=$(grep -cE '^(ssh-rsa|ssh-ed25519|ecdsa-sha2|sk-ssh|ssh-dss) ' "$AUTH_KEYS")
-        echo ""
-        info "公钥已添加到服务器！当前共 $TOTAL 个公钥 ✓"
+        local KEY_BODY
+        KEY_BODY=$(echo "$PUBKEY" | awk '{print $1, $2}')
+        if grep -qF "$KEY_BODY" "$AUTH_KEYS" 2>/dev/null; then
+            warn "该公钥已存在于服务器，跳过添加"
+        else
+            echo "$PUBKEY" >> "$AUTH_KEYS"; chmod 600 "$AUTH_KEYS"
+            local TOTAL
+            TOTAL=$(grep -cE '^(ssh-rsa|ssh-ed25519|ecdsa-sha2|sk-ssh|sk-ecdsa|ssh-dss) ' "$AUTH_KEYS")
+            echo ""
+            info "公钥已添加到服务器！当前共 $TOTAL 个公钥 ✓"
+        fi
     else
         warn "已跳过，公钥未添加到服务器。"
     fi
@@ -577,7 +594,7 @@ set_login_mode() {
     case "$MODE" in
         1)
             local KEYCOUNT
-            KEYCOUNT=$(grep -cE '^(ssh-rsa|ssh-ed25519|ecdsa-sha2|sk-ssh|ssh-dss) ' "$AUTH_KEYS" 2>/dev/null || echo 0)
+            KEYCOUNT=$(grep -cE '^(ssh-rsa|ssh-ed25519|ecdsa-sha2|sk-ssh|sk-ecdsa|ssh-dss) ' "$AUTH_KEYS" 2>/dev/null || echo 0)
         local F2B_STAT; F2B_STAT=$(f2b_status)
             if [ "$KEYCOUNT" -eq 0 ]; then
                 warn "当前没有公钥！启用仅密钥登录后将无法通过密码登录！"
@@ -1127,7 +1144,7 @@ fail2ban_menu() {
         safe_clear
         echo ""
         box_top
-        box_title "VPS 开荒脚本 V3.1.1"
+        box_title "VPS 开荒脚本 V3.1.3"
         box_line "  ··银趴火山帮··" "  ${DIM}··银趴火山帮··${NC}"
         box_sep
         box_title "Fail2ban 管理"
@@ -2469,7 +2486,7 @@ ssh_tools_menu() {
         CUR_PORT=$(get_config "Port")
         CUR_PWD=$(get_config "PasswordAuthentication")
         CUR_PUBKEY=$(get_config "PubkeyAuthentication")
-        KEYCOUNT=$(grep -cE '^(ssh-rsa|ssh-ed25519|ecdsa-sha2|sk-ssh|ssh-dss) ' "$AUTH_KEYS" 2>/dev/null || echo 0)
+        KEYCOUNT=$(grep -cE '^(ssh-rsa|ssh-ed25519|ecdsa-sha2|sk-ssh|sk-ecdsa|ssh-dss) ' "$AUTH_KEYS" 2>/dev/null || echo 0)
 
         print_header "SSH 工具集"
         box_line "  端口 ${CUR_PORT:-22}  |  公钥数 ${KEYCOUNT}" \
@@ -4534,7 +4551,7 @@ self_check_first_run() {
     clear
     echo ""
     box_top
-    box_title "VPS 开荒脚本 V3.1.1"
+    box_title "VPS 开荒脚本 V3.1.3"
     box_line "  ··银趴火山帮··" "  ${DIM}··银趴火山帮··${NC}"
     box_sep
     box_title "首次运行检测"
@@ -5360,7 +5377,7 @@ self_check_first_run() {
     clear
     echo ""
     box_top
-    box_title "VPS 开荒脚本 V3.1.1"
+    box_title "VPS 开荒脚本 V3.1.3"
     box_line "  ··银趴火山帮··" "  ${DIM}··银趴火山帮··${NC}"
     box_sep
     box_title "首次运行检测"
@@ -5779,7 +5796,7 @@ main_menu() {
         CUR_PORT=$(get_config "Port")
         CUR_PWD=$(get_config "PasswordAuthentication")
         CUR_PUBKEY=$(get_config "PubkeyAuthentication")
-        KEYCOUNT=$(grep -cE '^(ssh-rsa|ssh-ed25519|ecdsa-sha2|sk-ssh|ssh-dss) ' "$AUTH_KEYS" 2>/dev/null || echo 0)
+        KEYCOUNT=$(grep -cE '^(ssh-rsa|ssh-ed25519|ecdsa-sha2|sk-ssh|sk-ecdsa|ssh-dss) ' "$AUTH_KEYS" 2>/dev/null || echo 0)
         local F2B_STAT; F2B_STAT=$(f2b_status)
 
         safe_clear
@@ -5787,7 +5804,7 @@ main_menu() {
         volcano_art_banner
         echo ""
         box_top
-        box_title "VPS 开荒脚本 V3.1.1"
+        box_title "VPS 开荒脚本 V3.1.3"
         box_line "  ··银趴火山帮··" "  ${DIM}··银趴火山帮··${NC}"
         box_sep
         # 收集状态数据
