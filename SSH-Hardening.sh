@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # ============================================================
-#  VPS 开荒脚本 V3.0.8 — 银趴火山帮
+#  VPS 开荒脚本 V3.0.9 — 银趴火山帮
 #  功能：SSH管理 / Fail2ban / BBR TCP 调优
 # ============================================================
 
@@ -90,7 +90,7 @@ print_header() {
     safe_clear
     echo ""
     box_top
-    box_title "VPS 开荒脚本 V3.0.8"
+    box_title "VPS 开荒脚本 V3.0.9"
     box_line "  ··银趴火山帮··" "  ${DIM}··银趴火山帮··${NC}"
     box_sep
     box_title "$1"
@@ -1127,7 +1127,7 @@ fail2ban_menu() {
         safe_clear
         echo ""
         box_top
-        box_title "VPS 开荒脚本 V3.0.8"
+        box_title "VPS 开荒脚本 V3.0.9"
         box_line "  ··银趴火山帮··" "  ${DIM}··银趴火山帮··${NC}"
         box_sep
         box_title "Fail2ban 管理"
@@ -4534,7 +4534,7 @@ self_check_first_run() {
     clear
     echo ""
     box_top
-    box_title "VPS 开荒脚本 V3.0.8"
+    box_title "VPS 开荒脚本 V3.0.9"
     box_line "  ··银趴火山帮··" "  ${DIM}··银趴火山帮··${NC}"
     box_sep
     box_title "首次运行检测"
@@ -5353,7 +5353,7 @@ self_check_first_run() {
     clear
     echo ""
     box_top
-    box_title "VPS 开荒脚本 V3.0.8"
+    box_title "VPS 开荒脚本 V3.0.9"
     box_line "  ··银趴火山帮··" "  ${DIM}··银趴火山帮··${NC}"
     box_sep
     box_title "首次运行检测"
@@ -5555,58 +5555,92 @@ ddns_install() {
     # 生成 DDNS 执行脚本
     cat > "$DDNS_SCRIPT" << 'DDNS_INNER'
 #!/bin/bash
+# 注入 PATH，确保 crontab 环境下能找到 curl / python3
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
 DOMAIN="__DOMAIN__"
 ZONE="__ZONE__"
+MODE="__MODE__"
+PROXIED="__PROXIED__"
+TTL="__TTL__"
 TOKEN_FILE="/root/.cf_token"
 LOG_FILE="/var/log/ddns.log"
 
 API_TOKEN=$(cat "$TOKEN_FILE" 2>/dev/null)
 [ -z "$API_TOKEN" ] && exit 1
 
-# 获取当前公网 IP（多源备用）
-CURRENT_IP=$(curl -s --max-time 5 https://api.ipify.org 2>/dev/null \
-    || curl -s --max-time 5 https://ifconfig.me 2>/dev/null \
-    || curl -s --max-time 5 https://ip.sb 2>/dev/null)
+# 发送 Telegram 通知（实时读取配置，兼容 crontab 环境）
+tg_notify() {
+    local MSG="$1"
+    local TG_FILE="/root/.cf_tg"
+    [ -f "$TG_FILE" ] || return 0
+    local B_TOKEN C_ID
+    B_TOKEN=$(grep "^BOT_TOKEN=" "$TG_FILE" | cut -d= -f2-)
+    C_ID=$(grep "^CHAT_ID=" "$TG_FILE" | cut -d= -f2-)
+    [ -z "$B_TOKEN" ] || [ -z "$C_ID" ] && return 0
+    curl -s --max-time 15         "https://api.telegram.org/bot${B_TOKEN}/sendMessage"         -d "chat_id=${C_ID}"         -d "text=${MSG}"         -d "parse_mode=HTML" > /dev/null 2>&1
+}
 
-if [ -z "$CURRENT_IP" ]; then
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] ERROR: 无法获取公网 IP" >> "$LOG_FILE"
-    exit 1
+CURRENT_IP4=$(curl -4 -s --max-time 5 https://api.ipify.org 2>/dev/null     || curl -4 -s --max-time 5 https://ifconfig.me/ip 2>/dev/null | tr -d '
+ '     || curl -4 -s --max-time 5 https://ip.sb 2>/dev/null | tr -d '
+ ')
+CURRENT_IP6=""
+if [ "$MODE" = "dual" ]; then
+    CURRENT_IP6=$(curl -6 -s --max-time 5 https://api64.ipify.org 2>/dev/null         || curl -6 -s --max-time 5 https://ipv6.icanhazip.com 2>/dev/null | tr -d '
+ ')
 fi
 
-ZONE_ID=$(curl -s --max-time 8 "https://api.cloudflare.com/client/v4/zones?name=${ZONE}" \
-    -H "Authorization: Bearer ${API_TOKEN}" | \
-    python3 -c "import sys,json; print(json.load(sys.stdin)['result'][0]['id'])" 2>/dev/null)
-
-RECORD_ID=$(curl -s --max-time 8 "https://api.cloudflare.com/client/v4/zones/${ZONE_ID}/dns_records?name=${DOMAIN}&type=A" \
-    -H "Authorization: Bearer ${API_TOKEN}" | \
-    python3 -c "import sys,json; print(json.load(sys.stdin)['result'][0]['id'])" 2>/dev/null)
-
-CF_IP=$(curl -s --max-time 8 "https://api.cloudflare.com/client/v4/zones/${ZONE_ID}/dns_records/${RECORD_ID}" \
-    -H "Authorization: Bearer ${API_TOKEN}" | \
-    python3 -c "import sys,json; print(json.load(sys.stdin)['result']['content'])" 2>/dev/null)
-
-if [ "$CURRENT_IP" = "$CF_IP" ]; then
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] OK: IP 未变化 ${CURRENT_IP}" >> "$LOG_FILE"
-    exit 0
-fi
-
-RESULT=$(curl -s -X PUT --max-time 10 \
-    "https://api.cloudflare.com/client/v4/zones/${ZONE_ID}/dns_records/${RECORD_ID}" \
-    -H "Authorization: Bearer ${API_TOKEN}" \
-    -H "Content-Type: application/json" \
-    --data "{\"type\":\"A\",\"name\":\"${DOMAIN}\",\"content\":\"${CURRENT_IP}\",\"ttl\":60,\"proxied\":false}")
-
-SUCCESS=$(echo "$RESULT" | python3 -c "import sys,json; print(json.load(sys.stdin)['success'])" 2>/dev/null)
-
-if [ "$SUCCESS" = "True" ]; then
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] OK: 更新成功 ${CF_IP} → ${CURRENT_IP}" >> "$LOG_FILE"
-else
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] ERROR: 更新失败 $RESULT" >> "$LOG_FILE"
+[ -z "$CURRENT_IP4" ] && {
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] ERROR: 无法获取公网 IPv4" >> "$LOG_FILE"
     exit 1
+}
+
+ZONE_ID=$(curl -s --max-time 8 "https://api.cloudflare.com/client/v4/zones?name=${ZONE}"     -H "Authorization: Bearer ${API_TOKEN}" |     python3 -c "import sys,json; print(json.load(sys.stdin)['result'][0]['id'])" 2>/dev/null)
+[ -z "$ZONE_ID" ] && {
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] ERROR: 获取 Zone ID 失败" >> "$LOG_FILE"
+    exit 1
+}
+
+update_record() {
+    local TYPE="$1" NEW_IP="$2"
+    [ -z "$NEW_IP" ] && return 0
+    local RECORD_ID OLD_IP RESULT SUCCESS
+    RECORD_ID=$(curl -s --max-time 8         "https://api.cloudflare.com/client/v4/zones/${ZONE_ID}/dns_records?name=${DOMAIN}&type=${TYPE}"         -H "Authorization: Bearer ${API_TOKEN}" |         python3 -c "import sys,json; print(json.load(sys.stdin)['result'][0]['id'])" 2>/dev/null)
+    [ -z "$RECORD_ID" ] && {
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] ERROR: ${TYPE} 记录不存在" >> "$LOG_FILE"
+        return 1
+    }
+    OLD_IP=$(curl -s --max-time 8         "https://api.cloudflare.com/client/v4/zones/${ZONE_ID}/dns_records/${RECORD_ID}"         -H "Authorization: Bearer ${API_TOKEN}" |         python3 -c "import sys,json; print(json.load(sys.stdin)['result']['content'])" 2>/dev/null)
+    if [ "$NEW_IP" = "$OLD_IP" ]; then
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] OK: ${TYPE} 未变化 ${NEW_IP}" >> "$LOG_FILE"
+        return 0
+    fi
+    RESULT=$(curl -s -X PUT --max-time 10         "https://api.cloudflare.com/client/v4/zones/${ZONE_ID}/dns_records/${RECORD_ID}"         -H "Authorization: Bearer ${API_TOKEN}"         -H "Content-Type: application/json"         --data "{"type":"${TYPE}","name":"${DOMAIN}","content":"${NEW_IP}","ttl":${TTL},"proxied":${PROXIED}}")
+    SUCCESS=$(echo "$RESULT" | python3 -c         "import sys,json; print(json.load(sys.stdin).get('success'))" 2>/dev/null)
+    if [ "$SUCCESS" = "True" ]; then
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] OK: ${TYPE} 更新成功 ${OLD_IP} → ${NEW_IP}" >> "$LOG_FILE"
+        tg_notify "🌐 <b>DDNS IP 已更新</b>
+域名：<code>${DOMAIN}</code>
+类型：${TYPE}
+旧IP：<code>${OLD_IP}</code>
+新IP：<code>${NEW_IP}</code>
+时间：$(date '+%Y-%m-%d %H:%M:%S')"
+    else
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] ERROR: ${TYPE} 更新失败 $RESULT" >> "$LOG_FILE"
+        return 1
+    fi
+}
+
+update_record A "$CURRENT_IP4"
+if [ "$MODE" = "dual" ]; then
+    if [ -n "$CURRENT_IP6" ]; then
+        update_record AAAA "$CURRENT_IP6"
+    else
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] WARN: 未获取到公网 IPv6，跳过 AAAA" >> "$LOG_FILE"
+    fi
 fi
 DDNS_INNER
 
-    # 替换占位符
     sed -i "s/__DOMAIN__/${DDNS_DOMAIN}/g" "$DDNS_SCRIPT"
     sed -i "s/__ZONE__/${DDNS_ZONE}/g" "$DDNS_SCRIPT"
     chmod +x "$DDNS_SCRIPT"
@@ -5736,7 +5770,7 @@ main_menu() {
         volcano_art_banner
         echo ""
         box_top
-        box_title "VPS 开荒脚本 V3.0.8"
+        box_title "VPS 开荒脚本 V3.0.9"
         box_line "  ··银趴火山帮··" "  ${DIM}··银趴火山帮··${NC}"
         box_sep
         # 收集状态数据
