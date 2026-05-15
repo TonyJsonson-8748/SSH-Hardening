@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # ============================================================
-#  VPS 开荒脚本 V3.1.5 — 银趴火山帮
+#  VPS 开荒脚本 V3.1.7 — 银趴火山帮
 #  功能：SSH管理 / Fail2ban / BBR TCP 调优
 # ============================================================
 
@@ -87,12 +87,47 @@ box_empty() {
     echo ""
 }
 
+
+# ── 通用编辑器（兼容 Alpine/OpenWrt 等精简系统）────────────
+get_editor() {
+    for ed in nano vi vim; do
+        command -v "$ed" &>/dev/null && echo "$ed" && return
+    done
+    echo "vi"  # 最后兜底，几乎所有系统都有 vi
+}
+
+open_editor() {
+    local FILE="$1"
+    local ED; ED=$(get_editor)
+    if ! command -v "$ED" &>/dev/null; then
+        # vi 也没有，尝试安装 nano
+        warn "未找到编辑器，尝试安装 nano..."
+        pkg_install nano &>/dev/null || pkg_install vim &>/dev/null || true
+        ED=$(get_editor)
+    fi
+    "$ED" "$FILE"
+}
+
+# ── 确保 sysctl 可用（Alpine 需要 procps 或 sysctl 包）────
+ensure_sysctl() {
+    command -v sysctl &>/dev/null && return 0
+    warn "sysctl 未找到，正在安装..."
+    if command -v apk &>/dev/null; then
+        apk add --no-cache procps 2>/dev/null || apk add --no-cache sysctl 2>/dev/null || true
+    else
+        pkg_install procps 2>/dev/null || true
+    fi
+    command -v sysctl &>/dev/null && return 0
+    error "sysctl 安装失败，请手动执行：apk add procps"
+    return 1
+}
+
 # 统一标题栏
 print_header() {
     safe_clear
     echo ""
     box_top
-    box_title "VPS 开荒脚本 V3.1.5"
+    box_title "VPS 开荒脚本 V3.1.7"
     box_line "  ··银趴火山帮··" "  ${DIM}··银趴火山帮··${NC}"
     box_sep
     box_title "$1"
@@ -913,21 +948,21 @@ f2b_config_params() {
             echo ""
             echo -e "  常用参考：3600=1小时  86400=1天  604800=7天  -1=永久"
             read -rp "  请输入新的 bantime（秒）: " VAL
-            [[ "$VAL" =~ ^-?[0-9]+$ ]] || { error "无效数值"; return; }
+            echo "$VAL" | grep -qE '^-?[0-9]+$' || { error "无效数值"; return; }
             f2b_set_param "bantime" "$VAL"
             ;;
         2)
             echo ""
             echo -e "  常用参考：300=5分钟  600=10分钟  3600=1小时"
             read -rp "  请输入新的 findtime（秒）: " VAL
-            [[ "$VAL" =~ ^[0-9]+$ ]] || { error "无效数值"; return; }
+            echo "$VAL" | grep -qE '^[0-9]+$' || { error "无效数值"; return; }
             f2b_set_param "findtime" "$VAL"
             ;;
         3)
             echo ""
             echo -e "  常用参考：3=严格  5=默认  10=宽松"
             read -rp "  请输入新的 maxretry（次）: " VAL
-            [[ "$VAL" =~ ^[0-9]+$ ]] || { error "无效数值"; return; }
+            echo "$VAL" | grep -qE '^[0-9]+$' || { error "无效数值"; return; }
             f2b_set_param "maxretry" "$VAL"
             ;;
         4)
@@ -1055,11 +1090,11 @@ JAILEOF
                 info "已创建 $JAIL_LOCAL"
             fi
             echo ""
-            warn "即将用 nano 打开 $JAIL_LOCAL"
-            warn "编辑完成后按 Ctrl+O 保存，Ctrl+X 退出"
+            warn "即将用 $(get_editor) 打开 $JAIL_LOCAL"
+            warn "编辑完成后保存退出（vi: :wq  nano: Ctrl+O/X）"
             echo ""
             read -rp "  按 Enter 继续..." _
-            nano "$JAIL_LOCAL"
+            open_editor "$JAIL_LOCAL"
             echo ""
             read -rp "  是否重启 Fail2ban 使配置生效？(Y/n，默认Y): " RESTART
             [ -z "$RESTART" ] && RESTART="y"
@@ -1147,7 +1182,7 @@ fail2ban_menu() {
         safe_clear
         echo ""
         box_top
-        box_title "VPS 开荒脚本 V3.1.5"
+        box_title "VPS 开荒脚本 V3.1.7"
         box_line "  ··银趴火山帮··" "  ${DIM}··银趴火山帮··${NC}"
         box_sep
         box_title "Fail2ban 管理"
@@ -1389,45 +1424,66 @@ bbr_backup_sysctl() {
 
 # ── 还原 sysctl ───────────────────────────────────────────
 bbr_restore_sysctl() {
-    print_header "还原 sysctl.conf"
-    local BACKUPS=()
-    while IFS= read -r _bline; do BACKUPS+=("$_bline"); done < <(ls -t "${SYSCTL_FILE}.bak."* 2>/dev/null)
-    if [ ${#BACKUPS[@]} -eq 0 ]; then
+    print_header "还原 TCP sysctl 配置"
+
+    # 用 /tmp 临时文件列表替代 bash 数组（兼容 Alpine ash）
+    local LIST_FILE="/tmp/vps_bbr_bak_$$"
+    ls -t "${SYSCTL_FILE}.bak."* 2>/dev/null > "$LIST_FILE"
+
+    if [ ! -s "$LIST_FILE" ]; then
+        rm -f "$LIST_FILE"
         warn "未找到任何备份文件"
         return
     fi
+
     local i=1
-    for f in "${BACKUPS[@]}"; do
-        echo -e "  ${GREEN}[$i]${NC} $(basename "$f")  $(stat -c '%y' "$f" | cut -d'.' -f1)"
-        (( i++ ))
-    done
+    while IFS= read -r f; do
+        # stat 兼容：BusyBox stat 用 -c '%y'，但格式有差异，改用 ls -l 更通用
+        local FDATE
+        FDATE=$(ls -l "$f" 2>/dev/null | awk '{print $6, $7}')
+        echo -e "  ${GREEN}[$i]${NC} $(basename "$f")  ${DIM}${FDATE}${NC}"
+        i=$(( i + 1 ))
+    done < "$LIST_FILE"
+
+    local TOTAL=$(( i - 1 ))
     echo -e "  ${YELLOW}[d]${NC} 清除全部备份"
     echo -e "  ${RED}[0]${NC} 返回"
     echo ""
     read -rp "  请选择: " CH
+
     case "$CH" in
-        0) return ;;
-        00) safe_clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;
+        0) rm -f "$LIST_FILE"; return ;;
+        00) rm -f "$LIST_FILE"; safe_clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;
         d|D)
-            read -rp "  确认清除全部 ${#BACKUPS[@]} 个备份？(Y/n，默认Y): " C
-            [ "$C" = "yes" ] && rm -f "${SYSCTL_FILE}.bak."* && info "已清除全部备份" || warn "已取消"
+            read -rp "  确认清除全部 ${TOTAL} 个备份？(Y/n，默认Y): " C
+            [ -z "$C" ] && C="y"
+            if echo "$C" | grep -qiE '^y(es)?$'; then
+                rm -f "${SYSCTL_FILE}.bak."*
+                info "已清除全部备份 ✓"
+            else
+                warn "已取消"
+            fi
             ;;
         *)
-            if [[ "$CH" =~ ^[0-9]+$ ]] && [ "$CH" -ge 1 ] && [ "$CH" -le ${#BACKUPS[@]} ]; then
-                local T="${BACKUPS[$((CH-1))]}"
+            # 纯数字且在范围内
+            if echo "$CH" | grep -qE '^[0-9]+$' && [ "$CH" -ge 1 ] && [ "$CH" -le "$TOTAL" ]; then
+                local T
+                T=$(sed -n "${CH}p" "$LIST_FILE")
                 cp "$T" "$SYSCTL_FILE"
-                sysctl -p "$SYSCTL_FILE" > /dev/null 2>&1
+                ensure_sysctl && sysctl -p "$SYSCTL_FILE" > /dev/null 2>&1
                 info "已还原：$(basename "$T") ✓"
             else
                 error "无效选项"
             fi
             ;;
     esac
+    rm -f "$LIST_FILE"
 }
 
 # ── 应用 sysctl ───────────────────────────────────────────
 bbr_apply_sysctl() {
     local CONFIG="$1"
+    ensure_sysctl || return 1
     mkdir -p "$(dirname "$SYSCTL_FILE")" 2>/dev/null || true
     echo "$CONFIG" > "$SYSCTL_FILE"
     sysctl -p "$SYSCTL_FILE" > /dev/null 2>&1
@@ -1438,7 +1494,7 @@ bbr_apply_sysctl() {
 bbr_apply_tc() {
     local RATE="$1"
     local DEV; DEV=$(ip route | awk '/^default/{print $5}')
-    local TX_Q; TX_Q=$(ls /sys/class/net/"$DEV"/queues/ 2>/dev/null | grep "^tx-" | wc -l)
+    local TX_Q; TX_Q=$(find /sys/class/net/"$DEV"/queues/ -maxdepth 1 -name "tx-*" 2>/dev/null | wc -l)
     local IS_MQ=0
     { tc qdisc show dev "$DEV" 2>/dev/null | grep -q "qdisc mq" || [ "$TX_Q" -gt 1 ]; } && IS_MQ=1
 
@@ -1720,7 +1776,7 @@ bbr_menu_tc() {
     fi
 
     local DEV; DEV=$(ip route | awk '/^default/{print $5}')
-    local TX_Q; TX_Q=$(ls /sys/class/net/"$DEV"/queues/ 2>/dev/null | grep "^tx-" | wc -l)
+    local TX_Q; TX_Q=$(find /sys/class/net/"$DEV"/queues/ -maxdepth 1 -name "tx-*" 2>/dev/null | wc -l)
     local IS_MQ=0
     { tc qdisc show dev "$DEV" 2>/dev/null | grep -q "qdisc mq" || [ "$TX_Q" -gt 1 ]; } && IS_MQ=1
     local CUR; CUR=$(tc qdisc show dev "$DEV" 2>/dev/null | grep -oE '(maxrate|rate) [^ ]+' | head -1 | awk '{print $2}')
@@ -1751,7 +1807,7 @@ bbr_menu_tc() {
         5) RATE=2048 ;;
         6)
             read -rp "  请输入限速值（Mbps）: " RATE
-            if ! [[ "$RATE" =~ ^[0-9]+$ ]] || [ "$RATE" -lt 1 ]; then
+            if ! echo "$RATE" | grep -qE '^[0-9]+$' || [ "$RATE" -lt 1 ]; then
                 error "无效数值"; return
             fi
             ;;
@@ -1835,7 +1891,7 @@ bbr_menu_initcwnd() {
         3) VAL=100 ;;
         4)
             read -rp "  请输入 initcwnd 值（1-1000）: " VAL
-            if ! [[ "$VAL" =~ ^[0-9]+$ ]] || [ "$VAL" -lt 1 ] || [ "$VAL" -gt 1000 ]; then
+            if ! echo "$VAL" | grep -qE '^[0-9]+$' || [ "$VAL" -lt 1 ] || [ "$VAL" -gt 1000 ]; then
                 error "无效数值"; return
             fi
             ;;
@@ -2654,10 +2710,10 @@ dns_menu() {
             5) dns_write "119.29.29.29 183.60.83.19" "" "$HAS_V6" ;;
             6) dns_write "114.114.114.114 114.114.115.115" "" "$HAS_V6" ;;
             7)
-                warn "即将用 nano 编辑 /etc/resolv.conf"
+                warn "即将用 $(get_editor) 编辑 /etc/resolv.conf"
                 chattr -i /etc/resolv.conf 2>/dev/null
                 read -rp "  按 Enter 继续..." _
-                nano /etc/resolv.conf
+                open_editor /etc/resolv.conf
                 info "DNS 配置已保存"
                 ;;
             0) return ;;
@@ -2926,7 +2982,7 @@ ip_disable_v6() {
         fi
     done
 
-    sysctl -p "$SYSCTL_FILE" &>/dev/null
+    ensure_sysctl && sysctl -p "$SYSCTL_FILE" &>/dev/null
     info "IPv6 已通过 sysctl 禁用 ✓"
 
     # 立即生效（无需重启）
@@ -3516,11 +3572,11 @@ caddy_edit_raw() {
     print_header "编辑 Caddyfile"
     echo -e "  配置文件：${BOLD}${CADDYFILE}${NC}"
     echo ""
-    warn "Ctrl+O 保存，Ctrl+X 退出，保存后自动验证并重载"
+    warn "$(get_editor) 打开 Caddyfile，保存退出后自动验证并重载"
     echo ""
     read -rp "  按 Enter 开始编辑..." _
     [ -f "$CADDYFILE" ] || { mkdir -p /etc/caddy; touch "$CADDYFILE"; }
-    nano "$CADDYFILE"
+    open_editor "$CADDYFILE"
     echo ""
     caddy_reload_config
 }
@@ -4566,7 +4622,7 @@ self_check_first_run() {
     clear
     echo ""
     box_top
-    box_title "VPS 开荒脚本 V3.1.5"
+    box_title "VPS 开荒脚本 V3.1.7"
     box_line "  ··银趴火山帮··" "  ${DIM}··银趴火山帮··${NC}"
     box_sep
     box_title "首次运行检测"
@@ -4766,7 +4822,7 @@ ddns_install() {
 
     local DDNS_TTL="60"
     read -rp "  TTL 秒数（默认60）: " DDNS_TTL_IN
-    [ -n "$DDNS_TTL_IN" ] && [[ "$DDNS_TTL_IN" =~ ^[0-9]+$ ]] && DDNS_TTL="$DDNS_TTL_IN"
+    [ -n "$DDNS_TTL_IN" ] && echo "$DDNS_TTL_IN" | grep -qE '^[0-9]+$' && DDNS_TTL="$DDNS_TTL_IN"
 
     echo ""
     echo -e "  ${CYAN}$(printf \'─%.0s\' $(seq 1 38))${NC}"
@@ -5620,7 +5676,7 @@ main_menu() {
         volcano_art_banner
         echo ""
         box_top
-        box_title "VPS 开荒脚本 V3.1.5"
+        box_title "VPS 开荒脚本 V3.1.7"
         box_line "  ··银趴火山帮··" "  ${DIM}··银趴火山帮··${NC}"
         box_sep
         # 收集状态数据
