@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # ============================================================
-#  VPS 开荒脚本 V3.1.7 — 银趴火山帮
+#  VPS 开荒脚本 V3.1.8 — 银趴火山帮
 #  功能：SSH管理 / Fail2ban / BBR TCP 调优
 # ============================================================
 
@@ -127,7 +127,7 @@ print_header() {
     safe_clear
     echo ""
     box_top
-    box_title "VPS 开荒脚本 V3.1.7"
+    box_title "VPS 开荒脚本 V3.1.8"
     box_line "  ··银趴火山帮··" "  ${DIM}··银趴火山帮··${NC}"
     box_sep
     box_title "$1"
@@ -1182,7 +1182,7 @@ fail2ban_menu() {
         safe_clear
         echo ""
         box_top
-        box_title "VPS 开荒脚本 V3.1.7"
+        box_title "VPS 开荒脚本 V3.1.8"
         box_line "  ··银趴火山帮··" "  ${DIM}··银趴火山帮··${NC}"
         box_sep
         box_title "Fail2ban 管理"
@@ -1589,6 +1589,14 @@ bbr_confirm_apply() {
     echo -e "  swappiness   : ${BOLD}${SWAP}${NC}"
     echo -e "  ${YELLOW}──────────────────────────────────────────${NC}"
     echo ""
+    # 先检测内核是否支持 BBR
+    if ! bbr_check_kernel; then
+        echo ""
+        read -rp "  内核不支持 BBR，仍要继续写入配置？(y/N，默认N): " FORCE
+        [ -z "$FORCE" ] && FORCE="n"
+        if ! echo "$FORCE" | grep -qiE '^y(es)?$'; then warn "已取消"; return; fi
+    fi
+
     # 先提示备份（默认Y）
     if [ -f "$SYSCTL_FILE" ]; then
         read -rp "  备份当前 sysctl 配置？(Y/n，默认Y): " DO_BAK
@@ -2010,6 +2018,50 @@ bbr_smart_wizard() {
     [ -z "$CONFIRM" ] && CONFIRM="y"
     if ! echo "$CONFIRM" | grep -qiE '^y(es)?$'; then warn "已取消"; return; fi
     volcano_tcp_profile "$PROFILE"
+}
+
+# ── 检测内核是否支持 BBR ─────────────────────────────────
+bbr_check_kernel() {
+    # 1. 检测内核版本 >= 4.9
+    local KVER KMAJ KMIN
+    KVER=$(uname -r 2>/dev/null | grep -oE '^[0-9]+\.[0-9]+')
+    KMAJ=$(echo "$KVER" | cut -d. -f1)
+    KMIN=$(echo "$KVER" | cut -d. -f2)
+    if [ "${KMAJ:-0}" -lt 4 ] || { [ "${KMAJ:-0}" -eq 4 ] && [ "${KMIN:-0}" -lt 9 ]; }; then
+        error "内核版本 $(uname -r) 低于 4.9，不支持 BBR"
+        echo -e "  ${DIM}Alpine: apk add linux-lts 或升级内核${NC}"
+        return 1
+    fi
+
+    # 2. 检测 tcp_bbr 模块是否可用
+    if lsmod 2>/dev/null | grep -q "tcp_bbr"; then
+        return 0  # 已加载
+    fi
+
+    # 尝试加载模块
+    if modprobe tcp_bbr 2>/dev/null; then
+        info "tcp_bbr 模块已加载 ✓"
+        return 0
+    fi
+
+    # Alpine 上尝试安装内核模块包
+    if command -v apk &>/dev/null; then
+        warn "tcp_bbr 模块未加载，尝试安装内核模块..."
+        local KFULL; KFULL=$(uname -r)
+        apk add --no-cache "linux-lts-dev" 2>/dev/null             || apk add --no-cache "linux-virt" 2>/dev/null || true
+        modprobe tcp_bbr 2>/dev/null && { info "tcp_bbr 模块已加载 ✓"; return 0; }
+    fi
+
+    # 检查 sysctl 是否已设置 bbr（有些内核内置不需要模块）
+    if sysctl -n net.ipv4.tcp_available_congestion_control 2>/dev/null | grep -q bbr; then
+        return 0
+    fi
+
+    error "当前内核不支持 BBR（tcp_bbr 模块未找到）"
+    echo -e "  ${DIM}Alpine 解决方案：${NC}"
+    echo -e "  ${DIM}  apk add linux-lts && reboot${NC}"
+    echo -e "  ${DIM}或检查：/proc/sys/net/ipv4/tcp_available_congestion_control${NC}"
+    return 1
 }
 
 bbr_menu() {
@@ -4622,7 +4674,7 @@ self_check_first_run() {
     clear
     echo ""
     box_top
-    box_title "VPS 开荒脚本 V3.1.7"
+    box_title "VPS 开荒脚本 V3.1.8"
     box_line "  ··银趴火山帮··" "  ${DIM}··银趴火山帮··${NC}"
     box_sep
     box_title "首次运行检测"
@@ -5676,7 +5728,7 @@ main_menu() {
         volcano_art_banner
         echo ""
         box_top
-        box_title "VPS 开荒脚本 V3.1.7"
+        box_title "VPS 开荒脚本 V3.1.8"
         box_line "  ··银趴火山帮··" "  ${DIM}··银趴火山帮··${NC}"
         box_sep
         # 收集状态数据
