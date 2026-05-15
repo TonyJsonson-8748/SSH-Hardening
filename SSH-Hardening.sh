@@ -2785,4 +2785,3125 @@ mirror_menu() {
                 echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
                 echo -e "  ${RED}0${NC}) 返回"
                 echo -e "  ${RED}00${NC}) 退出脚本"
-                ech
+                echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+                echo ""
+                read -rp "  请选择 [0-3]: " CH
+                case "$CH" in
+                    1) mirror_apply_centos "cn" ;;
+                    2) mirror_apply_centos "edu" ;;
+                    3) mirror_apply_centos "intl" ;;
+                    0) return ;;
+                    00) safe_clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;
+                    *) warn "无效选项"; sleep 1; continue ;;
+                esac
+                ;;
+            *)
+                warn "暂不支持自动换源的系统：${OS_ID}"
+                warn "请手动修改 /etc/apt/sources.list 或对应源文件"
+                echo ""
+                read -rp "  按 Enter 返回..." _
+                return
+                ;;
+        esac
+
+        [ "${CH:-x}" != "0" ] && { echo ""; read -rp "  按 Enter 返回..." _; }
+    done
+}
+
+
+# ══════════════════════════════════════════════════════════
+#  IPv4/IPv6 配置模块
+# ══════════════════════════════════════════════════════════
+
+ip_show_status() {
+    print_header "IPv4 / IPv6 状态"
+
+    # ── IPv4 状态 ──────────────────────────────────────────
+    echo -e "  ${BOLD}IPv4：${NC}"
+    local V4_ADDRS
+    V4_ADDRS=$(ip -4 addr show scope global 2>/dev/null | grep "inet " | awk '{print $2}')
+    if [ -n "$V4_ADDRS" ]; then
+        while IFS= read -r addr; do
+            echo -e "    ${GREEN}▸${NC} $addr"
+        done <<< "$V4_ADDRS"
+    else
+        echo -e "    ${YELLOW}未检测到 IPv4 地址${NC}"
+    fi
+
+    # ── IPv6 状态 ──────────────────────────────────────────
+    echo ""
+    echo -e "  ${BOLD}IPv6：${NC}"
+    local V6_DISABLED
+    V6_DISABLED=$(sysctl -n net.ipv6.conf.all.disable_ipv6 2>/dev/null)
+    if [ "$V6_DISABLED" = "1" ]; then
+        echo -e "    ${RED}▸ IPv6 已禁用${NC}"
+    else
+        local V6_ADDRS
+        V6_ADDRS=$(ip -6 addr show scope global 2>/dev/null | grep "inet6" | awk '{print $2}')
+        if [ -n "$V6_ADDRS" ]; then
+            while IFS= read -r addr; do
+                echo -e "    ${GREEN}▸${NC} $addr"
+            done <<< "$V6_ADDRS"
+        else
+            echo -e "    ${YELLOW}▸ IPv6 已启用但无全局地址${NC}"
+        fi
+    fi
+
+    # ── 优先级状态 ─────────────────────────────────────────
+    echo ""
+    echo -e "  ${BOLD}优先级策略：${NC}"
+    local GAICONF="/etc/gai.conf"
+    if grep -q "^precedence ::ffff:0:0/96  100" "$GAICONF" 2>/dev/null; then
+        echo -e "    ${CYAN}▸ 当前优先：IPv4${NC}"
+    else
+        echo -e "    ${CYAN}▸ 当前优先：IPv6（系统默认）${NC}"
+    fi
+
+    # ── 默认路由 ───────────────────────────────────────────
+    echo ""
+    echo -e "  ${BOLD}默认路由：${NC}"
+    ip -4 route show default 2>/dev/null | while IFS= read -r r; do
+        echo -e "    ${GREEN}v4${NC} $r"
+    done
+    ip -6 route show default 2>/dev/null | while IFS= read -r r; do
+        echo -e "    ${CYAN}v6${NC} $r"
+    done
+}
+
+ip_prefer_v4() {
+    print_header "设置 IPv4 优先"
+    local GAICONF="/etc/gai.conf"
+
+    # 备份
+    cp "$GAICONF" "${GAICONF}.bak.$(date +%Y%m%d_%H%M%S)" 2>/dev/null
+
+    # 注释掉已有的 precedence ::ffff 行，再追加正确的
+    sed -i '/^precedence ::ffff:0:0\/96/d' "$GAICONF" 2>/dev/null
+    # 确保文件存在
+    [ -f "$GAICONF" ] || touch "$GAICONF"
+    echo "precedence ::ffff:0:0/96  100" >> "$GAICONF"
+
+    info "已写入 IPv4 优先规则到 $GAICONF ✓"
+
+    # 同时通过 sysctl 设置（影响内核层面）
+    sysctl -w net.ipv4.conf.all.promote_secondaries=1 &>/dev/null
+
+    echo ""
+    warn "IPv4 优先已生效，部分程序需重启才能感知变化"
+    echo ""
+    echo -e "  验证（应显示 IPv4 连接）："
+    echo -e "  ${DIM}curl -s --max-time 5 ip.sb${NC}"
+    local RESULT; RESULT=$(curl -s --max-time 5 ip.sb 2>/dev/null)
+    [ -n "$RESULT" ] && echo -e "  当前出口 IP：${BOLD}${RESULT}${NC}" || warn "无法连接 ip.sb 进行验证"
+}
+
+ip_disable_v6() {
+    print_header "关闭 IPv6"
+    warn "关闭 IPv6 后，仅 IPv6 的服务将无法访问！"
+    echo ""
+    read -rp "  确认关闭？(Y/n，默认Y): " CONFIRM
+    [ -z "${CONFIRM}" ] && CONFIRM="y"
+    if ! echo "${CONFIRM}" | grep -qiE '^y(es)?$'; then warn "已取消"; return; fi
+
+    local SYSCTL_FILE="/etc/sysctl.d/99-vps-bbr.conf"
+
+    # 写入 sysctl
+    for KEY in net.ipv6.conf.all.disable_ipv6 net.ipv6.conf.default.disable_ipv6 net.ipv6.conf.lo.disable_ipv6; do
+        if grep -q "^${KEY}" "$SYSCTL_FILE" 2>/dev/null; then
+            sed -i "s|^${KEY}.*|${KEY} = 1|" "$SYSCTL_FILE"
+        else
+            echo "${KEY} = 1" >> "$SYSCTL_FILE"
+        fi
+    done
+
+    sysctl -p "$SYSCTL_FILE" &>/dev/null
+    info "IPv6 已通过 sysctl 禁用 ✓"
+
+    # 立即生效（无需重启）
+    sysctl -w net.ipv6.conf.all.disable_ipv6=1 &>/dev/null
+    sysctl -w net.ipv6.conf.default.disable_ipv6=1 &>/dev/null
+    sysctl -w net.ipv6.conf.lo.disable_ipv6=1 &>/dev/null
+
+    echo ""
+    echo -e "  当前 IPv6 状态：${RED}${BOLD}已禁用${NC}"
+    warn "如 SSH 监听了 IPv6，建议确认 SSH 配置正常后再断开连接"
+}
+
+ip_enable_v6() {
+    print_header "开启 IPv6"
+    local SYSCTL_FILE="/etc/sysctl.d/99-vps-bbr.conf"
+
+    # 移除或改为 0
+    for KEY in net.ipv6.conf.all.disable_ipv6 net.ipv6.conf.default.disable_ipv6 net.ipv6.conf.lo.disable_ipv6; do
+        if grep -q "^${KEY}" "$SYSCTL_FILE" 2>/dev/null; then
+            sed -i "s|^${KEY}.*|${KEY} = 0|" "$SYSCTL_FILE"
+        else
+            echo "${KEY} = 0" >> "$SYSCTL_FILE"
+        fi
+    done
+
+    sysctl -p "$SYSCTL_FILE" &>/dev/null
+    sysctl -w net.ipv6.conf.all.disable_ipv6=0 &>/dev/null
+    sysctl -w net.ipv6.conf.default.disable_ipv6=0 &>/dev/null
+    sysctl -w net.ipv6.conf.lo.disable_ipv6=0 &>/dev/null
+
+    info "IPv6 已开启 ✓"
+    echo ""
+
+    # 检查是否拿到地址
+    sleep 1
+    local V6_ADDRS; V6_ADDRS=$(ip -6 addr show scope global 2>/dev/null | grep "inet6" | awk '{print $2}')
+    if [ -n "$V6_ADDRS" ]; then
+        echo -e "  检测到 IPv6 地址："
+        while IFS= read -r addr; do
+            echo -e "    ${GREEN}▸${NC} $addr"
+        done <<< "$V6_ADDRS"
+    else
+        warn "已开启但暂未获取到 IPv6 地址，可能需要重启网络服务或等待 SLAAC"
+        echo -e "  ${DIM}可尝试：systemctl restart networking 或 reboot${NC}"
+    fi
+}
+
+ip_config_menu() {
+    while true; do
+        print_header "IPv4 / IPv6 配置"
+
+        # 状态摘要
+        local V6_DISABLED; V6_DISABLED=$(sysctl -n net.ipv6.conf.all.disable_ipv6 2>/dev/null)
+        local V6_STATUS; [ "$V6_DISABLED" = "1" ] && V6_STATUS="${RED}${BOLD}已禁用${NC}" || V6_STATUS="${GREEN}${BOLD}已启用${NC}"
+        local V4_PREF="系统默认（IPv6优先）"
+        grep -q "^precedence ::ffff:0:0/96  100" /etc/gai.conf 2>/dev/null && V4_PREF="${CYAN}${BOLD}IPv4 优先${NC}"
+
+        echo -e "  IPv6 状态：$V6_STATUS"
+        echo -e "  优先级：$V4_PREF"
+        echo ""
+        echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+        echo -e "  ${GREEN}1${NC}) 查看IPv4/IPv6状态"
+        echo -e "  ${GREEN}2${NC}) 设置IPv4优先      ${GREEN}3${NC}) 关闭 IPv6"
+        echo -e "  ${GREEN}4${NC}) 开启 IPv6"
+        echo -e "  ${RED}0${NC}) 返回              ${RED}00${NC}) 退出脚本"
+        echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+        echo ""
+        read -rp "  请选择 [0-4]: " CH
+
+        case "$CH" in
+            1) ip_show_status ;;
+            2) ip_prefer_v4 ;;
+            3) ip_disable_v6 ;;
+            4) ip_enable_v6 ;;
+            0) return ;;
+            00) safe_clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;
+            *) warn "无效选项"; sleep 1; continue ;;
+        esac
+
+        [ "${CH}" != "0" ] && { echo ""; read -rp "  按 Enter 返回..." _; }
+    done
+}
+
+
+# ══════════════════════════════════════════════════════════
+#  Caddy 模块
+# ══════════════════════════════════════════════════════════
+
+CADDYFILE="/etc/caddy/Caddyfile"
+CADDY_LOG="/var/log/caddy/access.log"
+
+# ── 检测 Caddy 状态 ───────────────────────────────────────
+caddy_status() {
+    if ! command -v caddy &>/dev/null; then
+        echo "not_installed"
+    elif svc_is_active caddy; then
+        echo "running"
+    else
+        echo "stopped"
+    fi
+}
+
+# ── 安装后初始化 ──────────────────────────────────────────
+
+caddy_post_install() {
+    mkdir -p /etc/caddy /var/log/caddy
+    if [ ! -f "$CADDYFILE" ]; then
+        cat > "$CADDYFILE" << 'CEOF'
+# Caddy 配置文件 — 由 VPS 开荒脚本生成
+# 文档：https://caddyserver.com/docs/caddyfile
+
+# 反向代理示例：
+# example.com {
+#     reverse_proxy localhost:8080
+# }
+
+# 静态网站示例：
+# example.com {
+#     root * /var/www/html
+#     file_server
+# }
+CEOF
+        info "已创建默认 Caddyfile：$CADDYFILE"
+    fi
+    svc_enable caddy
+    systemctl start caddy 2>/dev/null || rc-service caddy start 2>/dev/null || true
+    info "Caddy 已启动 ✓"
+}
+
+# ── 安装 Caddy（apt/apk/yum/二进制）─────────────────────
+caddy_install() {
+    print_header "安装 Caddy"
+    info "开始安装 Caddy..."
+    echo ""
+
+    if command -v apt-get &>/dev/null; then
+        apt-get install -y debian-keyring debian-archive-keyring apt-transport-https curl &>/dev/null
+        curl -fsSL https://dl.cloudsmith.io/public/caddy/stable/gpg.key \
+            | gpg --dearmor --yes -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg 2>/dev/null
+        curl -fsSL https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt \
+            | tee /etc/apt/sources.list.d/caddy-stable.list &>/dev/null
+        apt-get update -qq &>/dev/null
+        apt-get install -y caddy 2>/dev/null && info "Caddy 安装成功 ✓" || caddy_install_binary
+    elif command -v apk &>/dev/null; then
+        apk add --no-cache caddy 2>/dev/null && info "Caddy 安装成功 ✓" || caddy_install_binary
+    elif command -v yum &>/dev/null; then
+        yum install -y yum-plugin-copr &>/dev/null
+        yum copr enable @caddy/caddy -y &>/dev/null
+        yum install -y caddy 2>/dev/null && info "Caddy 安装成功 ✓" || caddy_install_binary
+    elif command -v dnf &>/dev/null; then
+        dnf install -y yum-plugin-copr &>/dev/null
+        dnf copr enable @caddy/caddy -y &>/dev/null
+        dnf install -y caddy 2>/dev/null && info "Caddy 安装成功 ✓" || caddy_install_binary
+    else
+        caddy_install_binary
+    fi
+
+    caddy_post_install
+}
+
+# 二进制安装（通用回退）
+caddy_install_binary() {
+    info "从 GitHub 下载 Caddy 二进制..."
+    local ARCH; ARCH=$(uname -m)
+    case "$ARCH" in
+        x86_64)  ARCH="amd64" ;;
+        aarch64) ARCH="arm64" ;;
+        armv7l)  ARCH="armv7" ;;
+        *) error "不支持的架构：$ARCH"; return 1 ;;
+    esac
+
+    local TMP; TMP=$(mktemp -d 2>/dev/null || { mkdir -p "/tmp/caddy_tmp_$$" && echo "/tmp/caddy_tmp_$$"; })
+    local URL="https://github.com/caddyserver/caddy/releases/latest/download/caddy_linux_${ARCH}.tar.gz"
+
+    if curl -fsSL "$URL" -o "$TMP/caddy.tar.gz"; then
+        tar -xzf "$TMP/caddy.tar.gz" -C "$TMP"
+        install -m 755 "$TMP/caddy" /usr/local/bin/caddy
+        rm -rf "$TMP"
+        info "Caddy 二进制安装到 /usr/local/bin/caddy ✓"
+    else
+        rm -rf "$TMP"
+        error "下载失败，请检查网络"
+        return 1
+    fi
+
+    # 创建 systemd service
+    if command -v systemctl &>/dev/null && pidof systemd &>/dev/null; then
+        useradd -r -d /var/lib/caddy -s /sbin/nologin caddy 2>/dev/null || true
+        cat > /etc/systemd/system/caddy.service << 'SVCEOF'
+[Unit]
+Description=Caddy Web Server
+After=network.target
+
+[Service]
+User=caddy
+Group=caddy
+ExecStart=/usr/local/bin/caddy run --config /etc/caddy/Caddyfile
+ExecReload=/usr/local/bin/caddy reload --config /etc/caddy/Caddyfile
+TimeoutStopSec=5s
+LimitNOFILE=1048576
+PrivateTmp=true
+ProtectSystem=full
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+
+[Install]
+WantedBy=multi-user.target
+SVCEOF
+        svc_daemon_reload
+    fi
+}
+
+# ── 卸载 Caddy ────────────────────────────────────────────
+caddy_uninstall() {
+    print_header "卸载 Caddy"
+    warn "即将卸载 Caddy（配置文件保留）"
+    echo ""
+    read -rp "  确认卸载？(Y/n，默认Y): " CONFIRM
+    [ -z "${CONFIRM}" ] && CONFIRM="y"
+    if ! echo "${CONFIRM}" | grep -qiE '^y(es)?$'; then warn "已取消"; return; fi
+    systemctl stop caddy 2>/dev/null || rc-service caddy stop 2>/dev/null || true
+    svc_disable caddy
+    pkg_remove caddy 2>/dev/null
+    rm -f /usr/local/bin/caddy /etc/systemd/system/caddy.service
+    svc_daemon_reload
+    info "Caddy 已卸载 ✓（配置文件已保留）"
+}
+
+# ── 重载配置 ──────────────────────────────────────────────
+caddy_reload_config() {
+    echo ""
+    info "验证 Caddyfile 语法..."
+    if caddy validate --config "$CADDYFILE" 2>/tmp/caddy_err; then
+        info "语法验证通过 ✓"
+        if svc_is_active caddy; then
+            caddy reload --config "$CADDYFILE" 2>/dev/null && info "配置已重载 ✓"
+        else
+            systemctl start caddy 2>/dev/null \
+                || rc-service caddy start 2>/dev/null \
+                || caddy start --config "$CADDYFILE" &>/dev/null
+            info "Caddy 已启动 ✓"
+        fi
+    else
+        error "Caddyfile 语法错误："
+        while IFS= read -r l; do echo -e "  ${RED}$l${NC}"; done < /tmp/caddy_err
+        return 1
+    fi
+}
+
+# ── 查看所有站点 ──────────────────────────────────────────
+caddy_list_sites() {
+    print_header "当前 Caddy 站点"
+    if [ ! -f "$CADDYFILE" ]; then warn "Caddyfile 不存在"; return; fi
+
+    echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+    local i=0
+    while IFS= read -r line; do
+        echo "$line" | grep -qE '^\s*#|^\s*$' && continue
+        if echo "$line" | grep -qE '^[^ ].*\{'; then
+            local bname; bname=$(echo "$line" | awk '{print $1}')
+            i=$((i+1))
+            echo -e "  ${GREEN}[$i]${NC} ${BOLD}${bname}${NC}"
+        elif echo "$line" | grep -qE '^\s+(reverse_proxy|root|file_server|redir)'; then
+            local dir; dir=$(echo "$line" | awk '{print $1}')
+            local tgt; tgt=$(echo "$line" | awk '{$1=""; print $0}' | sed 's/^ //')
+            echo -e "      ${DIM}${dir}${NC} → ${CYAN}${tgt}${NC}"
+        elif echo "$line" | grep -qE '^\}'; then
+            echo ""
+        fi
+    done < "$CADDYFILE"
+    [ "$i" -eq 0 ] && echo -e "  ${YELLOW}暂无站点配置${NC}\n"
+    echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+}
+
+# ── 添加反向代理站点 ──────────────────────────────────────
+caddy_add_proxy() {
+    print_header "添加反向代理站点"
+    echo -e "  ${DIM}Caddy 会自动申请 SSL 证书（需域名已解析到本机）${NC}"
+    echo ""
+    read -rp "  域名（如 example.com 或 example.com:36366）: " DOMAIN
+    [ -z "$DOMAIN" ] && { warn "已取消"; return; }
+    read -rp "  转发到（如 127.0.0.1:8080）: " BACKEND
+    [ -z "$BACKEND" ] && { warn "已取消"; return; }
+
+    if grep -q "^${DOMAIN}" "$CADDYFILE" 2>/dev/null; then
+        warn "域名 ${DOMAIN} 已存在，请先删除再添加"; return
+    fi
+
+    # 判断是否是带端口的域名（如 example.com:36366）
+    local HAS_PORT=false
+    local BARE_DOMAIN="$DOMAIN"
+    if echo "$DOMAIN" | grep -qE '^[a-zA-Z0-9].*:[0-9]+$'; then
+        HAS_PORT=true
+        BARE_DOMAIN=$(echo "$DOMAIN" | cut -d: -f1)
+    fi
+
+    # 判断是否是域名（非 IP）
+    local IS_DOMAIN=false
+    if echo "$BARE_DOMAIN" | grep -qE '^[a-zA-Z0-9]([a-zA-Z0-9\-]*\.)+[a-zA-Z]{2,}$'; then
+        IS_DOMAIN=true
+    fi
+
+    local SSL_LABEL CADDY_BLOCK
+    if [ "$IS_DOMAIN" = true ]; then
+        if [ "$HAS_PORT" = true ]; then
+            # 带端口：检查裸域名站点是否存在（需先有裸域名才能复用证书）
+            if grep -q "^${BARE_DOMAIN}" "$CADDYFILE" 2>/dev/null; then
+                SSL_LABEL="${GREEN}复用 ${BARE_DOMAIN} 的证书 ✓${NC}"
+            else
+                SSL_LABEL="${YELLOW}注意：未找到 ${BARE_DOMAIN} 裸域名站点，建议先添加裸域名站点申请证书${NC}"
+            fi
+        else
+            SSL_LABEL="${GREEN}自动 HTTPS（Let's Encrypt）${NC}"
+        fi
+        CADDY_BLOCK=$(printf '
+%s {
+    reverse_proxy %s
+    encode gzip
+}
+' "$DOMAIN" "$BACKEND")
+    else
+        # IP 地址：不申请证书
+        SSL_LABEL="${YELLOW}无 SSL（IP 地址无法申请证书）${NC}"
+        CADDY_BLOCK=$(printf '
+http://%s {
+    reverse_proxy %s
+}
+' "$DOMAIN" "$BACKEND")
+    fi
+
+    echo ""
+    echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+    echo -e "  域名 : ${BOLD}${DOMAIN}${NC}"
+    echo -e "  后端 : ${BOLD}${BACKEND}${NC}"
+    echo -e "  SSL  : ${SSL_LABEL}"
+    echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+    echo ""
+    read -rp "  确认添加？(Y/n，默认Y): " CONFIRM
+    [ -z "${CONFIRM}" ] && CONFIRM="y"
+    if ! echo "${CONFIRM}" | grep -qiE '^y(es)?$'; then warn "已取消"; return; fi
+
+    echo "$CADDY_BLOCK" >> "$CADDYFILE"
+    caddy_reload_config && info "站点 ${DOMAIN} 已添加 ✓"
+}
+
+# ── 添加静态网站 ──────────────────────────────────────────
+caddy_add_static() {
+    print_header "添加静态网站"
+    echo -e "  ${DIM}Caddy 会自动申请 SSL 证书（需域名已解析到本机）${NC}"
+    echo ""
+    read -rp "  域名（如 example.com 或 example.com:8443）: " DOMAIN
+    [ -z "$DOMAIN" ] && { warn "已取消"; return; }
+    read -rp "  网站根目录（默认 /var/www/html）: " WEBROOT
+    WEBROOT="${WEBROOT:-/var/www/html}"
+
+    if grep -q "^${DOMAIN}" "$CADDYFILE" 2>/dev/null; then
+        warn "域名 ${DOMAIN} 已存在，请先删除再添加"; return
+    fi
+
+    local HAS_PORT=false
+    local BARE_DOMAIN="$DOMAIN"
+    if echo "$DOMAIN" | grep -qE '^[a-zA-Z0-9].*:[0-9]+$'; then
+        HAS_PORT=true
+        BARE_DOMAIN=$(echo "$DOMAIN" | cut -d: -f1)
+    fi
+
+    local IS_DOMAIN=false
+    if echo "$BARE_DOMAIN" | grep -qE '^[a-zA-Z0-9]([a-zA-Z0-9\-]*\.)+[a-zA-Z]{2,}$'; then
+        IS_DOMAIN=true
+    fi
+
+    local SSL_LABEL CADDY_BLOCK
+    if [ "$IS_DOMAIN" = true ]; then
+        if [ "$HAS_PORT" = true ]; then
+            SSL_LABEL="${GREEN}复用 ${BARE_DOMAIN} 证书（需先添加裸域名站点申请证书）${NC}"
+        else
+            SSL_LABEL="${GREEN}自动 HTTPS（Let's Encrypt）${NC}"
+        fi
+        CADDY_BLOCK=$(printf '
+%s {
+    root * %s
+    file_server
+}
+' "$DOMAIN" "$WEBROOT")
+    else
+        SSL_LABEL="${YELLOW}无 SSL（IP 地址无法申请证书）${NC}"
+        CADDY_BLOCK=$(printf '
+http://%s {
+    root * %s
+    file_server
+}
+' "$DOMAIN" "$WEBROOT")
+    fi
+
+    echo ""
+    echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+    echo -e "  域名 : ${BOLD}${DOMAIN}${NC}"
+    echo -e "  目录 : ${BOLD}${WEBROOT}${NC}"
+    echo -e "  SSL  : ${SSL_LABEL}"
+    echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+    echo ""
+    read -rp "  确认添加？(Y/n，默认Y): " CONFIRM
+    [ -z "${CONFIRM}" ] && CONFIRM="y"
+    if ! echo "${CONFIRM}" | grep -qiE '^y(es)?$'; then warn "已取消"; return; fi
+
+    mkdir -p "$WEBROOT"
+    echo "$CADDY_BLOCK" >> "$CADDYFILE"
+    caddy_reload_config && info "静态站点 ${DOMAIN} 已添加 ✓"
+}
+
+# ── 删除站点 ──────────────────────────────────────────────
+caddy_del_site() {
+    print_header "删除站点"
+    caddy_list_sites
+
+    # 收集所有站点
+    local SITES=()
+    while IFS= read -r line; do
+        echo "$line" | grep -qE '^\s*#|^\s*$' && continue
+        if echo "$line" | grep -qE '^[^ ].*\{'; then
+            local bname; bname=$(echo "$line" | awk '{print $1}')
+            SITES+=("$bname")
+        fi
+    done < "$CADDYFILE"
+
+    if [ ${#SITES[@]} -eq 0 ]; then warn "暂无站点配置"; return; fi
+
+    echo ""
+    local i=1
+    for site in "${SITES[@]}"; do
+        echo -e "  ${GREEN}[$i]${NC} ${BOLD}${site}${NC}"
+        i=$((i+1))
+    done
+    echo ""
+    echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+    read -rp "  请输入编号删除（直接回车取消）: " NUM
+    [ -z "$NUM" ] && { warn "已取消"; return; }
+    if ! echo "$NUM" | grep -qE '^[0-9]+$' || [ "$NUM" -lt 1 ] || [ "$NUM" -gt ${#SITES[@]} ]; then
+        error "无效编号"; return
+    fi
+    local DOMAIN="${SITES[$((NUM-1))]}"
+    echo ""
+    warn "即将删除站点：${BOLD}${DOMAIN}${NC}"
+    read -rp "  确认删除？(Y/n，默认Y): " CONFIRM
+    [ -z "${CONFIRM}" ] && CONFIRM="y"
+    if ! echo "${CONFIRM}" | grep -qiE '^y(es)?$'; then warn "已取消"; return; fi
+
+    python3 - "$CADDYFILE" "$DOMAIN" << 'PYEOF'
+import sys
+path, domain = sys.argv[1], sys.argv[2]
+with open(path) as f:
+    lines = f.readlines()
+result = []
+skip = False
+depth = 0
+for line in lines:
+    s = line.strip()
+    if not skip and s.startswith(domain) and '{' in s:
+        skip = True
+        depth = s.count('{') - s.count('}')
+        while result and result[-1].strip() == '':
+            result.pop()
+        continue
+    if skip:
+        depth += s.count('{') - s.count('}')
+        if depth <= 0:
+            skip = False
+        continue
+    result.append(line)
+with open(path, 'w') as f:
+    f.writelines(result)
+PYEOF
+
+    caddy_reload_config && info "站点 ${DOMAIN} 已删除 ✓"
+}
+
+# ── SSL 证书状态 ──────────────────────────────────────────
+caddy_ssl_status() {
+    print_header "SSL 证书状态"
+    echo -e "  ${DIM}Caddy 自动管理证书，首次访问时自动申请${NC}"
+    echo ""
+
+    local CERT_DIR=""
+    for d in /var/lib/caddy/.local/share/caddy/certificates \
+              /root/.local/share/caddy/certificates \
+              /home/caddy/.local/share/caddy/certificates; do
+        [ -d "$d" ] && CERT_DIR="$d" && break
+    done
+
+    if [ -z "$CERT_DIR" ]; then
+        warn "未找到证书目录（证书将在首次访问时自动申请）"
+        return
+    fi
+
+    echo -e "  证书目录：${DIM}${CERT_DIR}${NC}"
+    echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+    find "$CERT_DIR" -name "*.crt" 2>/dev/null | while read -r cert; do
+        local DN; DN=$(basename "$(dirname "$cert")")
+        local EXP; EXP=$(openssl x509 -enddate -noout -in "$cert" 2>/dev/null | cut -d= -f2)
+        echo -e "  ${GREEN}▸${NC} ${BOLD}${DN}${NC}"
+        [ -n "$EXP" ] && echo -e "    ${DIM}到期：${NC}${EXP}"
+    done
+    echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+}
+
+# ── 查看访问日志 ──────────────────────────────────────────
+caddy_view_logs() {
+    print_header "Caddy 访问日志"
+    local LOG_FILE="$CADDY_LOG"
+    [ ! -f "$LOG_FILE" ] && LOG_FILE=$(find /var/log/caddy /var/log -name "*.log" 2>/dev/null | grep -i caddy | head -1)
+
+    if [ -z "$LOG_FILE" ] || [ ! -f "$LOG_FILE" ]; then
+        if command -v journalctl &>/dev/null; then
+            echo -e "  ${DIM}使用 journalctl${NC}"
+            echo ""
+            journalctl -u caddy -n 50 --no-pager 2>/dev/null | while IFS= read -r line; do
+                echo -e "  $line"
+            done
+            echo ""
+            echo -e "  ${GREEN}1${NC}) 开启实时跟踪（Ctrl+C 停止返回菜单）"
+            echo -e "  ${RED}0${NC}) 返回"
+            echo ""
+            read -rp "  请选择: " _CH
+            if [ "$_CH" = "1" ]; then
+                trap 'echo ""; info "已退出实时跟踪"; trap - INT' INT
+                journalctl -u caddy -f 2>/dev/null
+                trap - INT
+            fi
+        else
+            warn "未找到 Caddy 日志文件，请确认 Caddyfile 中已配置 log 指令"
+        fi
+        return
+    fi
+
+    echo -e "  ${DIM}${LOG_FILE}${NC}"
+    echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+    echo ""
+    tail -n 30 "$LOG_FILE" 2>/dev/null | while IFS= read -r line; do
+        local STATUS; STATUS=$(echo "$line" | python3 -c \
+            "import sys,json
+try:
+    d=json.loads(sys.stdin.read())
+    print(d.get('status',''))
+except: print('')" 2>/dev/null)
+        if [ -n "$STATUS" ]; then
+            local SC="$GREEN"
+            [ "$STATUS" -ge 400 ] 2>/dev/null && SC="$YELLOW"
+            [ "$STATUS" -ge 500 ] 2>/dev/null && SC="$RED"
+            local TS METHOD URI
+            TS=$(echo "$line" | python3 -c \
+                "import sys,json
+try:
+    d=json.loads(sys.stdin.read())
+    print(d.get('ts','')[:19].replace('T',' '))
+except: print('')" 2>/dev/null)
+            METHOD=$(echo "$line" | python3 -c \
+                "import sys,json
+try:
+    d=json.loads(sys.stdin.read())
+    print(d.get('request',{}).get('method',''))
+except: print('')" 2>/dev/null)
+            URI=$(echo "$line" | python3 -c \
+                "import sys,json
+try:
+    d=json.loads(sys.stdin.read())
+    print(d.get('request',{}).get('uri',''))
+except: print('')" 2>/dev/null)
+            echo -e "  ${DIM}${TS}${NC} ${BOLD}${METHOD}${NC} ${URI} ${SC}${STATUS}${NC}"
+        else
+            echo -e "  $line"
+        fi
+    done
+    echo ""
+    echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+    echo -e "  ${GREEN}1${NC}) 开启实时跟踪（Ctrl+C 停止返回菜单）"
+    echo -e "  ${RED}0${NC}) 返回"
+    echo ""
+    read -rp "  请选择: " _CH
+    if [ "$_CH" = "1" ]; then
+        trap 'echo ""; info "已退出实时跟踪"; trap - INT' INT
+        tail -f "$LOG_FILE" 2>/dev/null | while IFS= read -r line; do echo -e "  $line"; done
+        trap - INT
+    fi
+}
+
+# ── 编辑 Caddyfile ────────────────────────────────────────
+caddy_edit_raw() {
+    print_header "编辑 Caddyfile"
+    echo -e "  配置文件：${BOLD}${CADDYFILE}${NC}"
+    echo ""
+    warn "Ctrl+O 保存，Ctrl+X 退出，保存后自动验证并重载"
+    echo ""
+    read -rp "  按 Enter 开始编辑..." _
+    [ -f "$CADDYFILE" ] || { mkdir -p /etc/caddy; touch "$CADDYFILE"; }
+    nano "$CADDYFILE"
+    echo ""
+    caddy_reload_config
+}
+
+# ── Caddy 主菜单 ──────────────────────────────────────────
+caddy_menu() {
+    while true; do
+        local C_ST; C_ST=$(caddy_status)
+        local C_COLOR
+        case "$C_ST" in
+            running)       C_COLOR="$GREEN" ;;
+            stopped)       C_COLOR="$RED" ;;
+            not_installed) C_COLOR="$YELLOW" ;;
+        esac
+
+        print_header "Caddy 管理"
+
+        if [ "$C_ST" = "not_installed" ]; then
+            echo -e "  服务状态: ${C_COLOR}${BOLD}未安装${NC}"
+            echo ""
+            echo -e "  ${DIM}Caddy 是一个自动 HTTPS 的现代 Web 服务器，支持反向代理和静态托管${NC}"
+            echo ""
+            echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+            echo -e "  ${GREEN}1${NC}) 立即安装 Caddy"
+            echo -e "  ${RED}0${NC}) 返回"
+            echo -e "  ${RED}00${NC}) 退出脚本"
+            echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+            echo ""
+            read -rp "  请选择 [0-1]: " CH
+            case "$CH" in
+                1) caddy_install; echo ""; read -rp "  按 Enter 继续..." _ ;;
+                0) return ;;
+                00) safe_clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;
+                *) warn "无效选项"; sleep 1 ;;
+            esac
+            continue
+        fi
+
+        local C_VER; C_VER=$(caddy version 2>/dev/null | awk '{print $1}')
+        local SITE_COUNT; SITE_COUNT=$(grep -cE '^[^ ].*\{' "$CADDYFILE" 2>/dev/null || echo 0)
+
+        echo -e "  服务: ${C_COLOR}${BOLD}${C_ST}${NC}  版本: ${BOLD}${C_VER:-未知}${NC}  站点数: ${BOLD}${SITE_COUNT}${NC}"
+        echo ""
+        echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+        echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+        echo -e "  ${GREEN}1${NC}) 查看站点         ${GREEN}2${NC}) 添加反向代理"
+        echo -e "  ${GREEN}3${NC}) 添加静态网站     ${GREEN}4${NC}) 删除站点"
+        echo -e "  ${GREEN}5${NC}) SSL证书状态      ${GREEN}6${NC}) 查看日志"
+        echo -e "  ${GREEN}7${NC}) 编辑Caddyfile    ${GREEN}8${NC}) 重载配置"
+        if [ "$C_ST" = "running" ]; then
+            echo -e "  ${YELLOW}9${NC}) 停止服务"
+        else
+            echo -e "  ${GREEN}9${NC}) 启动服务"
+        fi
+        echo -e "  ${CYAN}u${NC}) 安装/更新        ${YELLOW}d${NC}) 卸载 Caddy"
+        echo -e "  ${RED}0${NC}) 返回              ${RED}00${NC}) 退出脚本"
+        echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+        echo ""
+        read -rp "  请选择: " CH
+
+        case "$CH" in
+            1) caddy_list_sites ;;
+            2) caddy_add_proxy ;;
+            3) caddy_add_static ;;
+            4) caddy_del_site ;;
+            5) caddy_ssl_status ;;
+            6) caddy_view_logs ;;
+            7) caddy_edit_raw ;;
+            8) caddy_reload_config ;;
+            u|U)
+                print_header "安装/更新 Caddy"
+                info "正在更新 Caddy..."
+                caddy_install
+                local NEW_VER; NEW_VER=$(caddy version 2>/dev/null | awk '{print $1}')
+                info "当前版本：${NEW_VER:-未知} ✓"
+                ;;
+            9)
+                if [ "$C_ST" = "running" ]; then
+                    systemctl stop caddy 2>/dev/null || rc-service caddy stop 2>/dev/null
+                    info "Caddy 已停止 ✓"
+                else
+                    systemctl start caddy 2>/dev/null \
+                        || rc-service caddy start 2>/dev/null \
+                        || caddy start --config "$CADDYFILE" &>/dev/null
+                    info "Caddy 已启动 ✓"
+                fi
+                sleep 1; continue
+                ;;
+            d|D) caddy_uninstall ;;
+            0) return ;;
+            00) safe_clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;
+            *) warn "无效选项"; sleep 1; continue ;;
+        esac
+
+        [ "${CH}" != "0" ] && { echo ""; read -rp "  按 Enter 返回..." _; }
+    done
+}
+
+
+
+# ══════════════════════════════════════════════════════════
+#  端口转发模块（iptables NAT）
+# ══════════════════════════════════════════════════════════
+
+PORT_FWD_MARK="# VPS-SCRIPT-PORTFWD"
+
+# ── 检测 iptables 是否可用 ────────────────────────────────
+pf_check() {
+    if ! command -v iptables &>/dev/null; then
+        echo "not_installed"
+        return
+    fi
+    iptables -t nat -L PREROUTING &>/dev/null 2>&1 && echo "ok" || echo "no_permission"
+}
+
+# ── 持久化保存规则 ────────────────────────────────────────
+pf_save() {
+    # 尝试 iptables-save 持久化
+    if command -v iptables-save &>/dev/null; then
+        if [ -f /etc/iptables/rules.v4 ]; then
+            iptables-save > /etc/iptables/rules.v4 2>/dev/null && return
+        fi
+        if [ -f /etc/sysconfig/iptables ]; then
+            iptables-save > /etc/sysconfig/iptables 2>/dev/null && return
+        fi
+    fi
+    # 写入 rc.local 作为兜底
+    local RC_LOCAL="/etc/rc.local"
+    if [ ! -f "$RC_LOCAL" ]; then
+        echo '#!/bin/bash' > "$RC_LOCAL"
+        chmod +x "$RC_LOCAL"
+    fi
+    # 删除旧的端口转发规则再重写
+    grep -v "$PORT_FWD_MARK" "$RC_LOCAL" > "${RC_LOCAL}.tmp" && mv "${RC_LOCAL}.tmp" "$RC_LOCAL"
+    # 追加当前所有端口转发规则
+    echo "" >> "$RC_LOCAL"
+    echo "# 端口转发规则 $PORT_FWD_MARK" >> "$RC_LOCAL"
+    iptables -t nat -L PREROUTING -n --line-numbers 2>/dev/null \
+        | grep "REDIRECT\|DNAT" | grep "$PORT_FWD_MARK\|dpt:" \
+        | while read -r line; do
+            local DPORT; DPORT=$(echo "$line" | grep -oE 'dpt:[0-9]+' | cut -d: -f2)
+            local TOPORT; TOPORT=$(echo "$line" | grep -oE 'redir ports [0-9]+' | awk '{print $3}')
+            [ -n "$DPORT" ] && [ -n "$TOPORT" ] && \
+                echo "iptables -t nat -A PREROUTING -p tcp --dport $DPORT -j REDIRECT --to-port $TOPORT $PORT_FWD_MARK" >> "$RC_LOCAL"
+        done
+}
+
+# ── 列出所有端口转发规则 ──────────────────────────────────
+pf_list() {
+    local rules
+    rules=$(iptables -t nat -L PREROUTING -n --line-numbers 2>/dev/null \
+        | grep -E 'REDIRECT|DNAT' | grep -v "^$")
+
+    if [ -z "$rules" ]; then
+        echo -e "  ${YELLOW}暂无端口转发规则${NC}"
+        return 1
+    fi
+
+    local i=1
+    while IFS= read -r line; do
+        local DPORT; DPORT=$(echo "$line" | grep -oE 'dpt:[0-9]+' | cut -d: -f2)
+        local TOPORT; TOPORT=$(echo "$line" | grep -oE 'redir ports [0-9]+' | awk '{print $3}')
+        local PROTO; PROTO=$(echo "$line" | awk '{print $3}')
+        local NUM; NUM=$(echo "$line" | awk '{print $1}')
+        if [ -n "$DPORT" ] && [ -n "$TOPORT" ]; then
+            echo -e "  ${GREEN}[$i]${NC} ${BOLD}${PROTO}${NC}  ${CYAN}:${DPORT}${NC}  →  ${GREEN}:${TOPORT}${NC}  ${DIM}(规则编号 $NUM)${NC}"
+        else
+            echo -e "  ${GREEN}[$i]${NC} $line"
+        fi
+        i=$((i+1))
+    done <<< "$rules"
+    return 0
+}
+
+# ── 添加端口转发 ──────────────────────────────────────────
+pf_add() {
+    print_header "添加端口转发"
+    echo -e "  将外部访问的端口转发到本机另一个端口"
+    echo -e "  ${DIM}例：访问 16365 → 自动转发到 6365${NC}"
+    echo ""
+    echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+
+    read -rp "  外部端口（访问的端口，如 16365）: " SRC_PORT
+    [ -z "$SRC_PORT" ] && { warn "已取消"; return; }
+    if ! echo "$SRC_PORT" | grep -qE '^[0-9]+$' || [ "$SRC_PORT" -lt 1 ] || [ "$SRC_PORT" -gt 65535 ]; then
+        error "无效端口号"; return
+    fi
+
+    read -rp "  目标端口（转发到的端口，如 6365）: " DST_PORT
+    [ -z "$DST_PORT" ] && { warn "已取消"; return; }
+    if ! echo "$DST_PORT" | grep -qE '^[0-9]+$' || [ "$DST_PORT" -lt 1 ] || [ "$DST_PORT" -gt 65535 ]; then
+        error "无效端口号"; return
+    fi
+
+    echo -e "  协议："
+    echo -e "  ${GREEN}1${NC}) TCP（默认，适合 HTTP/HTTPS/SSH 等）"
+    echo -e "  ${GREEN}2${NC}) UDP"
+    echo -e "  ${GREEN}3${NC}) TCP + UDP"
+    echo ""
+    read -rp "  请选择 [1-3，默认1]: " PROTO_CHOICE
+    PROTO_CHOICE="${PROTO_CHOICE:-1}"
+
+    local PROTOS=()
+    case "$PROTO_CHOICE" in
+        1) PROTOS=("tcp") ;;
+        2) PROTOS=("udp") ;;
+        3) PROTOS=("tcp" "udp") ;;
+        *) PROTOS=("tcp") ;;
+    esac
+
+    echo ""
+    echo -e "  ${YELLOW}将添加以下规则：${NC}"
+    for p in "${PROTOS[@]}"; do
+        echo -e "  ${BOLD}${p}${NC}  外部 :${SRC_PORT}  →  本机 :${DST_PORT}"
+    done
+    echo ""
+    read -rp "  确认添加？(Y/n，默认Y): " CONFIRM
+    [ -z "$CONFIRM" ] && CONFIRM="y"
+    if ! echo "$CONFIRM" | grep -qiE '^y(es)?$'; then warn "已取消"; return; fi
+
+    echo ""
+    for p in "${PROTOS[@]}"; do
+        # PREROUTING：外部访问转发
+        iptables -t nat -A PREROUTING -p "$p" --dport "$SRC_PORT" -j REDIRECT --to-port "$DST_PORT"
+        # OUTPUT：本机访问自身也生效
+        iptables -t nat -A OUTPUT -p "$p" --dport "$SRC_PORT" -j REDIRECT --to-port "$DST_PORT"
+        info "${p} 规则已添加：:${SRC_PORT} → :${DST_PORT} ✓"
+    done
+
+    # 确保 ip_forward 开启
+    echo 1 > /proc/sys/net/ipv4/ip_forward 2>/dev/null
+    grep -q "net.ipv4.ip_forward" /etc/sysctl.conf 2>/dev/null \
+        || echo "net.ipv4.ip_forward = 1" >> /etc/sysctl.conf
+
+    pf_save
+    info "规则已持久化，重启后继续生效 ✓"
+}
+
+# ── 删除端口转发 ──────────────────────────────────────────
+pf_del() {
+    while true; do
+        print_header "删除端口转发规则"
+
+        local rules
+        rules=$(iptables -t nat -L PREROUTING -n --line-numbers 2>/dev/null \
+            | grep -E 'REDIRECT|DNAT')
+
+        if [ -z "$rules" ]; then
+            echo -e "  ${YELLOW}暂无端口转发规则${NC}"
+            echo ""
+            read -rp "  按 Enter 返回..." _
+            return
+        fi
+
+        local i=1 DPORTS=() NUMS=()
+        while IFS= read -r line; do
+            local DPORT; DPORT=$(echo "$line" | grep -oE 'dpt:[0-9]+' | cut -d: -f2)
+            local TOPORT; TOPORT=$(echo "$line" | grep -oE 'redir ports [0-9]+' | awk '{print $3}')
+            local PROTO; PROTO=$(echo "$line" | awk '{print $3}')
+            local NUM; NUM=$(echo "$line" | awk '{print $1}')
+            echo -e "  ${GREEN}[$i]${NC} ${BOLD}${PROTO}${NC}  :${DPORT}  →  :${TOPORT}  ${DIM}(编号 $NUM)${NC}"
+            DPORTS+=("$DPORT")
+            NUMS+=("$NUM")
+            i=$((i+1))
+        done <<< "$rules"
+
+        echo ""
+        echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+        echo -e "  ${DIM}输入编号删除，直接回车返回上级${NC}"
+        read -rp "  请输入编号: " SEL
+        [ -z "$SEL" ] && return
+
+        if ! echo "$SEL" | grep -qE '^[0-9]+$' || [ "$SEL" -lt 1 ] || [ "$SEL" -gt $((i-1)) ]; then
+            error "无效编号"; sleep 1; continue
+        fi
+
+        local TARGET_NUM="${NUMS[$((SEL-1))]}"
+        # 删除 PREROUTING 规则（按编号，删后编号会变，所以每次只删一条）
+        iptables -t nat -D PREROUTING "$TARGET_NUM" 2>/dev/null && info "规则 [$SEL] 已删除 ✓" || error "删除失败"
+        # 尝试同步删除 OUTPUT 中对应规则
+        local DEL_DPORT="${DPORTS[$((SEL-1))]}"
+        iptables -t nat -D OUTPUT -p tcp --dport "$DEL_DPORT" -j REDIRECT 2>/dev/null || true
+        iptables -t nat -D OUTPUT -p udp --dport "$DEL_DPORT" -j REDIRECT 2>/dev/null || true
+
+        pf_save
+        sleep 1
+    done
+}
+
+# ── 清空所有端口转发 ──────────────────────────────────────
+pf_flush() {
+    print_header "清空所有端口转发规则"
+    echo ""
+    warn "将删除所有 NAT PREROUTING 端口转发规则！"
+    echo ""
+    read -rp "  确认清空？(Y/n，默认Y): " CONFIRM
+    [ -z "$CONFIRM" ] && CONFIRM="y"
+    if ! echo "$CONFIRM" | grep -qiE '^y(es)?$'; then warn "已取消"; return; fi
+
+    iptables -t nat -F PREROUTING 2>/dev/null
+    iptables -t nat -F OUTPUT 2>/dev/null
+    pf_save
+    info "已清空所有端口转发规则 ✓"
+}
+
+# ── 端口转发主菜单 ────────────────────────────────────────
+portfwd_menu() {
+    while true; do
+        local PF_OK; PF_OK=$(pf_check)
+
+        print_header "端口转发管理"
+
+        if [ "$PF_OK" = "not_installed" ]; then
+            warn "iptables 未安装！"
+            echo ""
+            echo -e "  ${GREEN}1${NC}) 安装 iptables"
+            echo -e "  ${RED}0${NC}) 返回"
+            echo -e "  ${RED}00${NC}) 退出脚本"
+            echo ""
+            read -rp "  请选择 [0-1]: " CH
+            case "$CH" in
+                1) pkg_install iptables && info "iptables 安装成功 ✓" || error "安装失败" ;;
+                0) return ;;
+                00) safe_clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;
+            esac
+            echo ""; read -rp "  按 Enter 继续..." _
+            continue
+        fi
+
+        if [ "$PF_OK" = "no_permission" ]; then
+            error "当前环境不支持 iptables NAT（可能是 LXC 容器权限限制）"
+            echo ""
+            echo -e "  ${DIM}建议在宿主机或 KVM/独立 VPS 上使用此功能${NC}"
+            echo ""
+            read -rp "  按 Enter 返回..." _
+            return
+        fi
+
+        # 显示当前规则
+        local RULE_COUNT
+        RULE_COUNT=$(iptables -t nat -L PREROUTING -n 2>/dev/null | grep -cE 'REDIRECT|DNAT' || echo 0)
+        echo -e "  当前规则数：${BOLD}${RULE_COUNT}${NC}"
+        echo ""
+        pf_list
+        echo ""
+        echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+        echo -e "  ${GREEN}1${NC}) 添加端口转发     ${GREEN}2${NC}) 删除端口转发"
+        echo -e "  ${YELLOW}3${NC}) 清空所有规则"
+        echo -e "  ${RED}0${NC}) 返回              ${RED}00${NC}) 退出脚本"
+        echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+        echo ""
+        read -rp "  请选择 [0-3]: " CH
+
+        case "$CH" in
+            1) pf_add ;;
+            2) pf_del ;;
+            3) pf_flush ;;
+            0) return ;;
+            00) safe_clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;
+            *) warn "无效选项"; sleep 1; continue ;;
+        esac
+
+        [ "${CH}" != "0" ] && { echo ""; read -rp "  按 Enter 返回..." _; }
+    done
+}
+
+
+
+# ══════════════════════════════════════════════════════════
+#  时间同步模块
+# ══════════════════════════════════════════════════════════
+
+timesync_menu() {
+    while true; do
+        print_header "时间同步 / 时区设置"
+
+        # 当前状态
+        local CUR_TZ CUR_TIME CUR_DATE NTP_STATUS
+        CUR_TZ=$(timedatectl show --property=Timezone --value 2>/dev/null || cat /etc/timezone 2>/dev/null || echo "未知")
+        CUR_TIME=$(date '+%Y-%m-%d %H:%M:%S')
+        CUR_DATE=$(date '+%Z %z')
+
+        # NTP 状态
+        if timedatectl show --property=NTPSynchronized --value 2>/dev/null | grep -q "yes"; then
+            NTP_STATUS="${GREEN}已同步${NC}"
+        elif command -v chronyc &>/dev/null && chronyc tracking 2>/dev/null | grep -q "Leap status.*Normal"; then
+            NTP_STATUS="${GREEN}已同步(chrony)${NC}"
+        else
+            NTP_STATUS="${YELLOW}未同步${NC}"
+        fi
+
+        echo -e "  当前时区：${BOLD}${CUR_TZ}${NC}"
+        echo -e "  当前时间：${BOLD}${CUR_TIME}${NC}  ${DIM}${CUR_DATE}${NC}"
+        echo -e "  NTP状态 ：${NTP_STATUS}"
+        echo ""
+        echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+        echo -e "  ${GREEN}1${NC}) 强制同步时间"
+        echo -e "  ${GREEN}2${NC}) 设置北京时区      ${GREEN}3${NC}) 一键同步+北京时区"
+        echo -e "  ${GREEN}4${NC}) 设置其他时区      ${GREEN}5${NC}) 开启NTP自动同步"
+        echo -e "  ${RED}0${NC}) 返回              ${RED}00${NC}) 退出脚本"
+        echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+        echo ""
+        read -rp "  请选择 [0-5]: " CH
+
+        case "$CH" in
+            1) ts_sync_time ;;
+            2) ts_set_beijing ;;
+            3) ts_set_beijing; ts_sync_time ;;
+            4) ts_set_custom_tz ;;
+            5) ts_enable_ntp ;;
+            0) return ;;
+            00) safe_clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;
+            *) warn "无效选项"; sleep 1; continue ;;
+        esac
+
+        [ "${CH}" != "0" ] && { echo ""; read -rp "  按 Enter 返回..." _; }
+    done
+}
+
+# ── 强制同步时间 ──────────────────────────────────────────
+ts_sync_time() {
+    print_header "强制同步系统时间"
+    echo -e "  ${DIM}尝试多种方式同步时间...${NC}"
+    echo ""
+
+    local SYNCED=false
+
+    # 方法1：timedatectl + systemd-timesyncd
+    if command -v timedatectl &>/dev/null && pidof systemd &>/dev/null; then
+        info "尝试 systemd-timesyncd..."
+        timedatectl set-ntp true 2>/dev/null
+        # 重启 timesyncd 强制立即同步
+        systemctl restart systemd-timesyncd 2>/dev/null
+        sleep 2
+        if timedatectl show --property=NTPSynchronized --value 2>/dev/null | grep -q "yes"; then
+            info "systemd-timesyncd 同步成功 ✓"
+            SYNCED=true
+        fi
+    fi
+
+    # 方法2：chrony
+    if [ "$SYNCED" = false ] && command -v chronyc &>/dev/null; then
+        info "尝试 chrony..."
+        systemctl restart chronyd 2>/dev/null || rc-service chronyd restart 2>/dev/null || true
+        sleep 1
+        chronyc makestep 2>/dev/null && info "chrony 强制同步成功 ✓" && SYNCED=true
+    fi
+
+    # 方法3：ntpdate（直连 NTP 服务器）
+    if [ "$SYNCED" = false ]; then
+        local NTP_SERVERS="ntp.aliyun.com time.cloudflare.com pool.ntp.org time.google.com"
+        if command -v ntpdate &>/dev/null; then
+            info "尝试 ntpdate..."
+            for srv in $NTP_SERVERS; do
+                if ntpdate -u "$srv" &>/dev/null; then
+                    info "ntpdate 同步成功（$srv）✓"
+                    SYNCED=true
+                    break
+                fi
+            done
+        else
+            # 安装 ntpdate 再同步
+            info "ntpdate 未安装，尝试安装..."
+            pkg_install ntpdate &>/dev/null
+            if command -v ntpdate &>/dev/null; then
+                for srv in $NTP_SERVERS; do
+                    if ntpdate -u "$srv" &>/dev/null; then
+                        info "ntpdate 同步成功（$srv）✓"
+                        SYNCED=true
+                        break
+                    fi
+                done
+            fi
+        fi
+    fi
+
+    # 方法4：date 命令从 HTTP 头获取时间（极端情况兜底）
+    if [ "$SYNCED" = false ]; then
+        info "尝试从 HTTP 头获取时间..."
+        local HTTP_DATE
+        HTTP_DATE=$(curl -sI --max-time 5 https://www.aliyun.com 2>/dev/null | grep -i "^date:" | cut -d' ' -f2- | tr -d '\r')
+        if [ -n "$HTTP_DATE" ]; then
+            date -s "$HTTP_DATE" &>/dev/null && info "HTTP 时间同步成功 ✓" && SYNCED=true
+        fi
+    fi
+
+    echo ""
+    if [ "$SYNCED" = true ]; then
+        info "当前时间：$(date '+%Y-%m-%d %H:%M:%S %Z')"
+    else
+        error "自动同步失败，请检查网络连接"
+        echo -e "  ${DIM}手动同步：ntpdate ntp.aliyun.com${NC}"
+    fi
+}
+
+# ── 设置北京时区 ──────────────────────────────────────────
+ts_set_beijing() {
+    print_header "设置北京时区"
+    info "设置时区为 Asia/Shanghai（北京 UTC+8）..."
+
+    if command -v timedatectl &>/dev/null; then
+        timedatectl set-timezone Asia/Shanghai 2>/dev/null && info "时区已设置 ✓"
+    elif [ -f /usr/share/zoneinfo/Asia/Shanghai ]; then
+        ln -sf /usr/share/zoneinfo/Asia/Shanghai /etc/localtime
+        echo "Asia/Shanghai" > /etc/timezone
+        info "时区已设置 ✓"
+    else
+        error "找不到时区文件，尝试安装 tzdata..."
+        pkg_install tzdata &>/dev/null
+        if [ -f /usr/share/zoneinfo/Asia/Shanghai ]; then
+            ln -sf /usr/share/zoneinfo/Asia/Shanghai /etc/localtime
+            echo "Asia/Shanghai" > /etc/timezone
+            info "时区已设置 ✓"
+        else
+            error "设置失败，请手动执行：timedatectl set-timezone Asia/Shanghai"
+            return
+        fi
+    fi
+
+    echo ""
+    info "当前时间：$(date '+%Y-%m-%d %H:%M:%S %Z %z')"
+}
+
+# ── 设置自定义时区 ────────────────────────────────────────
+ts_set_custom_tz() {
+    print_header "设置自定义时区"
+    echo -e "  常用时区参考："
+    echo -e "  ${GREEN}Asia/Shanghai${NC}       北京 UTC+8"
+    echo -e "  ${GREEN}Asia/Tokyo${NC}          东京 UTC+9"
+    echo -e "  ${GREEN}America/New_York${NC}    纽约 UTC-5"
+    echo -e "  ${GREEN}America/Los_Angeles${NC} 洛杉矶 UTC-8"
+    echo -e "  ${GREEN}Europe/London${NC}       伦敦 UTC+0"
+    echo -e "  ${GREEN}Europe/Paris${NC}        巴黎 UTC+1"
+    echo ""
+    read -rp "  请输入时区名称（直接回车取消）: " TZ_INPUT
+    [ -z "$TZ_INPUT" ] && { warn "已取消"; return; }
+
+    if [ ! -f "/usr/share/zoneinfo/${TZ_INPUT}" ]; then
+        error "时区 '${TZ_INPUT}' 不存在，请检查拼写"
+        return
+    fi
+
+    if command -v timedatectl &>/dev/null; then
+        timedatectl set-timezone "$TZ_INPUT" 2>/dev/null && info "时区已设置为 ${TZ_INPUT} ✓"
+    else
+        ln -sf "/usr/share/zoneinfo/${TZ_INPUT}" /etc/localtime
+        echo "$TZ_INPUT" > /etc/timezone
+        info "时区已设置为 ${TZ_INPUT} ✓"
+    fi
+
+    echo ""
+    info "当前时间：$(date '+%Y-%m-%d %H:%M:%S %Z %z')"
+}
+
+# ── 开启 NTP 自动同步 ─────────────────────────────────────
+ts_enable_ntp() {
+    print_header "开启 NTP 自动同步"
+
+    # 检测 CanNTP — 判断是否有 timesyncd
+    local CAN_NTP
+    CAN_NTP=$(timedatectl show --property=CanNTP --value 2>/dev/null || echo "no")
+
+    if [ "$CAN_NTP" = "yes" ] && command -v systemctl &>/dev/null         && systemctl list-units --type=service 2>/dev/null | grep -q "systemd-timesyncd"; then
+        # systemd-timesyncd 可用
+        timedatectl set-ntp true 2>/dev/null
+        systemctl enable systemd-timesyncd --quiet 2>/dev/null
+        systemctl restart systemd-timesyncd 2>/dev/null
+        info "systemd-timesyncd NTP 已开启 ✓"
+    elif command -v chronyc &>/dev/null; then
+        # chrony 已安装，自动探测服务名
+        local CHRONY_SVC="chronyd"
+        systemctl list-unit-files 2>/dev/null | grep -q "^chrony.service" && CHRONY_SVC="chrony"
+        svc_enable "$CHRONY_SVC"
+        systemctl start "$CHRONY_SVC" 2>/dev/null || rc-service "$CHRONY_SVC" start 2>/dev/null || true
+        sleep 1
+        chronyc makestep &>/dev/null && info "chrony 强制同步 ✓"
+        info "chrony NTP 自动同步已开启 ✓"
+    else
+        # 都没有，安装 chrony
+        info "正在安装 chrony..."
+        if pkg_install chrony; then
+            # Debian 服务名是 chrony，CentOS/Alpine 是 chronyd
+            local CHRONY_SVC="chronyd"
+            systemctl list-unit-files 2>/dev/null | grep -q "^chrony.service" && CHRONY_SVC="chrony"
+            svc_enable "$CHRONY_SVC"
+            systemctl start "$CHRONY_SVC" 2>/dev/null || rc-service "$CHRONY_SVC" start 2>/dev/null || true
+            sleep 2
+            chronyc makestep &>/dev/null && info "chrony 强制同步 ✓"
+            info "chrony 已安装并开启自动同步 ✓"
+        else
+            error "chrony 安装失败，请手动执行：apt-get install -y chrony"
+            return
+        fi
+    fi
+
+    echo ""
+    sleep 2
+    # 验证同步状态
+    local SYNC_ST
+    SYNC_ST=$(timedatectl show --property=NTPSynchronized --value 2>/dev/null || echo "unknown")
+    if [ "$SYNC_ST" = "yes" ]; then
+        info "NTP 状态：已同步 ✓"
+        info "当前时间：$(date '+%Y-%m-%d %H:%M:%S %Z')"
+    else
+        warn "NTP 状态：同步中（chrony 可能需要几秒完成首次同步）"
+        # 尝试 chrony 状态
+        if command -v chronyc &>/dev/null; then
+            chronyc tracking 2>/dev/null | grep -E "Reference|System time|Last offset" | while IFS= read -r l; do
+                echo -e "  ${DIM}$l${NC}"
+            done
+        fi
+    fi
+}
+
+
+# ══════════════════════════════════════════════════════════
+#  Swap 管理模块
+# ══════════════════════════════════════════════════════════
+
+# ── 显示当前 swap 状态 ────────────────────────────────────
+swap_show_status() {
+    echo -e "  ${BOLD}当前 Swap 状态：${NC}"
+    local TOTAL USED FREE
+    if swapon --show 2>/dev/null | grep -q .; then
+        swapon --show --bytes 2>/dev/null | while IFS= read -r line; do
+            echo -e "  ${CYAN}${line}${NC}"
+        done
+        echo ""
+        TOTAL=$(free -m 2>/dev/null | awk '/^Swap/{print $2}')
+        USED=$(free -m 2>/dev/null  | awk '/^Swap/{print $3}')
+        FREE=$(free -m 2>/dev/null  | awk '/^Swap/{print $4}')
+        echo -e "  总计：${BOLD}${TOTAL}MB${NC}  已用：${BOLD}${USED}MB${NC}  空闲：${BOLD}${FREE}MB${NC}"
+    else
+        echo -e "  ${YELLOW}当前未设置 Swap${NC}"
+    fi
+    echo ""
+    # swappiness
+    local SWAPPINESS
+    SWAPPINESS=$(cat /proc/sys/vm/swappiness 2>/dev/null || echo "未知")
+    echo -e "  swappiness：${BOLD}${SWAPPINESS}${NC}  ${DIM}（0=不用swap，60=默认，100=积极使用）${NC}"
+}
+
+# ── 创建 swap 文件 ────────────────────────────────────────
+swap_create() {
+    print_header "创建 Swap"
+
+    # 检测是否在 OpenVZ/LXC（不支持 swap file）
+    local IS_VIRT=false
+    if grep -qa "lxc\|openvz" /proc/1/environ 2>/dev/null \
+        || [ -f /proc/vz/veinfo ] \
+        || grep -qa "container=lxc" /proc/1/environ 2>/dev/null; then
+        IS_VIRT=true
+    fi
+
+    # 内存信息
+    local MEM_MB; MEM_MB=$(free -m | awk '/^Mem/{print $2}')
+    local DISK_FREE; DISK_FREE=$(df -m / | awk 'NR==2{print $4}')
+
+    echo -e "  物理内存：${BOLD}${MEM_MB}MB${NC}  磁盘可用：${BOLD}${DISK_FREE}MB${NC}"
+    echo ""
+
+    if [ "$IS_VIRT" = true ]; then
+        warn "检测到 LXC/OpenVZ 容器，可能不支持 swap file"
+        warn "如果创建失败请联系 VPS 服务商开启 swap 权限"
+        echo ""
+    fi
+
+    # 推荐大小
+    local REC_SIZE
+    if   [ "$MEM_MB" -le 512  ]; then REC_SIZE=1024
+    elif [ "$MEM_MB" -le 1024 ]; then REC_SIZE=2048
+    elif [ "$MEM_MB" -le 2048 ]; then REC_SIZE=2048
+    elif [ "$MEM_MB" -le 4096 ]; then REC_SIZE=4096
+    else                              REC_SIZE=4096
+    fi
+
+    echo -e "  推荐大小：${GREEN}${REC_SIZE}MB${NC}（基于当前内存 ${MEM_MB}MB）"
+    echo ""
+    echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+    echo -e "  ${GREEN}1${NC}) 512MB"
+    echo -e "  ${GREEN}2${NC}) 1GB   (1024MB)"
+    echo -e "  ${GREEN}3${NC}) 2GB   (2048MB)  ${YELLOW}[推荐]${NC}"
+    echo -e "  ${GREEN}4${NC}) 4GB   (4096MB)"
+    echo -e "  ${GREEN}5${NC}) 自定义大小（MB）"
+    echo -e "  ${RED}0${NC}) 返回"
+    echo -e "  ${RED}00${NC}) 退出脚本"
+    echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+    echo ""
+    read -rp "  请选择 [0-5]: " CH
+
+    local SIZE_MB
+    case "$CH" in
+        1) SIZE_MB=512 ;;
+        2) SIZE_MB=1024 ;;
+        3) SIZE_MB=2048 ;;
+        4) SIZE_MB=4096 ;;
+        5)
+            read -rp "  请输入大小（MB，如 512）: " SIZE_MB
+            if ! echo "$SIZE_MB" | grep -qE '^[0-9]+$' || [ "$SIZE_MB" -lt 64 ]; then
+                error "无效大小（最小 64MB）"; return
+            fi
+            ;;
+        0) return ;;
+        00) safe_clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;
+        *) warn "无效选项"; return ;;
+    esac
+
+    # 检查磁盘空间
+    if [ "$SIZE_MB" -gt "$DISK_FREE" ]; then
+        error "磁盘空间不足（需要 ${SIZE_MB}MB，可用 ${DISK_FREE}MB）"
+        return
+    fi
+
+    local SWAP_FILE="/swapfile"
+    # 如果已有 swapfile 先关闭
+    if [ -f "$SWAP_FILE" ]; then
+        warn "已存在 ${SWAP_FILE}，将先关闭旧 swap..."
+        swapoff "$SWAP_FILE" 2>/dev/null || true
+    fi
+
+    echo ""
+    info "正在创建 ${SIZE_MB}MB swap 文件..."
+
+    # 用 fallocate 或 dd 创建文件
+    if command -v fallocate &>/dev/null; then
+        fallocate -l "${SIZE_MB}M" "$SWAP_FILE" 2>/dev/null || \
+            dd if=/dev/zero of="$SWAP_FILE" bs=1M count="$SIZE_MB" status=none
+    else
+        dd if=/dev/zero of="$SWAP_FILE" bs=1M count="$SIZE_MB" status=progress
+    fi
+
+    if [ ! -f "$SWAP_FILE" ]; then
+        error "Swap 文件创建失败"; return
+    fi
+
+    chmod 600 "$SWAP_FILE"
+    mkswap "$SWAP_FILE" &>/dev/null
+    swapon "$SWAP_FILE"
+
+    if ! swapon --show 2>/dev/null | grep -q "$SWAP_FILE"; then
+        error "Swap 启用失败（容器可能不支持）"
+        rm -f "$SWAP_FILE"
+        return
+    fi
+
+    info "Swap 已启用 ✓"
+
+    # 写入 /etc/fstab 持久化
+    if ! grep -q "$SWAP_FILE" /etc/fstab 2>/dev/null; then
+        echo "${SWAP_FILE} none swap sw 0 0" >> /etc/fstab
+        info "已写入 /etc/fstab，重启后自动生效 ✓"
+    fi
+
+    echo ""
+    swap_show_status
+}
+
+# ── 删除 swap ─────────────────────────────────────────────
+swap_delete() {
+    print_header "删除 Swap"
+
+    local SWAPS
+    SWAPS=$(swapon --show --noheadings 2>/dev/null | awk '{print $1}')
+
+    if [ -z "$SWAPS" ]; then
+        warn "当前没有启用的 Swap"
+        return
+    fi
+
+    echo -e "  当前 Swap："
+    local i=1
+    local SWAP_LIST=()
+    while IFS= read -r sw; do
+        local SIZE; SIZE=$(swapon --show --bytes --noheadings 2>/dev/null | grep "^$sw" | awk '{printf "%.0fMB", $3/1048576}')
+        echo -e "  ${GREEN}[$i]${NC} ${BOLD}${sw}${NC}  ${SIZE}"
+        SWAP_LIST+=("$sw")
+        i=$((i+1))
+    done <<< "$SWAPS"
+
+    echo ""
+    echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+    echo -e "  ${DIM}输入编号删除，直接回车取消${NC}"
+    read -rp "  请输入编号: " NUM
+    [ -z "$NUM" ] && { warn "已取消"; return; }
+
+    if ! echo "$NUM" | grep -qE '^[0-9]+$' || [ "$NUM" -lt 1 ] || [ "$NUM" -gt ${#SWAP_LIST[@]} ]; then
+        error "无效编号"; return
+    fi
+
+    local TARGET="${SWAP_LIST[$((NUM-1))]}"
+    echo ""
+    warn "即将删除 Swap：${BOLD}${TARGET}${NC}"
+    read -rp "  确认删除？(Y/n，默认Y): " CONFIRM
+    [ -z "$CONFIRM" ] && CONFIRM="y"
+    if ! echo "$CONFIRM" | grep -qiE '^y(es)?$'; then warn "已取消"; return; fi
+
+    swapoff "$TARGET" 2>/dev/null && info "Swap 已关闭 ✓"
+
+    # 从 fstab 移除
+    if grep -q "$TARGET" /etc/fstab 2>/dev/null; then
+        grep -v "$TARGET" /etc/fstab > /etc/fstab.tmp && mv /etc/fstab.tmp /etc/fstab
+        info "已从 /etc/fstab 移除 ✓"
+    fi
+
+    # 如果是文件则删除
+    if [ -f "$TARGET" ]; then
+        rm -f "$TARGET" && info "Swap 文件已删除 ✓"
+    fi
+}
+
+# ── 修改 swappiness ───────────────────────────────────────
+swap_set_swappiness() {
+    print_header "设置 Swappiness"
+    local CUR; CUR=$(cat /proc/sys/vm/swappiness 2>/dev/null || echo 60)
+
+    echo -e "  当前 swappiness：${BOLD}${CUR}${NC}"
+    echo ""
+    echo -e "  ${DIM}推荐值：${NC}"
+    echo -e "  ${GREEN}1${NC}) 10   — 服务器推荐（尽量用物理内存）"
+    echo -e "  ${GREEN}2${NC}) 30   — 折中"
+    echo -e "  ${GREEN}3${NC}) 60   — 系统默认"
+    echo -e "  ${GREEN}4${NC}) 自定义（0-100）"
+    echo -e "  ${RED}0${NC}) 返回"
+    echo -e "  ${RED}00${NC}) 退出脚本"
+    echo ""
+    read -rp "  请选择 [0-4]: " CH
+
+    local VAL
+    case "$CH" in
+        1) VAL=10 ;;
+        2) VAL=30 ;;
+        3) VAL=60 ;;
+        4)
+            read -rp "  请输入值（0-100）: " VAL
+            if ! echo "$VAL" | grep -qE '^[0-9]+$' || [ "$VAL" -gt 100 ]; then
+                error "无效值（0-100）"; return
+            fi
+            ;;
+        0) return ;;
+        00) safe_clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;
+        *) warn "无效选项"; return ;;
+    esac
+
+    # 立即生效
+    echo "$VAL" > /proc/sys/vm/swappiness 2>/dev/null
+
+    # 持久化到 sysctl.conf
+    if grep -q "vm.swappiness" /etc/sysctl.conf 2>/dev/null; then
+        sed -i "s/^vm.swappiness.*/vm.swappiness = ${VAL}/" /etc/sysctl.conf
+    else
+        echo "vm.swappiness = ${VAL}" >> /etc/sysctl.conf
+    fi
+
+    sysctl -p &>/dev/null
+    info "swappiness 已设置为 ${VAL}，重启后持续生效 ✓"
+}
+
+# ── Swap 主菜单 ───────────────────────────────────────────
+swap_menu() {
+    while true; do
+        print_header "Swap 管理"
+        swap_show_status
+        echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+        echo -e "  ${GREEN}1${NC}) 创建/更换 Swap   ${GREEN}2${NC}) 删除 Swap"
+        echo -e "  ${GREEN}3${NC}) 设置 Swappiness"
+        echo -e "  ${RED}0${NC}) 返回              ${RED}00${NC}) 退出脚本"
+        echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+        echo ""
+        read -rp "  请选择 [0-3]: " CH
+
+        case "$CH" in
+            1) swap_create ;;
+            2) swap_delete ;;
+            3) swap_set_swappiness ;;
+            0) return ;;
+            00) safe_clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;
+            *) warn "无效选项"; sleep 1; continue ;;
+        esac
+
+        [ "${CH}" != "0" ] && { echo ""; read -rp "  按 Enter 返回..." _; }
+    done
+}
+
+
+
+# ══════════════════════════════════════════════════════════
+#  脚本自我管理模块
+# ══════════════════════════════════════════════════════════
+
+SCRIPT_URL="https://raw.githubusercontent.com/chnnic/SSH-Hardening/refs/heads/main/SSH-Hardening.sh"
+LOCAL_SCRIPT="/usr/local/bin/vps-tools"
+
+# ── 安装脚本到本地（设置快捷键 v）────────────────────────
+self_install() {
+    print_header "安装脚本到本地"
+    echo -e "  将脚本安装到 ${BOLD}${LOCAL_SCRIPT}${NC}"
+    echo -e "  安装后输入 ${GREEN}v${NC} 或 ${GREEN}V${NC} 即可快速呼出"
+    echo ""
+
+    # 优先复制当前运行的脚本
+    local SELF; SELF=$(readlink -f "${0}" 2>/dev/null || echo "${0}")
+
+    if [ -f "$SELF" ] && [ "$SELF" != "$LOCAL_SCRIPT" ]; then
+        cp "$SELF" "$LOCAL_SCRIPT"
+    elif [ -f /tmp/ssh_hardening.sh ]; then
+        cp /tmp/ssh_hardening.sh "$LOCAL_SCRIPT"
+    else
+        info "本地缓存不存在，从 GitHub 下载..."
+        if ! curl -fsSL "$SCRIPT_URL" -o "$LOCAL_SCRIPT" 2>/dev/null; then
+            error "下载失败，请检查网络"; return 1
+        fi
+    fi
+
+    chmod +x "$LOCAL_SCRIPT"
+    info "脚本已安装到 ${LOCAL_SCRIPT} ✓"
+
+    # 创建系统级命令 v / V（最可靠，无需 source）
+    # 检测 v/V 是否已被其他脚本占用
+    for _CMD in v V; do
+        local _TARGET="/usr/local/bin/${_CMD}"
+        if [ -L "$_TARGET" ] && [ "$(readlink "$_TARGET")" != "$LOCAL_SCRIPT" ]; then
+            warn "快捷键 ${_CMD} 已被其他脚本占用（$(readlink "$_TARGET")），跳过"
+        elif [ -f "$_TARGET" ] && [ ! -L "$_TARGET" ]; then
+            warn "快捷键 ${_CMD} 是独立文件（非软链接），跳过以避免覆盖"
+        else
+            ln -sf "$LOCAL_SCRIPT" "$_TARGET" 2>/dev/null && info "系统命令 ${_CMD} 已创建 ✓"
+        fi
+    done
+
+    # 不写入 alias，只用软链接，避免前缀冲突其他命令（如 volss）
+    local WROTE_ALIAS=false
+
+    echo ""
+    echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+    info "安装完成！新终端直接输入 ${BOLD}v${NC} 即可启动"
+    echo -e "  ${DIM}软链接已创建，无需 source，新终端直接可用${NC}"
+    echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+}
+
+# ── 强制从 GitHub 更新脚本 ────────────────────────────────
+self_update() {
+    print_header "强制更新脚本"
+    echo -e "  ${DIM}${SCRIPT_URL}${NC}"
+    echo ""
+
+    local TMP_FILE; TMP_FILE="/tmp/vps_update_$$.sh"
+
+    info "正在下载最新版本..."
+    if ! curl -fsSL "$SCRIPT_URL" -o "$TMP_FILE" 2>/dev/null; then
+        rm -f "$TMP_FILE"
+        error "下载失败，请检查网络连接"
+        echo -e "  ${DIM}手动更新：curl -fsSL ${SCRIPT_URL} -o ${LOCAL_SCRIPT} && chmod +x ${LOCAL_SCRIPT}${NC}"
+        return
+    fi
+
+    # 验证语法
+    if ! bash -n "$TMP_FILE" 2>/dev/null; then
+        rm -f "$TMP_FILE"
+        error "下载的文件语法有误，已取消更新"
+        return
+    fi
+
+    # 版本对比
+    local NEW_VER; NEW_VER=$(grep -oE 'V[0-9]+\.[0-9]+\.[0-9]+|V[0-9]+\.[0-9]+' "$TMP_FILE" | head -1)
+    local CUR_VER; CUR_VER=$(grep -oE 'V[0-9]+\.[0-9]+\.[0-9]+|V[0-9]+\.[0-9]+' "${LOCAL_SCRIPT}" 2>/dev/null | head -1)
+    echo -e "  当前版本：${BOLD}${CUR_VER:-未知}${NC}  →  最新版本：${GREEN}${BOLD}${NEW_VER:-未知}${NC}"
+    echo ""
+
+    # 覆盖安装
+    cp "$TMP_FILE" "$LOCAL_SCRIPT"
+    chmod +x "$LOCAL_SCRIPT"
+    cp "$TMP_FILE" /tmp/ssh_hardening.sh 2>/dev/null
+    rm -f "$TMP_FILE"
+
+    # 确保 v 命令还在
+    ln -sf "$LOCAL_SCRIPT" /usr/local/bin/v 2>/dev/null
+    ln -sf "$LOCAL_SCRIPT" /usr/local/bin/V 2>/dev/null
+
+    info "更新完成 ✓"
+    # 清理旧版写入的 alias（旧版本会写 alias v=，会拦截其他命令如 volss）
+    for RC in /root/.bashrc /root/.bash_profile ~/.bashrc ~/.bash_profile ~/.zshrc; do
+        [ -f "$RC" ] || continue
+        if grep -q "VPS 开荒脚本快捷键" "$RC" 2>/dev/null; then
+            grep -v "alias v=\|alias V=\|VPS 开荒脚本快捷键" "$RC" > "${RC}.tmp" \
+                && mv "${RC}.tmp" "$RC"
+            info "已清理旧版 alias（${RC}）✓"
+        fi
+    done
+    # 清除更新提示，避免新版本启动后还显示旧提示
+    rm -f /tmp/.vps_new_version 2>/dev/null
+    warn "即将用新版本重启脚本..."
+    sleep 1
+    exec "$LOCAL_SCRIPT"
+}
+
+# ── 脚本管理菜单 ──────────────────────────────────────────
+# ── 删除本地脚本和快捷键 ─────────────────────────────────
+self_uninstall() {
+    print_header "删除本地脚本和快捷键"
+    warn "将删除以下内容："
+    echo -e "  ${DIM}${LOCAL_SCRIPT}${NC}"
+    echo -e "  ${DIM}/usr/local/bin/v${NC}"
+    echo -e "  ${DIM}/usr/local/bin/V${NC}"
+    echo -e "  ${DIM}/usr/local/bin/V${NC}"
+    echo -e "  ${DIM}各 shell 配置文件中的 alias v=...${NC}"
+    echo ""
+    read -rp "  确认删除？(Y/n，默认Y): " CONFIRM
+    [ -z "$CONFIRM" ] && CONFIRM="y"
+    if ! echo "$CONFIRM" | grep -qiE '^y(es)?$'; then warn "已取消"; return; fi
+
+    # 删除本地脚本
+    rm -f "$LOCAL_SCRIPT" && info "已删除 ${LOCAL_SCRIPT} ✓"
+
+    # 删除系统命令
+    rm -f /usr/local/bin/v /usr/local/bin/V && info "已删除系统命令 v/V ✓"
+
+    # 清理 shell 配置文件中可能残留的旧版 alias
+    for RC in /root/.bashrc /root/.bash_profile ~/.bashrc ~/.bash_profile ~/.zshrc; do
+        [ -f "$RC" ] || continue
+        if grep -q "VPS 开荒脚本快捷键" "$RC" 2>/dev/null; then
+            grep -v "alias v=\|alias V=\|VPS 开荒脚本快捷键" "$RC" > "${RC}.tmp" \
+                && mv "${RC}.tmp" "$RC"
+            info "已清理旧版 alias（${RC}）✓"
+        fi
+    done
+
+    echo ""
+    info "清理完成，快捷键 v 已移除"
+    warn "当前会话仍可使用 alias，重新登录后完全生效"
+    echo ""
+    read -rp "  按 Enter 返回..." _
+    return
+}
+
+# ── 首次运行检测是否已安装快捷键 ─────────────────────────
+self_check_first_run() {
+    # 已安装则跳过
+    [ -f /usr/local/bin/v ] && return
+    [ -f "$LOCAL_SCRIPT" ] && return
+
+    clear
+    echo ""
+    box_top
+    box_title "VPS 开荒脚本 V3.1.4"
+    box_line "  ··银趴火山帮··" "  ${DIM}··银趴火山帮··${NC}"
+    box_sep
+    box_title "首次运行检测"
+    box_bot
+    echo ""
+    echo -e "  ${YELLOW}检测到脚本未安装到本地${NC}"
+    echo -e "  安装后可随时输入 ${BOLD}v${NC} 快速启动"
+    echo ""
+    echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+    echo -e "  ${GREEN}1${NC}) 立即安装（推荐）"
+    echo -e "  ${GREEN}0${NC}) 跳过，直接进入"
+    echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+    echo ""
+    read -rp "  请选择 [0-1]: " CH
+    case "$CH" in
+        1)
+            self_install
+            echo ""
+            read -rp "  按 Enter 继续进入主菜单..." _
+            ;;
+        *) ;;
+    esac
+}
+
+self_manage_menu() {
+    while true; do
+        print_header "脚本管理"
+
+        local IS_INSTALLED=false
+        local CUR_VER=""
+        if [ -f "$LOCAL_SCRIPT" ]; then
+            IS_INSTALLED=true
+            CUR_VER=$(grep -oE 'V[0-9]+\.[0-9]+\.[0-9]+|V[0-9]+\.[0-9]+' "$LOCAL_SCRIPT" | head -1)
+        fi
+        local HAS_CMD=false
+        [ -f /usr/local/bin/v ] && HAS_CMD=true
+
+        echo -e "  本地路径：${BOLD}${LOCAL_SCRIPT}${NC}"
+        if [ "$IS_INSTALLED" = true ]; then
+            echo -e "  状  态  ：${GREEN}${BOLD}已安装${NC}  版本：${BOLD}${CUR_VER:-未知}${NC}"
+        else
+            echo -e "  状  态  ：${YELLOW}${BOLD}未安装${NC}"
+        fi
+        echo -e "  快捷键 v：${BOLD}$([ "$HAS_CMD" = true ] && echo "${GREEN}已设置${NC}" || echo "${YELLOW}未设置${NC}")${NC}"
+        echo ""
+        echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+        echo -e "  ${GREEN}1${NC}) 安装脚本 + 设置快捷键 v"
+        echo -e "  ${GREEN}2${NC}) 从 GitHub 更新最新版"
+        echo -e "  ${YELLOW}3${NC}) 删除本地脚本和快捷键"
+        echo -e "  ${RED}0${NC}) 返回              ${RED}00${NC}) 退出脚本"
+        echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+        echo ""
+        read -rp "  请选择 [0-3]: " CH
+
+        case "$CH" in
+            1) self_install ;;
+            2) self_update ;;
+            3) self_uninstall ;;
+            0) return ;;
+            00) safe_clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;
+            *) warn "无效选项"; sleep 1; continue ;;
+        esac
+
+        [ "${CH}" != "0" ] && [ "${CH}" != "3" ] && { echo ""; read -rp "  按 Enter 返回..." _; }
+    done
+}
+
+
+
+# ══════════════════════════════════════════════════════════
+#  Cloudflare DDNS 模块
+# ══════════════════════════════════════════════════════════
+
+DDNS_SCRIPT="/root/ddns.sh"
+DDNS_TOKEN_FILE="/root/.cf_token"
+DDNS_LOG="/var/log/ddns.log"
+DDNS_ZONE_FILE="/root/.cf_zone"
+DDNS_TG_FILE="/root/.cf_tg"    # Telegram 通知配置
+
+cf_json_get() {
+    local expr="$1"
+    python3 -c "import sys,json; data=json.load(sys.stdin); print(${expr})" 2>/dev/null
+}
+
+ddns_cfg_get() {
+    local key="$1"
+    [ -f "$DDNS_ZONE_FILE" ] || return 1
+    grep "^${key}=" "$DDNS_ZONE_FILE" 2>/dev/null | head -1 | cut -d= -f2-
+}
+
+ddns_log_path() {
+    local log_path
+    log_path=$(ddns_cfg_get LOG 2>/dev/null)
+    if [ -n "$log_path" ]; then
+        echo "$log_path"
+    elif [ -f "$DDNS_LOG" ]; then
+        echo "$DDNS_LOG"
+    else
+        echo "$HOME/ddns.log"
+    fi
+}
+
+ddns_ensure_cron() {
+    command -v crontab &>/dev/null && return 0
+    info "未检测到 crontab，正在安装 cron..."
+    if command -v apt-get &>/dev/null; then
+        apt-get update -qq 2>/dev/null
+        apt-get install -y cron 2>/dev/null || apt-get install -y cronie 2>/dev/null || return 1
+    elif command -v apk &>/dev/null; then
+        apk add --no-cache dcron 2>/dev/null || apk add --no-cache cronie 2>/dev/null || return 1
+    elif command -v yum &>/dev/null; then
+        yum install -y cronie 2>/dev/null || return 1
+    elif command -v dnf &>/dev/null; then
+        dnf install -y cronie 2>/dev/null || return 1
+    else
+        error "找不到包管理器，请手动安装 cron：apt-get install -y cron"
+        return 1
+    fi
+    # 安装后立即启动服务
+    ddns_start_cron_service >/dev/null 2>&1 || true
+    sleep 1
+    if command -v crontab &>/dev/null; then
+        info "cron 安装并启动成功 ✓"
+        return 0
+    else
+        error "cron 安装后仍无法使用，请重新登录后重试"
+        return 1
+    fi
+}
+
+ddns_start_cron_service() {
+    for svc in cron crond dcron; do
+        if command -v systemctl &>/dev/null && pidof systemd &>/dev/null; then
+            systemctl enable "$svc" --quiet 2>/dev/null || true
+            systemctl start "$svc" 2>/dev/null && return 0
+        fi
+        if command -v rc-service &>/dev/null; then
+            rc-service "$svc" start 2>/dev/null && return 0
+        fi
+    done
+    return 1
+}
+
+# ── 检测 DDNS 安装状态 ────────────────────────────────────
+ddns_status() {
+    if [ ! -f "$DDNS_SCRIPT" ]; then
+        echo "not_installed"
+    elif ! command -v crontab &>/dev/null; then
+        echo "no_cron"
+    elif ! crontab -l 2>/dev/null | grep -q "ddns.sh"; then
+        echo "stopped"
+    else
+        echo "running"
+    fi
+}
+
+# ── 安装/配置 DDNS ────────────────────────────────────────
+ddns_install() {
+    print_header "Cloudflare DDNS 配置"
+    echo -e "  ${DIM}动态 DNS：自动将域名 A 记录更新为本机公网 IP${NC}"
+    echo ""
+
+    for cmd in curl python3; do
+        if ! command -v "$cmd" &>/dev/null; then
+            info "安装依赖 $cmd..."
+            pkg_install "$cmd" &>/dev/null
+        fi
+    done
+    if ! ddns_ensure_cron; then
+        error "无法安装或启用 crontab/cron，请先手动安装 cron 后重试"
+        return
+    fi
+    ddns_start_cron_service >/dev/null 2>&1 || warn "cron 服务未能自动启动，请稍后手动检查"
+
+    echo -e "  ${CYAN}$(printf \'─%.0s\' $(seq 1 38))${NC}"
+    read -rp "  子域名（如 home）: " DDNS_SUB
+    [ -z "$DDNS_SUB" ] && { warn "已取消"; return; }
+
+    read -rp "  根域名（如 example.com）: " DDNS_ZONE_NAME
+    [ -z "$DDNS_ZONE_NAME" ] && { warn "已取消"; return; }
+
+    local DDNS_DOMAIN="${DDNS_SUB}.${DDNS_ZONE_NAME}"
+
+    read -rp "  Cloudflare API Token: " DDNS_TOKEN
+    [ -z "$DDNS_TOKEN" ] && { warn "已取消"; return; }
+
+    local DDNS_MODE="ipv4"
+    read -rp "  记录模式 [1=仅IPv4 / 2=IPv4+IPv6，默认1]: " DDNS_MODE_CH
+    case "$DDNS_MODE_CH" in
+        2) DDNS_MODE="dual" ;;
+        *) DDNS_MODE="ipv4" ;;
+    esac
+
+    local DDNS_PROXIED="false"
+    read -rp "  是否开启 Cloudflare 代理（橙云）？(y/N，默认N): " DDNS_PROXY_CH
+    echo "$DDNS_PROXY_CH" | grep -qiE '^y(es)?$' && DDNS_PROXIED="true"
+
+    local DDNS_TTL="60"
+    read -rp "  TTL 秒数（默认60）: " DDNS_TTL_IN
+    [ -n "$DDNS_TTL_IN" ] && [[ "$DDNS_TTL_IN" =~ ^[0-9]+$ ]] && DDNS_TTL="$DDNS_TTL_IN"
+
+    echo ""
+    echo -e "  ${CYAN}$(printf \'─%.0s\' $(seq 1 38))${NC}"
+    echo -e "  域名   : ${BOLD}${DDNS_DOMAIN}${NC}"
+    echo -e "  模式   : ${BOLD}$([ "$DDNS_MODE" = "dual" ] && echo 'IPv4 + IPv6' || echo '仅 IPv4')${NC}"
+    echo -e "  代理   : ${BOLD}$([ "$DDNS_PROXIED" = "true" ] && echo '开启' || echo '关闭')${NC}"
+    echo -e "  TTL    : ${BOLD}${DDNS_TTL}${NC}"
+    echo -e "  Token  : ${BOLD}${DDNS_TOKEN:0:8}…${NC}"
+    echo -e "  ${CYAN}$(printf \'─%.0s\' $(seq 1 38))${NC}"
+    echo ""
+    read -rp "  确认安装？(Y/n，默认Y): " CONFIRM
+    [ -z "$CONFIRM" ] && CONFIRM="y"
+    if ! echo "$CONFIRM" | grep -qiE '^y(es)?$'; then warn "已取消"; return; fi
+
+    echo ""
+    info "验证 Token 和域名..."
+    local ZONE_RESP ZONE_OK ZONE_COUNT ZONE_ID
+    ZONE_RESP=$(curl -s --max-time 10         "https://api.cloudflare.com/client/v4/zones?name=${DDNS_ZONE_NAME}"         -H "Authorization: Bearer ${DDNS_TOKEN}")
+    ZONE_OK=$(echo "$ZONE_RESP" | python3 -c         "import sys,json; print(json.load(sys.stdin).get('success',''))" 2>/dev/null)
+    if [ "$ZONE_OK" != "True" ]; then
+        error "Token 验证失败，请检查 Token 权限（需要 Zone:DNS:Edit）"
+        return
+    fi
+    ZONE_COUNT=$(echo "$ZONE_RESP" | python3 -c         "import sys,json; print(len(json.load(sys.stdin)['result']))" 2>/dev/null)
+    if [ "$ZONE_COUNT" = "0" ]; then
+        error "找不到域名 ${DDNS_ZONE_NAME}，请确认已托管到此 Cloudflare 账号"
+        return
+    fi
+    ZONE_ID=$(echo "$ZONE_RESP" | python3 -c         "import sys,json; print(json.load(sys.stdin)['result'][0]['id'])")
+    info "Token 有效，Zone ID: ${ZONE_ID} ✓"
+
+    # 检查/创建 A 记录
+    local RECORD_RESP RECORD_COUNT CREATE_RESP CREATE_OK
+    RECORD_RESP=$(curl -s --max-time 10         "https://api.cloudflare.com/client/v4/zones/${ZONE_ID}/dns_records?name=${DDNS_DOMAIN}&type=A"         -H "Authorization: Bearer ${DDNS_TOKEN}")
+    RECORD_COUNT=$(echo "$RECORD_RESP" | python3 -c         "import sys,json; print(len(json.load(sys.stdin)['result']))" 2>/dev/null)
+    if [ "$RECORD_COUNT" = "0" ]; then
+        warn "未找到 A 记录，正在自动创建..."
+        CREATE_RESP=$(curl -s -X POST --max-time 10             "https://api.cloudflare.com/client/v4/zones/${ZONE_ID}/dns_records"             -H "Authorization: Bearer ${DDNS_TOKEN}"             -H "Content-Type: application/json"             --data "{"type":"A","name":"${DDNS_DOMAIN}","content":"1.1.1.1","ttl":${DDNS_TTL},"proxied":${DDNS_PROXIED}}")
+        CREATE_OK=$(echo "$CREATE_RESP" | python3 -c             "import sys,json; print(json.load(sys.stdin).get('success',''))" 2>/dev/null)
+        [ "$CREATE_OK" = "True" ] && info "A 记录已创建 ✓" || { error "创建 A 记录失败"; return; }
+    else
+        info "A 记录已存在 ✓"
+    fi
+
+    # 双栈：检查/创建 AAAA 记录
+    if [ "$DDNS_MODE" = "dual" ]; then
+        RECORD_RESP=$(curl -s --max-time 10             "https://api.cloudflare.com/client/v4/zones/${ZONE_ID}/dns_records?name=${DDNS_DOMAIN}&type=AAAA"             -H "Authorization: Bearer ${DDNS_TOKEN}")
+        RECORD_COUNT=$(echo "$RECORD_RESP" | python3 -c             "import sys,json; print(len(json.load(sys.stdin)['result']))" 2>/dev/null)
+        if [ "$RECORD_COUNT" = "0" ]; then
+            warn "未找到 AAAA 记录，正在自动创建..."
+            CREATE_RESP=$(curl -s -X POST --max-time 10                 "https://api.cloudflare.com/client/v4/zones/${ZONE_ID}/dns_records"                 -H "Authorization: Bearer ${DDNS_TOKEN}"                 -H "Content-Type: application/json"                 --data "{"type":"AAAA","name":"${DDNS_DOMAIN}","content":"::1","ttl":${DDNS_TTL},"proxied":${DDNS_PROXIED}}")
+            CREATE_OK=$(echo "$CREATE_RESP" | python3 -c                 "import sys,json; print(json.load(sys.stdin).get('success',''))" 2>/dev/null)
+            if [ "$CREATE_OK" = "True" ]; then
+                info "AAAA 记录已创建 ✓"
+            else
+                warn "AAAA 记录创建失败，将仅更新 IPv4"
+                DDNS_MODE="ipv4"
+            fi
+        else
+            info "AAAA 记录已存在 ✓"
+        fi
+    fi
+
+    # 保存配置
+    echo "$DDNS_TOKEN" > "$DDNS_TOKEN_FILE"
+    chmod 600 "$DDNS_TOKEN_FILE"
+    touch "$DDNS_LOG" 2>/dev/null || { DDNS_LOG="$HOME/ddns.log"; touch "$DDNS_LOG"; }
+    chmod 644 "$DDNS_LOG" 2>/dev/null || true
+    {
+        echo "DOMAIN=${DDNS_DOMAIN}"
+        echo "ZONE=${DDNS_ZONE_NAME}"
+        echo "MODE=${DDNS_MODE}"
+        echo "PROXIED=${DDNS_PROXIED}"
+        echo "TTL=${DDNS_TTL}"
+        echo "LOG=${DDNS_LOG}"
+    } > "$DDNS_ZONE_FILE"
+
+    # 生成 DDNS 执行脚本
+    cat > "$DDNS_SCRIPT" << 'DDNS_INNER'
+#!/bin/bash
+# 注入 PATH，确保 crontab 环境下能找到 curl / python3
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+DOMAIN="__DOMAIN__"
+ZONE="__ZONE__"
+MODE="__MODE__"
+PROXIED="__PROXIED__"
+TTL="__TTL__"
+TOKEN_FILE="/root/.cf_token"
+LOG_FILE="/var/log/ddns.log"
+
+API_TOKEN=$(cat "$TOKEN_FILE" 2>/dev/null)
+[ -z "$API_TOKEN" ] && exit 1
+
+# 发送 Telegram 通知（每次调用时实时读取配置文件，避免 crontab 变量丢失）
+tg_notify() {
+    local MSG="$1"
+    local TG_FILE="/root/.cf_tg"
+    [ -f "$TG_FILE" ] || return 0
+    local B_TOKEN C_ID
+    B_TOKEN=$(grep "^BOT_TOKEN=" "$TG_FILE" | cut -d= -f2-)
+    C_ID=$(grep "^CHAT_ID=" "$TG_FILE" | cut -d= -f2-)
+    [ -z "$B_TOKEN" ] || [ -z "$C_ID" ] && return 0
+    curl -s --max-time 15         "https://api.telegram.org/bot${B_TOKEN}/sendMessage"         -d "chat_id=${C_ID}"         -d "text=${MSG}"         -d "parse_mode=HTML" > /dev/null 2>&1
+}
+
+CURRENT_IP4=$(curl -4 -s --max-time 5 https://api.ipify.org 2>/dev/null     || curl -4 -s --max-time 5 https://ifconfig.me/ip 2>/dev/null | tr -d '
+ '     || curl -4 -s --max-time 5 https://ip.sb 2>/dev/null | tr -d '
+ ')
+CURRENT_IP6=""
+if [ "$MODE" = "dual" ]; then
+    CURRENT_IP6=$(curl -6 -s --max-time 5 https://api64.ipify.org 2>/dev/null         || curl -6 -s --max-time 5 https://ipv6.icanhazip.com 2>/dev/null | tr -d '
+ ')
+fi
+
+[ -z "$CURRENT_IP4" ] && {
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] ERROR: 无法获取公网 IPv4" >> "$LOG_FILE"
+    exit 1
+}
+
+ZONE_ID=$(curl -s --max-time 8 "https://api.cloudflare.com/client/v4/zones?name=${ZONE}"     -H "Authorization: Bearer ${API_TOKEN}" |     python3 -c "import sys,json; print(json.load(sys.stdin)['result'][0]['id'])" 2>/dev/null)
+[ -z "$ZONE_ID" ] && {
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] ERROR: 获取 Zone ID 失败" >> "$LOG_FILE"
+    exit 1
+}
+
+update_record() {
+    local TYPE="$1" NEW_IP="$2"
+    [ -z "$NEW_IP" ] && return 0
+    local RECORD_ID OLD_IP RESULT SUCCESS
+    RECORD_ID=$(curl -s --max-time 8         "https://api.cloudflare.com/client/v4/zones/${ZONE_ID}/dns_records?name=${DOMAIN}&type=${TYPE}"         -H "Authorization: Bearer ${API_TOKEN}" |         python3 -c "import sys,json; print(json.load(sys.stdin)['result'][0]['id'])" 2>/dev/null)
+    [ -z "$RECORD_ID" ] && {
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] ERROR: ${TYPE} 记录不存在" >> "$LOG_FILE"
+        return 1
+    }
+    OLD_IP=$(curl -s --max-time 8         "https://api.cloudflare.com/client/v4/zones/${ZONE_ID}/dns_records/${RECORD_ID}"         -H "Authorization: Bearer ${API_TOKEN}" |         python3 -c "import sys,json; print(json.load(sys.stdin)['result']['content'])" 2>/dev/null)
+    if [ "$NEW_IP" = "$OLD_IP" ]; then
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] OK: ${TYPE} 未变化 ${NEW_IP}" >> "$LOG_FILE"
+        return 0
+    fi
+    local JSON_BODY
+    JSON_BODY=$(printf '{"type":"%s","name":"%s","content":"%s","ttl":%s,"proxied":%s}' \
+        "$TYPE" "$DOMAIN" "$NEW_IP" "$TTL" "$PROXIED")
+    RESULT=$(curl -s -X PUT --max-time 10 \
+        "https://api.cloudflare.com/client/v4/zones/${ZONE_ID}/dns_records/${RECORD_ID}" \
+        -H "Authorization: Bearer ${API_TOKEN}" \
+        -H "Content-Type: application/json" \
+        --data "$JSON_BODY")
+    SUCCESS=$(echo "$RESULT" | python3 -c         "import sys,json; print(json.load(sys.stdin).get('success'))" 2>/dev/null)
+    if [ "$SUCCESS" = "True" ]; then
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] OK: ${TYPE} 更新成功 ${OLD_IP} → ${NEW_IP}" >> "$LOG_FILE"
+        tg_notify "🌐 <b>DDNS IP 已更新</b>
+域名：<code>${DOMAIN}</code>
+类型：${TYPE}
+旧IP：<code>${OLD_IP}</code>
+新IP：<code>${NEW_IP}</code>
+时间：$(date '+%Y-%m-%d %H:%M:%S')"
+    else
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] ERROR: ${TYPE} 更新失败 $RESULT" >> "$LOG_FILE"
+        return 1
+    fi
+}
+
+update_record A "$CURRENT_IP4"
+if [ "$MODE" = "dual" ]; then
+    if [ -n "$CURRENT_IP6" ]; then
+        update_record AAAA "$CURRENT_IP6"
+    else
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] WARN: 未获取到公网 IPv6，跳过 AAAA" >> "$LOG_FILE"
+    fi
+fi
+DDNS_INNER
+
+    sed -i "s/__DOMAIN__/${DDNS_DOMAIN}/g" "$DDNS_SCRIPT"
+    sed -i "s/__ZONE__/${DDNS_ZONE_NAME}/g" "$DDNS_SCRIPT"
+    sed -i "s/__MODE__/${DDNS_MODE}/g" "$DDNS_SCRIPT"
+    sed -i "s/__PROXIED__/${DDNS_PROXIED}/g" "$DDNS_SCRIPT"
+    sed -i "s/__TTL__/${DDNS_TTL}/g" "$DDNS_SCRIPT"
+    chmod +x "$DDNS_SCRIPT"
+
+    local CRON_JOB="*/5 * * * * ${DDNS_SCRIPT} >> ${DDNS_LOG} 2>&1"
+    ( crontab -l 2>/dev/null | grep -v "ddns.sh"; echo "$CRON_JOB" ) | crontab -
+    info "crontab 已设置（每5分钟自动更新）✓"
+    ddns_start_cron_service >/dev/null 2>&1 || true
+
+    echo ""
+    info "立即执行一次测试..."
+    if bash "$DDNS_SCRIPT"; then
+        tail -1 "$DDNS_LOG" 2>/dev/null | while IFS= read -r l; do echo -e "  ${GREEN}$l${NC}"; done
+    else
+        error "执行失败，请查看日志"
+    fi
+    echo ""
+    info "DDNS 配置完成 ✓"
+    echo -e "  域名 : ${BOLD}${DDNS_DOMAIN}${NC}"
+    echo -e "  日志 : ${DIM}${DDNS_LOG}${NC}"
+}
+
+# ── 暂停/恢复 DDNS ────────────────────────────────────────
+ddns_pause() {
+    [ ! -f "$DDNS_SCRIPT" ] && { error "DDNS 未安装"; return; }
+    ( crontab -l 2>/dev/null | grep -v "ddns.sh" ) | crontab - 2>/dev/null
+    info "DDNS 自动更新已暂停 ✓"
+}
+
+ddns_resume() {
+    [ ! -f "$DDNS_SCRIPT" ] && { error "DDNS 未安装"; return; }
+    if ! command -v crontab &>/dev/null; then
+        info "检测到 cron 未安装，正在自动安装..."
+        if ! ddns_ensure_cron; then
+            error "cron 安装失败，请手动执行：apt-get install -y cron"
+            return
+        fi
+    fi
+    local LOG; LOG=$(ddns_log_path)
+    local CRON_JOB="*/5 * * * * ${DDNS_SCRIPT} >> ${LOG} 2>&1"
+    ( crontab -l 2>/dev/null | grep -v "ddns.sh"; echo "$CRON_JOB" ) | crontab -
+    ddns_start_cron_service >/dev/null 2>&1 || true
+    info "DDNS 自动更新已恢复 ✓"
+}
+
+# ── 卸载 DDNS ─────────────────────────────────────────────
+# ── Telegram 通知配置 ─────────────────────────────────────
+ddns_tg_config() {
+    print_header "Telegram 通知配置"
+    echo -e "  ${DIM}IP 变化时自动发送 Telegram 通知${NC}"
+    echo ""
+
+    if [ -f "$DDNS_TG_FILE" ]; then
+        local CUR_BOT CUR_CHAT
+        CUR_BOT=$(grep "^BOT_TOKEN=" "$DDNS_TG_FILE" | cut -d= -f2-)
+        CUR_CHAT=$(grep "^CHAT_ID=" "$DDNS_TG_FILE" | cut -d= -f2-)
+        echo -e "  当前状态：${GREEN}${BOLD}已配置${NC}"
+        echo -e "  Bot Token：${DIM}${CUR_BOT:0:10}…${NC}"
+        echo -e "  Chat ID  ：${BOLD}${CUR_CHAT}${NC}"
+    else
+        echo -e "  当前状态：${YELLOW}未配置${NC}"
+    fi
+
+    echo ""
+    echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+    echo -e "  ${DIM}如何获取：${NC}"
+    echo -e "  ${DIM}① Telegram 搜索 @BotFather → /newbot 创建机器人${NC}"
+    echo -e "  ${DIM}② 获取 Bot Token（格式：123456:ABC-xxx）${NC}"
+    echo -e "  ${DIM}③ 与机器人发一条消息，再访问：${NC}"
+    echo -e "  ${DIM}   https://api.telegram.org/bot<TOKEN>/getUpdates${NC}"
+    echo -e "  ${DIM}④ 从返回的 chat.id 字段获取 Chat ID${NC}"
+    echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+    echo ""
+    echo -e "  ${GREEN}1${NC}) 配置 Telegram 通知"
+    echo -e "  ${GREEN}2${NC}) 发送测试消息"
+    [ -f "$DDNS_TG_FILE" ] && echo -e "  ${YELLOW}3${NC}) 关闭 Telegram 通知"
+    echo -e "  ${RED}0${NC}) 返回"
+    echo ""
+    read -rp "  请选择: " CH
+
+    case "$CH" in
+        1)
+            echo ""
+            read -rp "  Bot Token: " TG_BOT
+            [ -z "$TG_BOT" ] && { warn "已取消"; return; }
+            read -rp "  Chat ID: " TG_CHAT
+            [ -z "$TG_CHAT" ] && { warn "已取消"; return; }
+            {
+                echo "BOT_TOKEN=${TG_BOT}"
+                echo "CHAT_ID=${TG_CHAT}"
+            } > "$DDNS_TG_FILE"
+            chmod 600 "$DDNS_TG_FILE"
+            info "Telegram 通知已配置 ✓"
+            ;;
+        2)
+            if [ ! -f "$DDNS_TG_FILE" ]; then
+                error "请先配置 Telegram 通知"; return
+            fi
+            local BOT CHAT
+            BOT=$(grep "^BOT_TOKEN=" "$DDNS_TG_FILE" | cut -d= -f2-)
+            CHAT=$(grep "^CHAT_ID=" "$DDNS_TG_FILE" | cut -d= -f2-)
+            info "发送测试消息..."
+            local RESP
+            RESP=$(curl -s --max-time 10 \
+                "https://api.telegram.org/bot${BOT}/sendMessage" \
+                --data-urlencode "chat_id=${CHAT}" \
+                --data-urlencode "text=🔔 DDNS 通知测试
+域名：$(ddns_cfg_get DOMAIN)
+时间：$(date '+%Y-%m-%d %H:%M:%S')
+✅ 通知配置成功！" \
+                -d "parse_mode=HTML")
+            echo "$RESP" | python3 -c \
+                "import sys,json; d=json.load(sys.stdin); print('发送成功 ✓' if d.get('ok') else '发送失败：' + str(d.get('description','')))" 2>/dev/null \
+                | while IFS= read -r l; do info "$l"; done
+            ;;
+        3)
+            rm -f "$DDNS_TG_FILE" && info "Telegram 通知已关闭 ✓"
+            ;;
+        0) return ;;
+        *) warn "无效选项" ;;
+    esac
+}
+
+ddns_uninstall() {
+    print_header "卸载 DDNS"
+    warn "将移除 crontab 定时任务、DDNS 脚本和 Token 文件"
+    echo ""
+    read -rp "  确认卸载？(Y/n，默认Y): " CONFIRM
+    [ -z "$CONFIRM" ] && CONFIRM="y"
+    if ! echo "$CONFIRM" | grep -qiE '^y(es)?$'; then warn "已取消"; return; fi
+    ( crontab -l 2>/dev/null | grep -v "ddns.sh" ) | crontab - 2>/dev/null
+    info "crontab 定时任务已移除 ✓"
+    rm -f "$DDNS_SCRIPT" && info "DDNS 脚本已删除 ✓"
+    rm -f "$DDNS_TOKEN_FILE" && info "Token 文件已删除 ✓"
+    rm -f "$DDNS_ZONE_FILE"
+    warn "日志文件保留：${DDNS_LOG}"
+}
+
+# ── 查看日志 ──────────────────────────────────────────────
+ddns_view_logs() {
+    print_header "DDNS 日志"
+    local LOG; LOG=$(ddns_log_path)
+    if [ ! -f "$LOG" ]; then warn "日志文件不存在"; return; fi
+    echo -e "  ${DIM}${LOG}${NC}"
+    echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+    tail -20 "$LOG" | while IFS= read -r line; do
+        if echo "$line" | grep -q "ERROR"; then
+            echo -e "  ${RED}$line${NC}"
+        elif echo "$line" | grep -q "OK:.*更新成功"; then
+            echo -e "  ${GREEN}$line${NC}"
+        else
+            echo -e "  ${DIM}$line${NC}"
+        fi
+    done
+    echo ""
+    echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+    echo -e "  ${GREEN}1${NC}) 实时跟踪（Ctrl+C 返回）  ${RED}0${NC}) 返回"
+    echo ""
+    read -rp "  请选择: " CH
+    if [ "$CH" = "1" ]; then
+        trap 'echo ""; info "已退出实时跟踪"; trap - INT' INT
+        tail -f "$LOG"
+        trap - INT
+    fi
+}
+
+# ── 手动立即更新 ──────────────────────────────────────────
+ddns_run_now() {
+    print_header "手动更新 DDNS"
+    [ ! -f "$DDNS_SCRIPT" ] && { error "DDNS 未安装"; return; }
+    info "正在更新..."
+    if bash "$DDNS_SCRIPT"; then
+        local LOG; LOG=$(ddns_log_path)
+        tail -1 "$LOG" 2>/dev/null | while IFS= read -r l; do echo -e "  ${GREEN}$l${NC}"; done
+    else
+        error "更新失败，请查看日志"
+    fi
+}
+
+# ── DDNS 主菜单 ───────────────────────────────────────────
+ddns_menu() {
+    while true; do
+        local D_ST; D_ST=$(ddns_status)
+        local D_COLOR D_LABEL
+        case "$D_ST" in
+            running)       D_COLOR="$GREEN";  D_LABEL="运行中" ;;
+            stopped)       D_COLOR="$RED";    D_LABEL="已停止（cron任务未设置）" ;;
+            no_cron)       D_COLOR="$RED";    D_LABEL="已停止（cron未安装）" ;;
+            not_installed) D_COLOR="$YELLOW"; D_LABEL="未安装" ;;
+        esac
+
+        print_header "Cloudflare DDNS"
+
+        if [ "$D_ST" != "not_installed" ] && [ -f "$DDNS_ZONE_FILE" ]; then
+            local D_DOMAIN D_MODE D_PROXIED D_TTL D_LOG
+            D_DOMAIN=$(ddns_cfg_get DOMAIN)
+            D_MODE=$(ddns_cfg_get MODE)
+            D_PROXIED=$(ddns_cfg_get PROXIED)
+            D_TTL=$(ddns_cfg_get TTL)
+            D_LOG=$(ddns_log_path)
+            echo -e "  状态 : ${D_COLOR}${BOLD}${D_LABEL}${NC}"
+            echo -e "  域名 : ${BOLD}${D_DOMAIN}${NC}"
+            echo -e "  模式 : ${BOLD}$([ "$D_MODE" = "dual" ] && echo 'IPv4 + IPv6' || echo '仅 IPv4')${NC}"
+            echo -e "  代理 : ${BOLD}$([ "$D_PROXIED" = "true" ] && echo '开启' || echo '关闭')${NC}"
+            echo -e "  TTL  : ${BOLD}${D_TTL:-60}${NC}"
+            echo -e "  定时 : ${DIM}每5分钟自动更新${NC}"
+            local LAST_LOG; LAST_LOG=$(tail -1 "$D_LOG" 2>/dev/null)
+            [ -n "$LAST_LOG" ] && echo -e "  最新 : ${DIM}${LAST_LOG}${NC}"
+        elif [ -f "$DDNS_ZONE_FILE" ]; then
+            local D_DOMAIN D_MODE D_TOKEN_HINT
+            D_DOMAIN=$(ddns_cfg_get DOMAIN)
+            D_MODE=$(ddns_cfg_get MODE)
+            [ -f "$DDNS_TOKEN_FILE" ] && D_TOKEN_HINT="${DIM}Token 已保存${NC}" || D_TOKEN_HINT="${YELLOW}Token 未找到${NC}"
+            echo -e "  状态 : ${D_COLOR}${BOLD}${D_LABEL}${NC}"
+            echo -e "  域名 : ${BOLD}${D_DOMAIN}${NC}"
+            echo -e "  模式 : ${BOLD}$([ "$D_MODE" = "dual" ] && echo 'IPv4 + IPv6' || echo '仅 IPv4')${NC}"
+            echo -e "  Token : $D_TOKEN_HINT"
+            echo ""
+            echo -e "  ${DIM}检测到历史配置，可重新安装恢复定时任务${NC}"
+        else
+            echo -e "  状态 : ${D_COLOR}${BOLD}${D_LABEL}${NC}"
+            echo ""
+            echo -e "  ${DIM}将动态 DNS 解析到本机 IP，适合家宽/动态 IP 场景${NC}"
+            echo ""
+            echo -e "  ${BOLD}安装前准备：${NC}"
+            echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+            echo -e "  ${GREEN}①${NC} 域名已托管到 Cloudflare"
+            echo -e "     将域名 NS 记录指向 Cloudflare 提供的 nameserver"
+            echo ""
+            echo -e "  ${GREEN}②${NC} 创建 API Token（需要以下权限）："
+            echo -e "     ${DIM}→ 登录 https://dash.cloudflare.com${NC}"
+            echo -e "     ${DIM}→ 右上角头像 → My Profile → API Tokens${NC}"
+            echo -e "     ${DIM}→ Create Token → Custom Token${NC}"
+            echo -e "     ${DIM}→ 权限：Zone / DNS / Edit${NC}"
+            echo -e "     ${DIM}→ Zone Resources：Include / Specific zone / 你的域名${NC}"
+            echo -e "     ${DIM}→ 点击 Continue to summary → Create Token${NC}"
+            echo -e "     ${DIM}→ 复制 Token（只显示一次！）${NC}"
+            echo ""
+            echo -e "  ${GREEN}③${NC} 准备子域名（如 home.example.com 的 home 部分）"
+            echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+        fi
+
+        echo ""
+        echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+        if [ "$D_ST" = "not_installed" ]; then
+            echo -e "  ${GREEN}1${NC}) 开始安装配置 DDNS"
+            echo -e "  ${RED}0${NC}) 返回  ${RED}00${NC}) 退出脚本"
+        else
+            echo -e "  ${GREEN}1${NC}) 手动立即更新     ${GREEN}2${NC}) 查看日志"
+            echo -e "  ${GREEN}3${NC}) 修改配置         ${GREEN}6${NC}) Telegram 通知"
+            if [ "$D_ST" = "running" ]; then
+                echo -e "  ${YELLOW}4${NC}) 暂停自动更新     ${YELLOW}5${NC}) 卸载 DDNS"
+            elif [ "$D_ST" = "no_cron" ]; then
+                echo -e "  ${GREEN}4${NC}) 安装 cron 并恢复  ${YELLOW}5${NC}) 卸载 DDNS"
+            else
+                echo -e "  ${GREEN}4${NC}) 恢复自动更新     ${YELLOW}5${NC}) 卸载 DDNS"
+            fi
+            echo -e "  ${RED}0${NC}) 返回  ${RED}00${NC}) 退出脚本"
+        fi
+        echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+        echo ""
+        read -rp "  请选择: " CH
+
+        if [ "$D_ST" = "not_installed" ]; then
+            case "$CH" in
+                1) ddns_install ;;
+                0) return ;;
+                00) safe_clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;
+                *) warn "无效选项"; sleep 1; continue ;;
+            esac
+        else
+            case "$CH" in
+                1) ddns_run_now ;;
+                2) ddns_view_logs ;;
+                3) warn "修改配置将重新安装 DDNS"
+                   read -rp "  确认继续？(Y/n，默认Y): " C
+                   [ -z "$C" ] && C="y"
+                   echo "$C" | grep -qiE '^y(es)?$' && ddns_install || warn "已取消" ;;
+                4) [ "$D_ST" = "running" ] && ddns_pause || ddns_resume ;;
+                5) ddns_uninstall ;;
+                6) ddns_tg_config ;;
+                0) return ;;
+                00) safe_clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;
+                *) warn "无效选项"; sleep 1; continue ;;
+            esac
+        fi
+
+        [ "$CH" != "0" ] && { echo ""; read -rp "  按 Enter 返回..." _; }
+    done
+}
+
+# ══════════════════════════════════════════════════════════
+#  脚本自我管理模块
+# ══════════════════════════════════════════════════════════
+
+SCRIPT_URL="https://raw.githubusercontent.com/chnnic/SSH-Hardening/refs/heads/main/SSH-Hardening.sh"
+LOCAL_SCRIPT="/usr/local/bin/vps-tools"
+
+# ── 安装脚本到本地（设置快捷键 v）────────────────────────
+self_install() {
+    print_header "安装脚本到本地"
+    echo -e "  将脚本安装到 ${BOLD}${LOCAL_SCRIPT}${NC}"
+    echo -e "  安装后输入 ${GREEN}v${NC} 或 ${GREEN}V${NC} 即可快速呼出"
+    echo ""
+
+    # 优先复制当前运行的脚本
+    local SELF; SELF=$(readlink -f "${0}" 2>/dev/null || echo "${0}")
+
+    if [ -f "$SELF" ] && [ "$SELF" != "$LOCAL_SCRIPT" ]; then
+        cp "$SELF" "$LOCAL_SCRIPT"
+    elif [ -f /tmp/ssh_hardening.sh ]; then
+        cp /tmp/ssh_hardening.sh "$LOCAL_SCRIPT"
+    else
+        info "本地缓存不存在，从 GitHub 下载..."
+        if ! curl -fsSL "$SCRIPT_URL" -o "$LOCAL_SCRIPT" 2>/dev/null; then
+            error "下载失败，请检查网络"; return 1
+        fi
+    fi
+
+    chmod +x "$LOCAL_SCRIPT"
+    info "脚本已安装到 ${LOCAL_SCRIPT} ✓"
+
+    # 创建系统级命令 v / V（最可靠，无需 source）
+    # 检测 v/V 是否已被其他脚本占用
+    for _CMD in v V; do
+        local _TARGET="/usr/local/bin/${_CMD}"
+        if [ -L "$_TARGET" ] && [ "$(readlink "$_TARGET")" != "$LOCAL_SCRIPT" ]; then
+            warn "快捷键 ${_CMD} 已被其他脚本占用（$(readlink "$_TARGET")），跳过"
+        elif [ -f "$_TARGET" ] && [ ! -L "$_TARGET" ]; then
+            warn "快捷键 ${_CMD} 是独立文件（非软链接），跳过以避免覆盖"
+        else
+            ln -sf "$LOCAL_SCRIPT" "$_TARGET" 2>/dev/null && info "系统命令 ${_CMD} 已创建 ✓"
+        fi
+    done
+
+    # 不写入 alias，只用软链接，避免前缀冲突其他命令（如 volss）
+    local WROTE_ALIAS=false
+
+    echo ""
+    echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+    info "安装完成！新终端直接输入 ${BOLD}v${NC} 即可启动"
+    echo -e "  ${DIM}软链接已创建，无需 source，新终端直接可用${NC}"
+    echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+}
+
+# ── 强制从 GitHub 更新脚本 ────────────────────────────────
+self_update() {
+    print_header "强制更新脚本"
+    echo -e "  ${DIM}${SCRIPT_URL}${NC}"
+    echo ""
+
+    local TMP_FILE; TMP_FILE="/tmp/vps_update_$$.sh"
+
+    info "正在下载最新版本..."
+    if ! curl -fsSL "$SCRIPT_URL" -o "$TMP_FILE" 2>/dev/null; then
+        rm -f "$TMP_FILE"
+        error "下载失败，请检查网络连接"
+        echo -e "  ${DIM}手动更新：curl -fsSL ${SCRIPT_URL} -o ${LOCAL_SCRIPT} && chmod +x ${LOCAL_SCRIPT}${NC}"
+        return
+    fi
+
+    # 验证语法
+    if ! bash -n "$TMP_FILE" 2>/dev/null; then
+        rm -f "$TMP_FILE"
+        error "下载的文件语法有误，已取消更新"
+        return
+    fi
+
+    # 版本对比
+    local NEW_VER; NEW_VER=$(grep -oE 'V[0-9]+\.[0-9]+\.[0-9]+|V[0-9]+\.[0-9]+' "$TMP_FILE" | head -1)
+    local CUR_VER; CUR_VER=$(grep -oE 'V[0-9]+\.[0-9]+\.[0-9]+|V[0-9]+\.[0-9]+' "${LOCAL_SCRIPT}" 2>/dev/null | head -1)
+    echo -e "  当前版本：${BOLD}${CUR_VER:-未知}${NC}  →  最新版本：${GREEN}${BOLD}${NEW_VER:-未知}${NC}"
+    echo ""
+
+    # 覆盖安装
+    cp "$TMP_FILE" "$LOCAL_SCRIPT"
+    chmod +x "$LOCAL_SCRIPT"
+    cp "$TMP_FILE" /tmp/ssh_hardening.sh 2>/dev/null
+    rm -f "$TMP_FILE"
+
+    # 确保 v 命令还在
+    ln -sf "$LOCAL_SCRIPT" /usr/local/bin/v 2>/dev/null
+    ln -sf "$LOCAL_SCRIPT" /usr/local/bin/V 2>/dev/null
+
+    info "更新完成 ✓"
+    # 清理旧版写入的 alias（旧版本会写 alias v=，会拦截其他命令如 volss）
+    for RC in /root/.bashrc /root/.bash_profile ~/.bashrc ~/.bash_profile ~/.zshrc; do
+        [ -f "$RC" ] || continue
+        if grep -q "VPS 开荒脚本快捷键" "$RC" 2>/dev/null; then
+            grep -v "alias v=\|alias V=\|VPS 开荒脚本快捷键" "$RC" > "${RC}.tmp" \
+                && mv "${RC}.tmp" "$RC"
+            info "已清理旧版 alias（${RC}）✓"
+        fi
+    done
+    # 清除更新提示，避免新版本启动后还显示旧提示
+    rm -f /tmp/.vps_new_version 2>/dev/null
+    warn "即将用新版本重启脚本..."
+    sleep 1
+    exec "$LOCAL_SCRIPT"
+}
+
+# ── 脚本管理菜单 ──────────────────────────────────────────
+# ── 删除本地脚本和快捷键 ─────────────────────────────────
+self_uninstall() {
+    print_header "删除本地脚本和快捷键"
+    warn "将删除以下内容："
+    echo -e "  ${DIM}${LOCAL_SCRIPT}${NC}"
+    echo -e "  ${DIM}/usr/local/bin/v${NC}"
+    echo -e "  ${DIM}/usr/local/bin/V${NC}"
+    echo -e "  ${DIM}/usr/local/bin/V${NC}"
+    echo -e "  ${DIM}各 shell 配置文件中的 alias v=...${NC}"
+    echo ""
+    read -rp "  确认删除？(Y/n，默认Y): " CONFIRM
+    [ -z "$CONFIRM" ] && CONFIRM="y"
+    if ! echo "$CONFIRM" | grep -qiE '^y(es)?$'; then warn "已取消"; return; fi
+
+    # 删除本地脚本
+    rm -f "$LOCAL_SCRIPT" && info "已删除 ${LOCAL_SCRIPT} ✓"
+
+    # 删除系统命令
+    rm -f /usr/local/bin/v /usr/local/bin/V && info "已删除系统命令 v/V ✓"
+
+    # 清理 shell 配置文件中可能残留的旧版 alias
+    for RC in /root/.bashrc /root/.bash_profile ~/.bashrc ~/.bash_profile ~/.zshrc; do
+        [ -f "$RC" ] || continue
+        if grep -q "VPS 开荒脚本快捷键" "$RC" 2>/dev/null; then
+            grep -v "alias v=\|alias V=\|VPS 开荒脚本快捷键" "$RC" > "${RC}.tmp" \
+                && mv "${RC}.tmp" "$RC"
+            info "已清理旧版 alias（${RC}）✓"
+        fi
+    done
+
+    echo ""
+    info "清理完成，快捷键 v 已移除"
+    warn "当前会话仍可使用 alias，重新登录后完全生效"
+    echo ""
+    read -rp "  按 Enter 返回..." _
+    return
+}
+
+# ── 首次运行检测是否已安装快捷键 ─────────────────────────
+self_check_first_run() {
+    # 已安装则跳过
+    [ -f /usr/local/bin/v ] && return
+    [ -f "$LOCAL_SCRIPT" ] && return
+
+    clear
+    echo ""
+    box_top
+    box_title "VPS 开荒脚本 V3.1.4"
+    box_line "  ··银趴火山帮··" "  ${DIM}··银趴火山帮··${NC}"
+    box_sep
+    box_title "首次运行检测"
+    box_bot
+    echo ""
+    echo -e "  ${YELLOW}检测到脚本未安装到本地${NC}"
+    echo -e "  安装后可随时输入 ${BOLD}v${NC} 快速启动"
+    echo ""
+    echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+    echo -e "  ${GREEN}1${NC}) 立即安装（推荐）"
+    echo -e "  ${GREEN}0${NC}) 跳过，直接进入"
+    echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+    echo ""
+    read -rp "  请选择 [0-1]: " CH
+    case "$CH" in
+        1)
+            self_install
+            echo ""
+            read -rp "  按 Enter 继续进入主菜单..." _
+            ;;
+        *) ;;
+    esac
+}
+
+self_manage_menu() {
+    while true; do
+        print_header "脚本管理"
+
+        local IS_INSTALLED=false
+        local CUR_VER=""
+        if [ -f "$LOCAL_SCRIPT" ]; then
+            IS_INSTALLED=true
+            CUR_VER=$(grep -oE 'V[0-9]+\.[0-9]+\.[0-9]+|V[0-9]+\.[0-9]+' "$LOCAL_SCRIPT" | head -1)
+        fi
+        local HAS_CMD=false
+        [ -f /usr/local/bin/v ] && HAS_CMD=true
+
+        echo -e "  本地路径：${BOLD}${LOCAL_SCRIPT}${NC}"
+        if [ "$IS_INSTALLED" = true ]; then
+            echo -e "  状  态  ：${GREEN}${BOLD}已安装${NC}  版本：${BOLD}${CUR_VER:-未知}${NC}"
+        else
+            echo -e "  状  态  ：${YELLOW}${BOLD}未安装${NC}"
+        fi
+        echo -e "  快捷键 v：${BOLD}$([ "$HAS_CMD" = true ] && echo "${GREEN}已设置${NC}" || echo "${YELLOW}未设置${NC}")${NC}"
+        echo ""
+        echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+        echo -e "  ${GREEN}1${NC}) 安装脚本 + 设置快捷键 v"
+        echo -e "  ${GREEN}2${NC}) 从 GitHub 更新最新版"
+        echo -e "  ${YELLOW}3${NC}) 删除本地脚本和快捷键"
+        echo -e "  ${RED}0${NC}) 返回              ${RED}00${NC}) 退出脚本"
+        echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+        echo ""
+        read -rp "  请选择 [0-3]: " CH
+
+        case "$CH" in
+            1) self_install ;;
+            2) self_update ;;
+            3) self_uninstall ;;
+            0) return ;;
+            00) safe_clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;
+            *) warn "无效选项"; sleep 1; continue ;;
+        esac
+
+        [ "${CH}" != "0" ] && [ "${CH}" != "3" ] && { echo ""; read -rp "  按 Enter 返回..." _; }
+    done
+}
+
+
+
+# ══════════════════════════════════════════════════════════
+#  Cloudflare DDNS 模块
+# ══════════════════════════════════════════════════════════
+
+DDNS_SCRIPT="/root/ddns.sh"
+DDNS_TOKEN_FILE="/root/.cf_token"
+DDNS_LOG="/var/log/ddns.log"
+DDNS_ZONE_FILE="/root/.cf_zone"
+DDNS_TG_FILE="/root/.cf_tg"    # Telegram 通知配置   # 保存 zone/domain 信息
+
+# ── 检测 DDNS 安装状态 ────────────────────────────────────
+ddns_status() {
+    if [ ! -f "$DDNS_SCRIPT" ]; then
+        echo "not_installed"
+    elif ! crontab -l 2>/dev/null | grep -q "ddns.sh"; then
+        echo "stopped"
+    else
+        echo "running"
+    fi
+}
+
+# ── 安装/配置 DDNS ────────────────────────────────────────
+ddns_install() {
+    print_header "Cloudflare DDNS 配置"
+    echo -e "  ${DIM}动态 DNS：自动将域名 A 记录更新为本机公网 IP${NC}"
+    echo ""
+
+    # 检查依赖
+    for cmd in curl python3; do
+        if ! command -v "$cmd" &>/dev/null; then
+            info "安装依赖 $cmd..."
+            pkg_install "$cmd" &>/dev/null
+        fi
+    done
+
+    echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+
+    # 收集信息
+    read -rp "  子域名（如 home）: " DDNS_SUB
+    [ -z "$DDNS_SUB" ] && { warn "已取消"; return; }
+
+    read -rp "  根域名（如 example.com）: " DDNS_ZONE
+    [ -z "$DDNS_ZONE" ] && { warn "已取消"; return; }
+
+    local DDNS_DOMAIN="${DDNS_SUB}.${DDNS_ZONE}"
+
+    read -rp "  Cloudflare API Token: " DDNS_TOKEN
+    [ -z "$DDNS_TOKEN" ] && { warn "已取消"; return; }
+
+    echo ""
+    echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+    echo -e "  域名  : ${BOLD}${DDNS_DOMAIN}${NC}"
+    echo -e "  Token : ${BOLD}${DDNS_TOKEN:0:8}…（已隐藏）${NC}"
+    echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+    echo ""
+    read -rp "  确认安装？(Y/n，默认Y): " CONFIRM
+    [ -z "$CONFIRM" ] && CONFIRM="y"
+    if ! echo "$CONFIRM" | grep -qiE '^y(es)?$'; then warn "已取消"; return; fi
+
+    # 验证 Token 和域名
+    echo ""
+    info "验证 Token 和域名..."
+    local ZONE_RESP
+    ZONE_RESP=$(curl -s --max-time 10 \
+        "https://api.cloudflare.com/client/v4/zones?name=${DDNS_ZONE}" \
+        -H "Authorization: Bearer ${DDNS_TOKEN}")
+
+    local ZONE_OK
+    ZONE_OK=$(echo "$ZONE_RESP" | python3 -c \
+        "import sys,json; print(json.load(sys.stdin).get('success',''))" 2>/dev/null)
+
+    if [ "$ZONE_OK" != "True" ]; then
+        error "Token 验证失败，请检查 Token 权限（需要 Zone:DNS:Edit）"
+        return
+    fi
+
+    local ZONE_COUNT
+    ZONE_COUNT=$(echo "$ZONE_RESP" | python3 -c \
+        "import sys,json; print(len(json.load(sys.stdin)['result']))" 2>/dev/null)
+
+    if [ "$ZONE_COUNT" = "0" ]; then
+        error "找不到域名 ${DDNS_ZONE}，请确认已托管到此 Cloudflare 账号"
+        return
+    fi
+
+    local ZONE_ID
+    ZONE_ID=$(echo "$ZONE_RESP" | python3 -c \
+        "import sys,json; print(json.load(sys.stdin)['result'][0]['id'])")
+    info "Token 有效，Zone ID: ${ZONE_ID} ✓"
+
+    # 检查 A 记录，不存在则创建
+    local RECORD_RESP
+    RECORD_RESP=$(curl -s --max-time 10 \
+        "https://api.cloudflare.com/client/v4/zones/${ZONE_ID}/dns_records?name=${DDNS_DOMAIN}&type=A" \
+        -H "Authorization: Bearer ${DDNS_TOKEN}")
+
+    local RECORD_COUNT
+    RECORD_COUNT=$(echo "$RECORD_RESP" | python3 -c \
+        "import sys,json; print(len(json.load(sys.stdin)['result']))" 2>/dev/null)
+
+    if [ "$RECORD_COUNT" = "0" ]; then
+        warn "未找到 A 记录，正在自动创建..."
+        local CREATE_RESP
+        CREATE_RESP=$(curl -s -X POST --max-time 10 \
+            "https://api.cloudflare.com/client/v4/zones/${ZONE_ID}/dns_records" \
+            -H "Authorization: Bearer ${DDNS_TOKEN}" \
+            -H "Content-Type: application/json" \
+            --data "{\"type\":\"A\",\"name\":\"${DDNS_DOMAIN}\",\"content\":\"1.1.1.1\",\"ttl\":60,\"proxied\":false}")
+        local CREATE_OK
+        CREATE_OK=$(echo "$CREATE_RESP" | python3 -c \
+            "import sys,json; print(json.load(sys.stdin).get('success',''))" 2>/dev/null)
+        if [ "$CREATE_OK" = "True" ]; then
+            info "A 记录已创建（稍后自动更新为真实 IP）✓"
+        else
+            error "创建 A 记录失败，请手动在 Cloudflare 面板创建后重试"
+            return
+        fi
+    else
+        info "A 记录已存在 ✓"
+    fi
+
+    # 保存 Token
+    echo "$DDNS_TOKEN" > "$DDNS_TOKEN_FILE"
+    chmod 600 "$DDNS_TOKEN_FILE"
+
+    # 保存域名信息
+    echo "DOMAIN=${DDNS_DOMAIN}" > "$DDNS_ZONE_FILE"
+    echo "ZONE=${DDNS_ZONE}" >> "$DDNS_ZONE_FILE"
+
+    # 生成 DDNS 执行脚本
+    cat > "$DDNS_SCRIPT" << 'DDNS_INNER'
+#!/bin/bash
+# 注入 PATH，确保 crontab 环境下能找到 curl / python3
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+DOMAIN="__DOMAIN__"
+ZONE="__ZONE__"
+MODE="__MODE__"
+PROXIED="__PROXIED__"
+TTL="__TTL__"
+TOKEN_FILE="/root/.cf_token"
+LOG_FILE="/var/log/ddns.log"
+
+API_TOKEN=$(cat "$TOKEN_FILE" 2>/dev/null)
+[ -z "$API_TOKEN" ] && exit 1
+
+# 发送 Telegram 通知（实时读取配置，兼容 crontab 环境）
+tg_notify() {
+    local MSG="$1"
+    local TG_FILE="/root/.cf_tg"
+    [ -f "$TG_FILE" ] || return 0
+    local B_TOKEN C_ID
+    B_TOKEN=$(grep "^BOT_TOKEN=" "$TG_FILE" | cut -d= -f2-)
+    C_ID=$(grep "^CHAT_ID=" "$TG_FILE" | cut -d= -f2-)
+    [ -z "$B_TOKEN" ] || [ -z "$C_ID" ] && return 0
+    curl -s --max-time 15         "https://api.telegram.org/bot${B_TOKEN}/sendMessage"         -d "chat_id=${C_ID}"         -d "text=${MSG}"         -d "parse_mode=HTML" > /dev/null 2>&1
+}
+
+CURRENT_IP4=$(curl -4 -s --max-time 5 https://api.ipify.org 2>/dev/null     || curl -4 -s --max-time 5 https://ifconfig.me/ip 2>/dev/null | tr -d '
+ '     || curl -4 -s --max-time 5 https://ip.sb 2>/dev/null | tr -d '
+ ')
+CURRENT_IP6=""
+if [ "$MODE" = "dual" ]; then
+    CURRENT_IP6=$(curl -6 -s --max-time 5 https://api64.ipify.org 2>/dev/null         || curl -6 -s --max-time 5 https://ipv6.icanhazip.com 2>/dev/null | tr -d '
+ ')
+fi
+
+[ -z "$CURRENT_IP4" ] && {
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] ERROR: 无法获取公网 IPv4" >> "$LOG_FILE"
+    exit 1
+}
+
+ZONE_ID=$(curl -s --max-time 8 "https://api.cloudflare.com/client/v4/zones?name=${ZONE}"     -H "Authorization: Bearer ${API_TOKEN}" |     python3 -c "import sys,json; print(json.load(sys.stdin)['result'][0]['id'])" 2>/dev/null)
+[ -z "$ZONE_ID" ] && {
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] ERROR: 获取 Zone ID 失败" >> "$LOG_FILE"
+    exit 1
+}
+
+update_record() {
+    local TYPE="$1" NEW_IP="$2"
+    [ -z "$NEW_IP" ] && return 0
+    local RECORD_ID OLD_IP RESULT SUCCESS
+    RECORD_ID=$(curl -s --max-time 8         "https://api.cloudflare.com/client/v4/zones/${ZONE_ID}/dns_records?name=${DOMAIN}&type=${TYPE}"         -H "Authorization: Bearer ${API_TOKEN}" |         python3 -c "import sys,json; print(json.load(sys.stdin)['result'][0]['id'])" 2>/dev/null)
+    [ -z "$RECORD_ID" ] && {
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] ERROR: ${TYPE} 记录不存在" >> "$LOG_FILE"
+        return 1
+    }
+    OLD_IP=$(curl -s --max-time 8         "https://api.cloudflare.com/client/v4/zones/${ZONE_ID}/dns_records/${RECORD_ID}"         -H "Authorization: Bearer ${API_TOKEN}" |         python3 -c "import sys,json; print(json.load(sys.stdin)['result']['content'])" 2>/dev/null)
+    if [ "$NEW_IP" = "$OLD_IP" ]; then
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] OK: ${TYPE} 未变化 ${NEW_IP}" >> "$LOG_FILE"
+        return 0
+    fi
+    local JSON_BODY
+    JSON_BODY=$(printf '{"type":"%s","name":"%s","content":"%s","ttl":%s,"proxied":%s}' \
+        "$TYPE" "$DOMAIN" "$NEW_IP" "$TTL" "$PROXIED")
+    RESULT=$(curl -s -X PUT --max-time 10 \
+        "https://api.cloudflare.com/client/v4/zones/${ZONE_ID}/dns_records/${RECORD_ID}" \
+        -H "Authorization: Bearer ${API_TOKEN}" \
+        -H "Content-Type: application/json" \
+        --data "$JSON_BODY")
+    SUCCESS=$(echo "$RESULT" | python3 -c         "import sys,json; print(json.load(sys.stdin).get('success'))" 2>/dev/null)
+    if [ "$SUCCESS" = "True" ]; then
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] OK: ${TYPE} 更新成功 ${OLD_IP} → ${NEW_IP}" >> "$LOG_FILE"
+        tg_notify "🌐 <b>DDNS IP 已更新</b>
+域名：<code>${DOMAIN}</code>
+类型：${TYPE}
+旧IP：<code>${OLD_IP}</code>
+新IP：<code>${NEW_IP}</code>
+时间：$(date '+%Y-%m-%d %H:%M:%S')"
+    else
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] ERROR: ${TYPE} 更新失败 $RESULT" >> "$LOG_FILE"
+        return 1
+    fi
+}
+
+update_record A "$CURRENT_IP4"
+if [ "$MODE" = "dual" ]; then
+    if [ -n "$CURRENT_IP6" ]; then
+        update_record AAAA "$CURRENT_IP6"
+    else
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] WARN: 未获取到公网 IPv6，跳过 AAAA" >> "$LOG_FILE"
+    fi
+fi
+DDNS_INNER
+
+    sed -i "s/__DOMAIN__/${DDNS_DOMAIN}/g" "$DDNS_SCRIPT"
+    sed -i "s/__ZONE__/${DDNS_ZONE}/g" "$DDNS_SCRIPT"
+    sed -i "s/__MODE__/${DDNS_MODE:-ipv4}/g" "$DDNS_SCRIPT"
+    sed -i "s/__PROXIED__/${DDNS_PROXIED:-false}/g" "$DDNS_SCRIPT"
+    sed -i "s/__TTL__/${DDNS_TTL:-60}/g" "$DDNS_SCRIPT"
+    chmod +x "$DDNS_SCRIPT"
+
+    # 创建日志文件
+    touch "$DDNS_LOG" 2>/dev/null || { DDNS_LOG="$HOME/ddns.log"; touch "$DDNS_LOG"; }
+    chmod 644 "$DDNS_LOG" 2>/dev/null || true
+
+    # 设置 crontab（每5分钟）
+    local CRON_JOB="*/5 * * * * ${DDNS_SCRIPT} >> ${DDNS_LOG} 2>&1"
+    ( crontab -l 2>/dev/null | grep -v "ddns.sh"; echo "$CRON_JOB" ) | crontab -
+    info "crontab 已设置（每5分钟自动更新）✓"
+
+    # 立即执行一次
+    echo ""
+    info "立即执行一次测试..."
+    if bash "$DDNS_SCRIPT"; then
+        tail -1 "$DDNS_LOG" 2>/dev/null | while IFS= read -r l; do
+            echo -e "  ${GREEN}$l${NC}"
+        done
+    else
+        error "执行失败，请查看日志"
+    fi
+
+    echo ""
+    info "DDNS 配置完成 ✓"
+    echo -e "  域名 : ${BOLD}${DDNS_DOMAIN}${NC}"
+    echo -e "  日志 : ${DIM}${DDNS_LOG}${NC}"
+}
+
+# ── 卸载 DDNS ─────────────────────────────────────────────
+ddns_uninstall() {
+    print_header "卸载 DDNS"
+    warn "将移除 crontab 定时任务、DDNS 脚本和 Token 文件"
+    echo ""
+    read -rp "  确认卸载？(Y/n，默认Y): " CONFIRM
+    [ -z "$CONFIRM" ] && CONFIRM="y"
+    if ! echo "$CONFIRM" | grep -qiE '^y(es)?$'; then warn "已取消"; return; fi
+
+    # 移除 crontab
+    ( crontab -l 2>/dev/null | grep -v "ddns.sh" ) | crontab - 2>/dev/null
+    info "crontab 定时任务已移除 ✓"
+
+    # 删除文件
+    rm -f "$DDNS_SCRIPT" && info "DDNS 脚本已删除 ✓"
+    rm -f "$DDNS_TOKEN_FILE" && info "Token 文件已删除 ✓"
+    rm -f "$DDNS_ZONE_FILE"
+    warn "日志文件保留：${DDNS_LOG}"
+}
+
+# ── 查看日志 ──────────────────────────────────────────────
+ddns_view_logs() {
+    print_header "DDNS 日志"
+    local LOG="$DDNS_LOG"
+    [ ! -f "$LOG" ] && LOG="$HOME/ddns.log"
+    if [ ! -f "$LOG" ]; then
+        warn "日志文件不存在"
+        return
+    fi
+    echo -e "  ${DIM}${LOG}${NC}"
+    echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+    tail -20 "$LOG" | while IFS= read -r line; do
+        if echo "$line" | grep -q "ERROR"; then
+            echo -e "  ${RED}$line${NC}"
+        elif echo "$line" | grep -q "更新成功"; then
+            echo -e "  ${GREEN}$line${NC}"
+        else
+            echo -e "  ${DIM}$line${NC}"
+        fi
+    done
+    echo ""
+    echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+    echo -e "  ${GREEN}1${NC}) 实时跟踪（Ctrl+C 返回）"
+    echo -e "  ${RED}0${NC}) 返回"
+    echo ""
+    read -rp "  请选择: " CH
+    if [ "$CH" = "1" ]; then
+        trap 'echo ""; info "已退出实时跟踪"; trap - INT' INT
+        tail -f "$LOG"
+        trap - INT
+    fi
+}
+
+# ── 手动立即更新 ──────────────────────────────────────────
+ddns_run_now() {
+    print_header "手动更新 DDNS"
+    if [ ! -f "$DDNS_SCRIPT" ]; then
+        error "DDNS 未安装"; return
+    fi
+    info "正在更新..."
+    if bash "$DDNS_SCRIPT"; then
+        local LOG="$DDNS_LOG"
+        [ ! -f "$LOG" ] && LOG="$HOME/ddns.log"
+        tail -1 "$LOG" 2>/dev/null | while IFS= read -r l; do
+            echo -e "  ${GREEN}$l${NC}"
+        done
+    else
+        error "更新失败，请查看日志"
+    fi
+}
+
+# ── 修改配置 ──────────────────────────────────────────────
+ddns_reconfig() {
+    warn "修改配置将重新安装 DDNS"
+    read -rp "  确认继续？(Y/n，默认Y): " C
+    [ -z "$C" ] && C="y"
+    echo "$C" | grep -qiE '^y(es)?$' && ddns_install || warn "已取消"
+}
+
+# ── DDNS 主菜单 ───────────────────────────────────────────
+
+
+# ══════════════════════════════════════════════════════════
+#  主菜单
+# ══════════════════════════════════════════════════════════
+main_menu() {
+    while true; do
+        local CUR_PORT CUR_PWD CUR_PUBKEY KEYCOUNT
+        CUR_PORT=$(get_config "Port")
+        CUR_PWD=$(get_config "PasswordAuthentication")
+        CUR_PUBKEY=$(get_config "PubkeyAuthentication")
+        KEYCOUNT=$(grep -cE '^(ssh-rsa|ssh-ed25519|ecdsa-sha2|sk-ssh|sk-ecdsa|ssh-dss) ' "$AUTH_KEYS" 2>/dev/null || echo 0)
+        local F2B_STAT; F2B_STAT=$(f2b_status)
+
+        safe_clear
+        echo ""
+        volcano_art_banner
+        echo ""
+        box_top
+        box_title "VPS 开荒脚本 V3.1.4"
+        box_line "  ··银趴火山帮··" "  ${DIM}··银趴火山帮··${NC}"
+        box_sep
+        # 收集状态数据
+        local FW_TYPE FW_STAT FW_COLOR
+        FW_TYPE=$(fw_detect)
+        if [ "$FW_TYPE" = "none" ]; then
+            FW_STAT="未安装"; FW_COLOR="$YELLOW"
+        elif [ "$(fw_running "$FW_TYPE")" = "active" ]; then
+            FW_STAT="${FW_TYPE} active"; FW_COLOR="$GREEN"
+        else
+            FW_STAT="${FW_TYPE} inactive"; FW_COLOR="$RED"
+        fi
+        local BBR_CC; BBR_CC=$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null || echo "未知")
+        local TC_RATE; TC_RATE=$(tc qdisc show dev "$(ip route | awk '/^default/{print $5}')" 2>/dev/null | grep -oE '(maxrate|rate) [^ ]+' | head -1 | awk '{print $2}'); [ -z "$TC_RATE" ] && TC_RATE="无限速"
+        local CADDY_ST; CADDY_ST=$(caddy_status)
+        local CADDY_COLOR CADDY_LABEL
+        case "$CADDY_ST" in
+            running)       CADDY_COLOR="$GREEN";  CADDY_LABEL="running" ;;
+            stopped)       CADDY_COLOR="$RED";    CADDY_LABEL="stopped" ;;
+            not_installed) CADDY_COLOR="$YELLOW"; CADDY_LABEL="未安装" ;;
+        esac
+        local DDNS_ST; DDNS_ST=$(ddns_status)
+        local DDNS_COLOR DDNS_LABEL
+        case "$DDNS_ST" in
+            running)       DDNS_COLOR="$GREEN";  DDNS_LABEL="运行中" ;;
+            stopped)       DDNS_COLOR="$RED";    DDNS_LABEL="已停止" ;;
+            not_installed) DDNS_COLOR="$YELLOW"; DDNS_LABEL="未安装" ;;
+        esac
+        local SYS_TIME SYS_TZ
+        SYS_TIME=$(date '+%Y-%m-%d %H:%M:%S')
+        SYS_TZ=$(timedatectl show --property=Timezone --value 2>/dev/null || date '+%Z')
+
+        # 状态栏
+        box_line "  端口 ${CUR_PORT:-22}  |  公钥数 ${KEYCOUNT}"                  "  端口 ${BOLD}${CUR_PORT:-22}${NC}  |  公钥数 ${BOLD}${KEYCOUNT}${NC}"
+        box_line "  密码登录 ${CUR_PWD:-未设置}  |  公钥认证 ${CUR_PUBKEY:-未设置}"                  "  密码登录 ${BOLD}${CUR_PWD:-未设置}${NC}  |  公钥认证 ${BOLD}${CUR_PUBKEY:-未设置}${NC}"
+        box_line "  BBR: ${BBR_CC}  |  限速: ${TC_RATE}"                  "  BBR: ${BOLD}${BBR_CC}${NC}  |  限速: ${BOLD}${TC_RATE}${NC}"
+        if [ "$F2B_STAT" = "running" ]; then
+            box_line "  Fail2ban: running" "  Fail2ban: ${GREEN}${BOLD}running${NC}"
+        elif [ "$F2B_STAT" = "stopped" ]; then
+            box_line "  Fail2ban: stopped" "  Fail2ban: ${RED}${BOLD}stopped${NC}"
+        else
+            box_line "  Fail2ban: 未安装"  "  Fail2ban: ${YELLOW}${BOLD}未安装${NC}"
+        fi
+        box_line "  防火墙: ${FW_STAT}" "  防火墙: ${FW_COLOR}${BOLD}${FW_STAT}${NC}"
+        box_line "  Caddy: ${CADDY_LABEL}" "  Caddy: ${CADDY_COLOR}${BOLD}${CADDY_LABEL}${NC}"
+        box_line "  DDNS: ${DDNS_LABEL}" "  DDNS: ${DDNS_COLOR}${BOLD}${DDNS_LABEL}${NC}"
+        box_line "  时间: ${SYS_TIME}  ${SYS_TZ}" "  时间: ${BOLD}${SYS_TIME}${NC}  ${DIM}${SYS_TZ}${NC}"
+        # 更新提示
+        if [ -f /tmp/.vps_new_version ]; then
+            local NEW_VER; NEW_VER=$(cat /tmp/.vps_new_version 2>/dev/null)
+            [ -n "$NEW_VER" ] && box_line "  🔔 新版本 ${NEW_VER} 可用！"                 "  ${YELLOW}${BOLD}🔔 新版本 ${NEW_VER} 可用！${NC}  ${DIM}m→2 一键更新${NC}"
+        fi
+        box_sep
+        box_line "  [安全与网络]"        "  ${CYAN}${BOLD}[安全与网络]${NC}"
+        box_line "  1) SSH 工具集"       "  ${GREEN}1${NC}) SSH 工具集"
+        box_line "  2) Fail2ban 管理"    "  ${GREEN}2${NC}) Fail2ban 管理"
+        box_line "  3) BBR TCP 调优"     "  ${GREEN}3${NC}) BBR TCP 调优"
+        box_line "  4) 防火墙管理"       "  ${GREEN}4${NC}) 防火墙管理"
+        box_line "  5) DNS 优化"         "  ${GREEN}5${NC}) DNS 优化"
+        box_line "  6) Cloudflare DDNS"  "  ${GREEN}6${NC}) Cloudflare DDNS"
+        box_line "" ""
+        box_line "  [系统与服务]"        "  ${CYAN}${BOLD}[系统与服务]${NC}"
+        box_line "  7) 系统换源"         "  ${GREEN}7${NC}) 系统换源"
+        box_line "  8) IPv4/IPv6 配置"   "  ${GREEN}8${NC}) IPv4/IPv6 配置"
+        box_line "  9) Caddy 管理"       "  ${GREEN}9${NC}) Caddy 管理"
+        box_line "  p) 端口转发"         "  ${GREEN}p${NC}) 端口转发"
+        box_line "  t) 时间同步"         "  ${GREEN}t${NC}) 时间同步"
+        box_line "  s) Swap 管理"        "  ${GREEN}s${NC}) Swap 管理"
+        box_line "  m) 脚本管理"         "  ${GREEN}m${NC}) 脚本管理（安装 / 更新 / 卸载）"
+        box_line "  0) 退出"             "  ${RED}0${NC}) 退出"
+        box_bot
+        echo ""
+        read -rp "  请选择功能 [0-9/p/t/s/m]: " CHOICE
+
+        case "$CHOICE" in
+            1) ssh_tools_menu ;;
+            2) fail2ban_menu ;;
+            3) bbr_menu ;;
+            4) firewall_menu ;;
+            5) dns_menu ;;
+            6) ddns_menu ;;
+            7) mirror_menu ;;
+            8) ip_config_menu ;;
+            9) caddy_menu ;;
+            p|P) portfwd_menu ;;
+            t|T) timesync_menu ;;
+            s|S) swap_menu ;;
+            m|M) self_manage_menu ;;
+            0) safe_clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;
+            *) warn "无效选项，请重新输入。"; sleep 1 ;;
+        esac
+        continue
+    done
+}
+
+self_check_first_run
+# 后台检测新版本（不阻塞主菜单）
+self_check_update &
+main_menu
