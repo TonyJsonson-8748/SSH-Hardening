@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # ============================================================
-#  VPS 开荒脚本 V3.2.0 — 银趴火山帮
+#  VPS 开荒脚本 V3.2.1 — 银趴火山帮
 #  功能：SSH管理 / Fail2ban / BBR TCP 调优
 # ============================================================
 
@@ -127,7 +127,7 @@ print_header() {
     safe_clear
     echo ""
     box_top
-    box_title "VPS 开荒脚本 V3.2.0"
+    box_title "VPS 开荒脚本 V3.2.1"
     box_line "  ··银趴火山帮··" "  ${DIM}··银趴火山帮··${NC}"
     box_sep
     box_title "$1"
@@ -1182,7 +1182,7 @@ fail2ban_menu() {
         safe_clear
         echo ""
         box_top
-        box_title "VPS 开荒脚本 V3.2.0"
+        box_title "VPS 开荒脚本 V3.2.1"
         box_line "  ··银趴火山帮··" "  ${DIM}··银趴火山帮··${NC}"
         box_sep
         box_title "Fail2ban 管理"
@@ -1618,7 +1618,14 @@ bbr_confirm_apply() {
     echo -e "  swappiness   : ${BOLD}${SWAP}${NC}"
     echo -e "  ${YELLOW}──────────────────────────────────────────${NC}"
     echo ""
-    # 先检测内核是否支持 BBR
+    # 先检测 sysctl 写入权限
+    if ! has_sysctl_write; then
+        error "当前容器无 sysctl 写入权限，无法应用配置"
+        echo -e "  ${DIM}需要宿主机开启 privileged 模式或 sysctl 白名单${NC}"
+        return
+    fi
+
+    # 再检测内核是否支持 BBR
     if ! bbr_check_kernel; then
         echo ""
         read -rp "  内核不支持 BBR，仍要继续写入配置？(y/N，默认N): " FORCE
@@ -2058,6 +2065,14 @@ bbr_smart_wizard() {
     volcano_tcp_profile "$PROFILE"
 }
 
+
+# ── 检测是否有 sysctl 写入权限 ───────────────────────────
+has_sysctl_write() {
+    # 尝试写一个无害的参数测试权限
+    sysctl -w net.ipv4.tcp_fin_timeout=10 > /dev/null 2>&1 && return 0
+    return 1
+}
+
 # ── 检测内核是否支持 BBR ─────────────────────────────────
 bbr_check_kernel() {
     # 1. 检测内核版本 >= 4.9
@@ -2103,9 +2118,21 @@ bbr_check_kernel() {
 }
 
 bbr_menu() {
+    # 进入时检测一次 sysctl 写入权限
+    local _BBR_NO_SYSCTL=0
+    if ! has_sysctl_write; then
+        _BBR_NO_SYSCTL=1
+    fi
     while true; do
         print_header "BBR TCP 调优"
         bbr_print_status
+        if [ "$_BBR_NO_SYSCTL" -eq 1 ]; then
+            echo ""
+            echo -e "  ${RED}${BOLD}⚠ 当前环境无 sysctl 写入权限${NC}"
+            echo -e "  ${DIM}检测为无特权容器（unprivileged container）${NC}"
+            echo -e "  ${DIM}sysctl 参数由宿主机控制，无法在容器内修改${NC}"
+            echo -e "  ${DIM}请联系 VPS 提供商开启 sysctl 权限，或使用 KVM/独立VPS${NC}"
+        fi
         echo ""
         echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
         echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
@@ -4712,7 +4739,7 @@ self_check_first_run() {
     clear
     echo ""
     box_top
-    box_title "VPS 开荒脚本 V3.2.0"
+    box_title "VPS 开荒脚本 V3.2.1"
     box_line "  ··银趴火山帮··" "  ${DIM}··银趴火山帮··${NC}"
     box_sep
     box_title "首次运行检测"
@@ -5766,7 +5793,7 @@ main_menu() {
         volcano_art_banner
         echo ""
         box_top
-        box_title "VPS 开荒脚本 V3.2.0"
+        box_title "VPS 开荒脚本 V3.2.1"
         box_line "  ··银趴火山帮··" "  ${DIM}··银趴火山帮··${NC}"
         box_sep
         # 收集状态数据
