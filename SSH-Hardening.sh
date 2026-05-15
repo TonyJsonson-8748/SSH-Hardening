@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # ============================================================
-#  VPS 开荒脚本 V3.1.8 — 银趴火山帮
+#  VPS 开荒脚本 V3.1.9 — 银趴火山帮
 #  功能：SSH管理 / Fail2ban / BBR TCP 调优
 # ============================================================
 
@@ -127,7 +127,7 @@ print_header() {
     safe_clear
     echo ""
     box_top
-    box_title "VPS 开荒脚本 V3.1.8"
+    box_title "VPS 开荒脚本 V3.1.9"
     box_line "  ··银趴火山帮··" "  ${DIM}··银趴火山帮··${NC}"
     box_sep
     box_title "$1"
@@ -1182,7 +1182,7 @@ fail2ban_menu() {
         safe_clear
         echo ""
         box_top
-        box_title "VPS 开荒脚本 V3.1.8"
+        box_title "VPS 开荒脚本 V3.1.9"
         box_line "  ··银趴火山帮··" "  ${DIM}··银趴火山帮··${NC}"
         box_sep
         box_title "Fail2ban 管理"
@@ -1393,7 +1393,9 @@ bbr_print_status() {
     local RATE; RATE=$(tc qdisc show dev "$DEV" 2>/dev/null | grep -oE '(maxrate|rate) [^ ]+' | head -1 | awk '{print $2}')
     [ -z "$RATE" ] && RATE="未设置"
     local BBR; BBR=$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null || echo "未知")
-    local CWND; CWND=$(ip route show | grep "^default" | grep -oE 'initcwnd [0-9]+' | awk '{print $2}' || echo "10")
+    local CWND
+    CWND=$(ip route show 2>/dev/null | grep "^default" | grep -oE 'initcwnd [0-9]+' | awk '{print $2}')
+    [ -z "$CWND" ] && CWND="10（默认）"
 
     # 读取缓冲区大小
     local RMEM_MAX WMEM_MAX RMEM_MB WMEM_MB
@@ -1410,7 +1412,17 @@ bbr_print_status() {
     TCP_WMEM_MB=$(( ${TCP_WMEM_MAX:-0} / 1048576 ))
 
     echo -e "  ${CYAN}网卡${NC} ${BOLD}$DEV${NC}  ${CYAN}CC${NC} ${BOLD}$BBR${NC}  ${CYAN}cwnd${NC} ${BOLD}$CWND${NC}  ${CYAN}限速${NC} ${BOLD}$RATE${NC}"
-    echo -e "  ${CYAN}缓冲${NC} rmem ${BOLD}${RMEM_MB}MB${NC}  wmem ${BOLD}${WMEM_MB}MB${NC}  tcp_r ${BOLD}${TCP_RMEM_MB}MB${NC}  tcp_w ${BOLD}${TCP_WMEM_MB}MB${NC}"
+    # 检测缓冲区是否超过物理内存一半（显示警告）
+    local MEM_TOTAL_MB
+    MEM_TOTAL_MB=$(( $(grep MemTotal /proc/meminfo 2>/dev/null | awk '{print $2}') / 1024 ))
+    local RMEM_COLOR WMEM_COLOR
+    RMEM_COLOR="$BOLD"
+    WMEM_COLOR="$BOLD"
+    if [ "${MEM_TOTAL_MB:-0}" -gt 0 ]; then
+        [ "$RMEM_MB" -gt $(( MEM_TOTAL_MB / 2 )) ] && RMEM_COLOR="${YELLOW}${BOLD}"
+        [ "$WMEM_MB" -gt $(( MEM_TOTAL_MB / 2 )) ] && WMEM_COLOR="${YELLOW}${BOLD}"
+    fi
+    echo -e "  ${CYAN}缓冲${NC} rmem ${RMEM_COLOR}${RMEM_MB}MB${NC}  wmem ${WMEM_COLOR}${WMEM_MB}MB${NC}  tcp_r ${BOLD}${TCP_RMEM_MB}MB${NC}  tcp_w ${BOLD}${TCP_WMEM_MB}MB${NC}  ${DIM}物理内存 ${MEM_TOTAL_MB}MB${NC}"
 }
 
 # ── 备份 sysctl ───────────────────────────────────────────
@@ -1941,9 +1953,18 @@ volcano_tcp_profile() {
     local RMEM WMEM TCP_MEM NOTSENT ADV_WIN MIN_FREE SWAP TCP_RMEM_DEFAULT LABEL BUF_MB
     case "$PROFILE" in
         balanced)
-            RMEM=67108864; WMEM=67108864; TCP_MEM="65536 131072 262144"
+            # 根据实际内存动态调整 balanced 缓冲区，避免超过物理内存一半
+            local _MEM_MB; _MEM_MB=$(( $(grep MemTotal /proc/meminfo 2>/dev/null | awk '{print $2}') / 1024 ))
+            if [ "${_MEM_MB:-0}" -lt 512 ]; then
+                RMEM=16777216; WMEM=16777216; BUF_MB=16
+            elif [ "${_MEM_MB:-0}" -lt 1024 ]; then
+                RMEM=33554432; WMEM=33554432; BUF_MB=32
+            else
+                RMEM=67108864; WMEM=67108864; BUF_MB=64
+            fi
+            WMEM=$RMEM; TCP_MEM="65536 131072 262144"
             NOTSENT=262144; ADV_WIN=2; MIN_FREE=65536; SWAP=10
-            TCP_RMEM_DEFAULT=1048576; BUF_MB=64
+            TCP_RMEM_DEFAULT=1048576
             LABEL="均衡跨境  — 网页/代理/日常综合（推荐）" ;;
         latency)
             RMEM=33554432; WMEM=33554432; TCP_MEM="49152 98304 196608"
@@ -4674,7 +4695,7 @@ self_check_first_run() {
     clear
     echo ""
     box_top
-    box_title "VPS 开荒脚本 V3.1.8"
+    box_title "VPS 开荒脚本 V3.1.9"
     box_line "  ··银趴火山帮··" "  ${DIM}··银趴火山帮··${NC}"
     box_sep
     box_title "首次运行检测"
@@ -5728,7 +5749,7 @@ main_menu() {
         volcano_art_banner
         echo ""
         box_top
-        box_title "VPS 开荒脚本 V3.1.8"
+        box_title "VPS 开荒脚本 V3.1.9"
         box_line "  ··银趴火山帮··" "  ${DIM}··银趴火山帮··${NC}"
         box_sep
         # 收集状态数据
