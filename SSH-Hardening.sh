@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # ============================================================
-#  VPS 开荒脚本 V3.1.9 — 银趴火山帮
+#  VPS 开荒脚本 V3.2.0 — 银趴火山帮
 #  功能：SSH管理 / Fail2ban / BBR TCP 调优
 # ============================================================
 
@@ -127,7 +127,7 @@ print_header() {
     safe_clear
     echo ""
     box_top
-    box_title "VPS 开荒脚本 V3.1.9"
+    box_title "VPS 开荒脚本 V3.2.0"
     box_line "  ··银趴火山帮··" "  ${DIM}··银趴火山帮··${NC}"
     box_sep
     box_title "$1"
@@ -1182,7 +1182,7 @@ fail2ban_menu() {
         safe_clear
         echo ""
         box_top
-        box_title "VPS 开荒脚本 V3.1.9"
+        box_title "VPS 开荒脚本 V3.2.0"
         box_line "  ··银趴火山帮··" "  ${DIM}··银趴火山帮··${NC}"
         box_sep
         box_title "Fail2ban 管理"
@@ -1498,7 +1498,24 @@ bbr_apply_sysctl() {
     ensure_sysctl || return 1
     mkdir -p "$(dirname "$SYSCTL_FILE")" 2>/dev/null || true
     echo "$CONFIG" > "$SYSCTL_FILE"
-    sysctl -p "$SYSCTL_FILE" > /dev/null 2>&1
+
+    # 逐行应用，跳过不支持的参数（Alpine 部分内核不支持 default_qdisc 等）
+    local FAILED=0 SKIPPED=0
+    while IFS= read -r line; do
+        # 跳过注释和空行
+        echo "$line" | grep -qE '^\s*#|^\s*$' && continue
+        local KEY VAL
+        KEY=$(echo "$line" | cut -d= -f1 | tr -d ' ')
+        VAL=$(echo "$line" | cut -d= -f2- | sed 's/^ //')
+        if ! sysctl -w "${KEY}=${VAL}" > /dev/null 2>&1; then
+            warn "跳过不支持的参数：${KEY}"
+            SKIPPED=$(( SKIPPED + 1 ))
+        fi
+    done < "$SYSCTL_FILE"
+
+    if [ "$SKIPPED" -gt 0 ]; then
+        warn "共跳过 ${SKIPPED} 个不支持的参数（已记录在配置文件，重启后不影响）"
+    fi
     info "sysctl 配置已应用到 ${SYSCTL_FILE} ✓"
 }
 
@@ -4695,7 +4712,7 @@ self_check_first_run() {
     clear
     echo ""
     box_top
-    box_title "VPS 开荒脚本 V3.1.9"
+    box_title "VPS 开荒脚本 V3.2.0"
     box_line "  ··银趴火山帮··" "  ${DIM}··银趴火山帮··${NC}"
     box_sep
     box_title "首次运行检测"
@@ -5749,7 +5766,7 @@ main_menu() {
         volcano_art_banner
         echo ""
         box_top
-        box_title "VPS 开荒脚本 V3.1.9"
+        box_title "VPS 开荒脚本 V3.2.0"
         box_line "  ··银趴火山帮··" "  ${DIM}··银趴火山帮··${NC}"
         box_sep
         # 收集状态数据
