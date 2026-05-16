@@ -30,6 +30,20 @@ safe_clear() {
     fi
 }
 
+# 可移植 read 带提示（兼容 bash / BusyBox ash）
+# 用法: _read VAR "prompt"
+_read() {
+    printf "%s" "${2}"
+    read -r "${1}"
+}
+
+# 可移植 sed -i（兼容 GNU / BSD sed）
+sed_i() {
+    local file="${@: -1}"
+    local tmp="${file}.tmp.$$"
+    sed "${@:1:$#-1}" "$file" > "$tmp" && mv "$tmp" "$file" && rm -f "$tmp"
+}
+
 # 主菜单 ASCII Banner
 volcano_art_banner() {
     echo -e "${RED}${BOLD}"
@@ -302,13 +316,33 @@ svc_daemon_reload() {
 get_codename() {
     if command -v lsb_release &>/dev/null; then
         lsb_release -cs 2>/dev/null
-    elif [ -f /etc/os-release ]; then
-        grep VERSION_CODENAME /etc/os-release | cut -d= -f2 | tr -d '"'
-    elif [ -f /etc/debian_version ]; then
-        cat /etc/debian_version | cut -d. -f1
-    else
-        echo "unknown"
+        return
     fi
+    if [ -f /etc/os-release ]; then
+        local cn; cn=$(grep VERSION_CODENAME /etc/os-release | cut -d= -f2 | tr -d '"')
+        [ -n "$cn" ] && { echo "$cn"; return; }
+        # VERSION_CODENAME 为空时，尝试从 VERSION_ID 推导 Debian
+        local vid; vid=$(grep VERSION_ID /etc/os-release | cut -d= -f2 | tr -d '"')
+        [ -n "$vid" ] && _deb_ver_to_codename "$vid" && return
+    fi
+    if [ -f /etc/debian_version ]; then
+        local dv; dv=$(cat /etc/debian_version | cut -d. -f1)
+        _deb_ver_to_codename "$dv" && return
+    fi
+    echo "unknown"
+}
+
+# Debian 版本号 → 代号映射
+_deb_ver_to_codename() {
+    case "$1" in
+        13|trixie)   echo "trixie" ;;
+        12|bookworm) echo "bookworm" ;;
+        11|bullseye) echo "bullseye" ;;
+        10|buster)   echo "buster" ;;
+        9|stretch)   echo "stretch" ;;
+        8|jessie)    echo "jessie" ;;
+        *) return 1 ;;
+    esac
 }
 
 # mapfile 兼容（Alpine ash 不支持 mapfile）
@@ -348,7 +382,7 @@ get_config() {
 set_config() {
     local KEY="$1" VALUE="$2"
     if grep -qE "^#?[[:space:]]*${KEY}[[:space:]]" "$SSHD_CONFIG"; then
-        sed -i "s|^#\?[[:space:]]*${KEY}[[:space:]].*|${KEY} ${VALUE}|" "$SSHD_CONFIG"
+        sed_i "s|^#\?[[:space:]]*${KEY}[[:space:]].*|${KEY} ${VALUE}|" "$SSHD_CONFIG"
     else
         echo "${KEY} ${VALUE}" >> "$SSHD_CONFIG"
     fi
@@ -414,7 +448,7 @@ firewall_allow_port() {
 
     echo ""
     warn "检测到活跃防火墙，是否自动放行新端口 ${PORT}/tcp？"
-    read -rp "  自动放行？(Y/n，默认Y): " FW_CONFIRM
+    _read FW_CONFIRM "  自动放行？(Y/n，默认Y): "
     FW_CONFIRM="${FW_CONFIRM:-y}"
     if ! echo "$FW_CONFIRM" | grep -qiE '^y(es)?$'; then
         warn "已跳过，请在防火墙管理中手动添加端口 $PORT"
@@ -490,7 +524,7 @@ delete_key() {
     fi
 
     echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
-    read -rp "  请输入要删除的编号（直接回车取消）: " DEL_NUM
+    _read DEL_NUM "  请输入要删除的编号（直接回车取消）: "
     [ -z "$DEL_NUM" ] && { warn "已取消。"; return; }
 
     if ! echo "$DEL_NUM" | grep -qE '^[0-9]+$'; then
@@ -513,7 +547,7 @@ delete_key() {
     warn "即将删除以下公钥："
     echo -e "  ${RED}$(echo "$TARGET_LINE" | awk '{print $1, $3}')${NC}"
     echo ""
-    read -rp "  确认删除？(Y/n，默认Y): " CONFIRM
+    _read CONFIRM "  确认删除？(Y/n，默认Y): "
     [ -z "${CONFIRM}" ] && CONFIRM="y"
     if ! echo "${CONFIRM}" | grep -qiE '^y(es)?$'; then warn "已取消"; return; fi
 
@@ -533,7 +567,7 @@ generate_key() {
     echo -e "  ${GREEN}2${NC}) RSA 4096"
     echo -e "  ${GREEN}0${NC}) 返回"
     echo ""
-    read -rp "  请选择 [0-2]: " KEY_TYPE_CHOICE
+    _read KEY_TYPE_CHOICE "  请选择 [0-2]: "
 
     case "$KEY_TYPE_CHOICE" in
         0) return ;;
@@ -543,7 +577,7 @@ generate_key() {
     esac
 
     echo ""
-    read -rp "  输入密钥备注（如 mypc@home，直接回车跳过）: " KEY_COMMENT
+    _read KEY_COMMENT "  输入密钥备注（如 mypc@home，直接回车跳过）: "
     KEY_COMMENT="${KEY_COMMENT:-ssh-key-$(date +%Y%m%d)}"
 
     local TMP_DIR KEY_FILE
@@ -584,7 +618,7 @@ generate_key() {
     echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
     echo ""
 
-    read -rp "  是否将公钥添加到本服务器？(Y/n，默认Y): " ADD_CONFIRM
+    _read ADD_CONFIRM "  是否将公钥添加到本服务器？(Y/n，默认Y): "
     [ -z "${ADD_CONFIRM}" ] && ADD_CONFIRM="y"
     if echo "${ADD_CONFIRM}" | grep -qiE '^y(es)?$'; then
         mkdir -p "$HOME/.ssh"; chmod 700 "$HOME/.ssh"
@@ -626,7 +660,7 @@ set_login_mode() {
     echo -e "  ${GREEN}0${NC}) 返回"
     echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
     echo ""
-    read -rp "  请选择 [0-3]: " MODE
+    _read MODE "  请选择 [0-3]: "
     echo ""
 
     case "$MODE" in
@@ -636,7 +670,7 @@ set_login_mode() {
         local F2B_STAT; F2B_STAT=$(f2b_status)
             if [ "$KEYCOUNT" -eq 0 ]; then
                 warn "当前没有公钥！启用仅密钥登录后将无法通过密码登录！"
-                read -rp "  仍要继续？(Y/n，默认Y): " FORCE
+                _read FORCE "  仍要继续？(Y/n，默认Y): "
                 [ -z "${FORCE}" ] && FORCE="y"
     if ! echo "${FORCE}" | grep -qiE '^y(es)?$'; then warn "已取消"; return; fi
             fi
@@ -655,7 +689,7 @@ set_login_mode() {
             ;;
         3)
             warn "仅密码登录安全性较低，建议配合强密码使用！"
-            read -rp "  确认切换？(Y/n，默认Y): " CONFIRM
+            _read CONFIRM "  确认切换？(Y/n，默认Y): "
             [ -z "${CONFIRM}" ] && CONFIRM="y"
     if ! echo "${CONFIRM}" | grep -qiE '^y(es)?$'; then warn "已取消"; return; fi
             backup_config
@@ -678,7 +712,7 @@ change_port() {
     echo -e "  当前端口：${BOLD}${CURRENT_PORT:-22}${NC}"
     echo ""
     echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
-    read -rp "  请输入新端口号（直接回车取消）: " INPUT_PORT
+    _read INPUT_PORT "  请输入新端口号（直接回车取消）: "
     echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
     echo ""
 
@@ -941,27 +975,27 @@ f2b_config_params() {
     echo -e "  ${RED}00${NC}) 退出脚本"
     echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
     echo ""
-    read -rp "  请选择 [0-5]: " CH
+    _read CH "  请选择 [0-5]: "
 
     case "$CH" in
         1)
             echo ""
             echo -e "  常用参考：3600=1小时  86400=1天  604800=7天  -1=永久"
-            read -rp "  请输入新的 bantime（秒）: " VAL
+            _read VAL "  请输入新的 bantime（秒）: "
             echo "$VAL" | grep -qE '^-?[0-9]+$' || { error "无效数值"; return; }
             f2b_set_param "bantime" "$VAL"
             ;;
         2)
             echo ""
             echo -e "  常用参考：300=5分钟  600=10分钟  3600=1小时"
-            read -rp "  请输入新的 findtime（秒）: " VAL
+            _read VAL "  请输入新的 findtime（秒）: "
             echo "$VAL" | grep -qE '^[0-9]+$' || { error "无效数值"; return; }
             f2b_set_param "findtime" "$VAL"
             ;;
         3)
             echo ""
             echo -e "  常用参考：3=严格  5=默认  10=宽松"
-            read -rp "  请输入新的 maxretry（次）: " VAL
+            _read VAL "  请输入新的 maxretry（次）: "
             echo "$VAL" | grep -qE '^[0-9]+$' || { error "无效数值"; return; }
             f2b_set_param "maxretry" "$VAL"
             ;;
@@ -972,7 +1006,7 @@ f2b_config_params() {
             echo -e "  示例：ssh  或  22  或  22,2222  或  22:2222"
             echo -e "  ${DIM}提示：直接回车使用当前 SSH 端口 ${CUR_SSH_PORT}${NC}"
             echo ""
-            read -rp "  请输入监控端口: " VAL
+            _read VAL "  请输入监控端口: "
             VAL="${VAL:-$CUR_SSH_PORT}"
             f2b_set_param_jail "port" "$VAL"
             ;;
@@ -983,7 +1017,7 @@ f2b_config_params() {
             echo -e "  ${GREEN}3${NC}) 宽松模式  — 封禁30分钟 窗口5分钟   最多10次"
             echo -e "  ${GREEN}4${NC}) 永久封禁  — 封禁永久   窗口10分钟  最多3次"
             echo ""
-            read -rp "  请选择预设 [1-4]: " PRESET
+            _read PRESET "  请选择预设 [1-4]: "
             case "$PRESET" in
                 1) f2b_set_param "bantime" "86400";  f2b_set_param "findtime" "600"; f2b_set_param "maxretry" "3" ;;
                 2) f2b_set_param "bantime" "3600";   f2b_set_param "findtime" "600"; f2b_set_param "maxretry" "5" ;;
@@ -1012,13 +1046,13 @@ f2b_set_param() {
         echo -e "[DEFAULT]" > "$JAIL_LOCAL"
     fi
     if ! grep -q "^\[DEFAULT\]" "$JAIL_LOCAL"; then
-        sed -i "1i [DEFAULT]" "$JAIL_LOCAL"
+        sed_i "1i [DEFAULT]" "$JAIL_LOCAL"
     fi
 
     if grep -qE "^${KEY}\s*=" "$JAIL_LOCAL"; then
-        sed -i "s|^${KEY}\s*=.*|${KEY} = ${VAL}|" "$JAIL_LOCAL"
+        sed_i "s|^${KEY}\s*=.*|${KEY} = ${VAL}|" "$JAIL_LOCAL"
     else
-        sed -i "/^\[DEFAULT\]/a ${KEY} = ${VAL}" "$JAIL_LOCAL"
+        sed_i "/^\[DEFAULT\]/a ${KEY} = ${VAL}" "$JAIL_LOCAL"
     fi
     info "${KEY} 已设置为 ${VAL} ✓"
 }
@@ -1045,7 +1079,7 @@ enabled = true" > "$JAIL_LOCAL"
             ' "$JAIL_LOCAL" > "${JAIL_LOCAL}.tmp" && mv "${JAIL_LOCAL}.tmp" "$JAIL_LOCAL"
         else
             # 在 [sshd] 后追加
-            sed -i "/^\[sshd\]/a ${KEY} = ${VAL}" "$JAIL_LOCAL"
+            sed_i "/^\[sshd\]/a ${KEY} = ${VAL}" "$JAIL_LOCAL"
         fi
     else
         # 没有 [sshd] 节，追加
@@ -1069,7 +1103,7 @@ f2b_edit_config() {
     echo -e "  ${RED}0${NC}) 返回"
     echo -e "  ${RED}00${NC}) 退出脚本"
     echo ""
-    read -rp "  请选择 [0-2]: " CH
+    _read CH "  请选择 [0-2]: "
 
     case "$CH" in
         1)
@@ -1093,10 +1127,10 @@ JAILEOF
             warn "即将用 $(get_editor) 打开 $JAIL_LOCAL"
             warn "编辑完成后保存退出（vi: :wq  nano: Ctrl+O/X）"
             echo ""
-            read -rp "  按 Enter 继续..." _
+            _read _ "  按 Enter 继续..."
             open_editor "$JAIL_LOCAL"
             echo ""
-            read -rp "  是否重启 Fail2ban 使配置生效？(Y/n，默认Y): " RESTART
+            _read RESTART "  是否重启 Fail2ban 使配置生效？(Y/n，默认Y): "
             [ -z "$RESTART" ] && RESTART="y"
             echo "$RESTART" | grep -qiE '^y(es)?$' && restart_fail2ban && info "Fail2ban 已重启 ✓" || true
             ;;
@@ -1121,7 +1155,7 @@ f2b_uninstall() {
     print_header "卸载 Fail2ban"
     warn "即将卸载 Fail2ban，所有配置将被清除！"
     echo ""
-    read -rp "  确认卸载？(Y/n，默认Y): " CONFIRM
+    _read CONFIRM "  确认卸载？(Y/n，默认Y): "
     [ -z "${CONFIRM}" ] && CONFIRM="y"
     if ! echo "${CONFIRM}" | grep -qiE '^y(es)?$'; then warn "已取消"; return; fi
 
@@ -1153,9 +1187,9 @@ fail2ban_menu() {
             echo -e "  ${RED}00${NC}) 退出脚本"
             echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
             echo ""
-            read -rp "  请选择 [0-1]: " CHOICE
+            _read CHOICE "  请选择 [0-1]: "
             case "$CHOICE" in
-                1) f2b_install; echo ""; read -rp "  按 Enter 继续..." _ ;;
+                1) f2b_install; echo ""; _read _ "  按 Enter 继续..." ;;
                 0) return ;;
                 00) safe_clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;
                 *) warn "无效选项"; sleep 1 ;;
@@ -1222,7 +1256,7 @@ fail2ban_menu() {
         box_line "  00) 退出脚本"        "  ${RED}00${NC}) 退出脚本"
         box_bot
         echo ""
-        read -rp "  请选择 [0-7/u]: " CHOICE
+        _read CHOICE "  请选择 [0-7/u]: "
 
         case "$CHOICE" in
             1) f2b_banned_list "$JAIL_NAME" ;;
@@ -1257,7 +1291,7 @@ fail2ban_menu() {
             *) warn "无效选项"; sleep 1; continue ;;
         esac
 
-        [ "${CHOICE}" != "0" ] && { echo ""; read -rp "  按 Enter 返回..." _; }
+        [ "${CHOICE}" != "0" ] && { echo ""; _read _ "  按 Enter 返回..."; }
     done
 }
 
@@ -1295,7 +1329,7 @@ f2b_unban() {
         if [ -z "$RAW" ]; then
             echo -e "  ${GREEN}当前没有封禁的 IP${NC}"
             echo ""
-            read -rp "  按 Enter 返回..." _
+            _read _ "  按 Enter 返回..."
             return
         fi
 
@@ -1307,7 +1341,7 @@ f2b_unban() {
         echo ""
         echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
         echo -e "  ${DIM}输入 IP 地址解封，直接回车返回上级${NC}"
-        read -rp "  请输入 IP: " UNBAN_IP
+        _read UNBAN_IP "  请输入 IP: "
         [ -z "$UNBAN_IP" ] && return
 
         echo ""
@@ -1461,13 +1495,13 @@ bbr_restore_sysctl() {
     echo -e "  ${YELLOW}[d]${NC} 清除全部备份"
     echo -e "  ${RED}[0]${NC} 返回"
     echo ""
-    read -rp "  请选择: " CH
+    _read CH "  请选择: "
 
     case "$CH" in
         0) rm -f "$LIST_FILE"; return ;;
         00) rm -f "$LIST_FILE"; safe_clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;
         d|D)
-            read -rp "  确认清除全部 ${TOTAL} 个备份？(Y/n，默认Y): " C
+            _read C "  确认清除全部 ${TOTAL} 个备份？(Y/n，默认Y): "
             [ -z "$C" ] && C="y"
             if echo "$C" | grep -qiE '^y(es)?$'; then
                 rm -f "${SYSCTL_FILE}.bak."*
@@ -1628,19 +1662,19 @@ bbr_confirm_apply() {
     # 再检测内核是否支持 BBR
     if ! bbr_check_kernel; then
         echo ""
-        read -rp "  内核不支持 BBR，仍要继续写入配置？(y/N，默认N): " FORCE
+        _read FORCE "  内核不支持 BBR，仍要继续写入配置？(y/N，默认N): "
         [ -z "$FORCE" ] && FORCE="n"
         if ! echo "$FORCE" | grep -qiE '^y(es)?$'; then warn "已取消"; return; fi
     fi
 
     # 先提示备份（默认Y）
     if [ -f "$SYSCTL_FILE" ]; then
-        read -rp "  备份当前 sysctl 配置？(Y/n，默认Y): " DO_BAK
+        _read DO_BAK "  备份当前 sysctl 配置？(Y/n，默认Y): "
         [ -z "$DO_BAK" ] && DO_BAK="y"
         echo "$DO_BAK" | grep -qiE '^y(es)?$' && bbr_backup_sysctl
         echo ""
     fi
-    read -rp "  确认应用以上配置？(Y/n，默认Y): " CONFIRM
+    _read CONFIRM "  确认应用以上配置？(Y/n，默认Y): "
     [ -z "${CONFIRM}" ] && CONFIRM="y"
     if ! echo "${CONFIRM}" | grep -qiE '^y(es)?$'; then warn "已取消"; return; fi
 
@@ -1699,7 +1733,7 @@ bbr_menu_bandwidth() {
     echo -e "  ${RED}0${NC}) 返回"
     echo -e "  ${RED}00${NC}) 退出脚本"
     echo ""
-    read -rp "  请选择 [0-5]: " CH
+    _read CH "  请选择 [0-5]: "
     case "$CH" in
         1) bbr_auto_calc "$MEM_MB" "$LAT_MS" 100  "$MEM_LBL" "$LAT_LBL" "100Mbps" ;;
         2) bbr_auto_calc "$MEM_MB" "$LAT_MS" 200  "$MEM_LBL" "$LAT_LBL" "200Mbps" ;;
@@ -1724,7 +1758,7 @@ bbr_menu_latency() {
     echo -e "  ${RED}0${NC}) 返回"
     echo -e "  ${RED}00${NC}) 退出脚本"
     echo ""
-    read -rp "  请选择 [0-3]: " CH
+    _read CH "  请选择 [0-3]: "
     case "$CH" in
         1) bbr_menu_bandwidth "$MEM_MB" 50  "$MEM_LBL" "100ms以内" ;;
         2) bbr_menu_bandwidth "$MEM_MB" 150 "$MEM_LBL" "100-200ms" ;;
@@ -1744,7 +1778,7 @@ bbr_menu_auto() {
     echo -e "  ${RED}0${NC}) 返回"
     echo -e "  ${RED}00${NC}) 退出脚本"
     echo ""
-    read -rp "  请选择 [0-3]: " CH
+    _read CH "  请选择 [0-3]: "
     case "$CH" in
         1) bbr_menu_latency 512  "512MB" ;;
         2) bbr_menu_latency 1024 "1GB" ;;
@@ -1780,7 +1814,7 @@ bbr_menu_manual() {
     echo -e "  ${RED}00${NC}) 退出脚本"
     echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
     echo ""
-    read -rp "  请选择 [0-6]: " CH
+    _read CH "  请选择 [0-6]: "
 
     local RMEM WMEM ADV_WIN NOTSENT TCP_RMEM_DEFAULT BUF_LBL
     case "$CH" in
@@ -1815,7 +1849,7 @@ bbr_menu_tc() {
         echo ""
         echo -e "  ${DIM}如需限速，请联系 VPS 提供商在宿主机层面配置${NC}"
         echo ""
-        read -rp "  按 Enter 返回..." _
+        _read _ "  按 Enter 返回..."
         return
     fi
 
@@ -1840,7 +1874,7 @@ bbr_menu_tc() {
     echo -e "  ${RED}00${NC}) 退出脚本"
     echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
     echo ""
-    read -rp "  请选择 [0-7]: " CH
+    _read CH "  请选择 [0-7]: "
 
     local RATE=0
     case "$CH" in
@@ -1850,7 +1884,7 @@ bbr_menu_tc() {
         4) RATE=1024 ;;
         5) RATE=2048 ;;
         6)
-            read -rp "  请输入限速值（Mbps）: " RATE
+            _read RATE "  请输入限速值（Mbps）: "
             if ! echo "$RATE" | grep -qE '^[0-9]+$' || [ "$RATE" -lt 1 ]; then
                 error "无效数值"; return
             fi
@@ -1926,7 +1960,7 @@ bbr_menu_initcwnd() {
     echo -e "  ${RED}00${NC}) 退出脚本"
     echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
     echo ""
-    read -rp "  请选择 [0-4]: " CH
+    _read CH "  请选择 [0-4]: "
 
     local VAL
     case "$CH" in
@@ -1934,7 +1968,7 @@ bbr_menu_initcwnd() {
         2) VAL=50 ;;
         3) VAL=100 ;;
         4)
-            read -rp "  请输入 initcwnd 值（1-1000）: " VAL
+            _read VAL "  请输入 initcwnd 值（1-1000）: "
             if ! echo "$VAL" | grep -qE '^[0-9]+$' || [ "$VAL" -lt 1 ] || [ "$VAL" -gt 1000 ]; then
                 error "无效数值"; return
             fi
@@ -2034,7 +2068,7 @@ bbr_smart_wizard() {
     echo -e "  ${RED}00${NC}) 退出脚本"
     echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
     echo ""
-    read -rp "  请选择 [0-4]: " CH
+    _read CH "  请选择 [0-4]: "
 
     local PROFILE=""
     case "$CH" in
@@ -2059,7 +2093,7 @@ bbr_smart_wizard() {
     esac
 
     echo ""
-    read -rp "  确认应用「${PROFILE}」？(Y/n，默认Y): " CONFIRM
+    _read CONFIRM "  确认应用「${PROFILE}」？(Y/n，默认Y): "
     [ -z "$CONFIRM" ] && CONFIRM="y"
     if ! echo "$CONFIRM" | grep -qiE '^y(es)?$'; then warn "已取消"; return; fi
     volcano_tcp_profile "$PROFILE"
@@ -2145,7 +2179,7 @@ bbr_menu() {
         echo -e "  ${RED}0${NC}) 返回主菜单        ${RED}00${NC}) 退出脚本"
         echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
         echo ""
-        read -rp "  请选择 [0-7]: " CH
+        _read CH "  请选择 [0-7]: "
 
         case "$CH" in
             1) bbr_smart_wizard ;;
@@ -2160,7 +2194,7 @@ bbr_menu() {
             *) warn "无效选项"; sleep 1; continue ;;
         esac
 
-        [ "${CH}" != "0" ] && { echo ""; read -rp "  按 Enter 返回..." _; }
+        [ "${CH}" != "0" ] && { echo ""; _read _ "  按 Enter 返回..."; }
     done
 }
 
@@ -2261,9 +2295,9 @@ ufw_add_port() {
     print_header "添加端口规则 — ufw"
     echo -e "  示例：80  或  8080/tcp  或  3000:3010/tcp"
     echo ""
-    read -rp "  请输入端口（直接回车取消）: " PORT
+    _read PORT "  请输入端口（直接回车取消）: "
     [ -z "$PORT" ] && { warn "已取消"; return; }
-    read -rp "  方向 [in/out，默认 in]: " DIR
+    _read DIR "  方向 [in/out，默认 in]: "
     DIR="${DIR:-in}"
     echo ""
     if ufw allow "$DIR" "$PORT" 2>/dev/null || ufw allow "$PORT" 2>/dev/null; then
@@ -2282,7 +2316,7 @@ ufw_del_port() {
         echo ""
         echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
         echo -e "  ${DIM}输入编号删除，直接回车返回上级${NC}"
-        read -rp "  请输入规则编号: " NUM
+        _read NUM "  请输入规则编号: "
         [ -z "$NUM" ] && return
         if ! echo "$NUM" | grep -qE '^[0-9]+$'; then
             error "无效编号"; sleep 1; continue
@@ -2294,14 +2328,14 @@ ufw_del_port() {
 
 ufw_block_ip() {
     print_header "拉黑 IP — ufw"
-    read -rp "  请输入要拉黑的 IP 或 CIDR（如 1.2.3.4 或 1.2.3.0/24）: " IP
+    _read IP "  请输入要拉黑的 IP 或 CIDR（如 1.2.3.4 或 1.2.3.0/24）: "
     [ -z "$IP" ] && { warn "已取消"; return; }
     ufw deny from "$IP" to any 2>/dev/null && info "已拉黑 $IP ✓" || error "操作失败"
 }
 
 ufw_allow_ip() {
     print_header "白名单 IP — ufw"
-    read -rp "  请输入要放行的 IP 或 CIDR: " IP
+    _read IP "  请输入要放行的 IP 或 CIDR: "
     [ -z "$IP" ] && { warn "已取消"; return; }
     ufw allow from "$IP" to any 2>/dev/null && info "已放行 $IP ✓" || error "操作失败"
 }
@@ -2315,7 +2349,7 @@ ufw_del_ip() {
         echo ""
         echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
         echo -e "  ${DIM}输入编号删除，直接回车返回上级${NC}"
-        read -rp "  请输入规则编号: " NUM
+        _read NUM "  请输入规则编号: "
         [ -z "$NUM" ] && return
         echo "y" | ufw delete "$NUM" 2>/dev/null && info "规则 [$NUM] 已删除 ✓" || error "删除失败"
         sleep 1
@@ -2330,7 +2364,7 @@ ufw_quick_allow() {
     echo -e "  ${GREEN}HTTP${NC}  : 80"
     echo -e "  ${GREEN}HTTPS${NC} : 443"
     echo ""
-    read -rp "  确认放行？(Y/n，默认Y): " CONFIRM
+    _read CONFIRM "  确认放行？(Y/n，默认Y): "
     [ -z "${CONFIRM}" ] && CONFIRM="y"
     if ! echo "${CONFIRM}" | grep -qiE '^y(es)?$'; then warn "已取消"; return; fi
     ufw allow "$SSH_PORT"/tcp  && info "SSH $SSH_PORT 已放行 ✓"
@@ -2361,7 +2395,7 @@ ufw_menu() {
         echo -e "  ${RED}0${NC}) 返回              ${RED}00${NC}) 退出脚本"
         echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
         echo ""
-        read -rp "  请选择 [0-9/u]: " CH
+        _read CH "  请选择 [0-9/u]: "
 
         case "$CH" in
             u|U)
@@ -2389,7 +2423,7 @@ ufw_menu() {
             8) ufw_quick_allow ;;
             9)
                 warn "即将卸载 ufw，所有规则将清除"
-                read -rp "  确认卸载？(Y/n，默认Y): " CONFIRM
+                _read CONFIRM "  确认卸载？(Y/n，默认Y): "
                 [ -z "${CONFIRM}" ] && CONFIRM="y"
     if echo "${CONFIRM}" | grep -qiE '^y(es)?$'; then
                     # 完整清理：禁用 → 重置规则 → 卸载 → 清残留
@@ -2424,7 +2458,7 @@ ufw_menu() {
             *) warn "无效选项"; sleep 1; continue ;;
         esac
 
-        [ "${CH}" != "0" ] && { echo ""; read -rp "  按 Enter 返回..." _; }
+        [ "${CH}" != "0" ] && { echo ""; _read _ "  按 Enter 返回..."; }
     done
 }
 
@@ -2458,7 +2492,7 @@ fwd_add_port() {
     print_header "添加端口规则 — firewalld"
     echo -e "  示例：80/tcp  或  3000-3010/tcp"
     echo ""
-    read -rp "  请输入端口（直接回车取消）: " PORT
+    _read PORT "  请输入端口（直接回车取消）: "
     [ -z "$PORT" ] && { warn "已取消"; return; }
     firewall-cmd --permanent --add-port="$PORT" 2>/dev/null && \
     firewall-cmd --reload 2>/dev/null && \
@@ -2472,7 +2506,7 @@ fwd_del_port() {
         echo -e "  ${GREEN}[$i]${NC} $p"
     done
     echo ""
-    read -rp "  请输入要删除的端口（如 80/tcp，直接回车取消）: " PORT
+    _read PORT "  请输入要删除的端口（如 80/tcp，直接回车取消）: "
     [ -z "$PORT" ] && { warn "已取消"; return; }
     firewall-cmd --permanent --remove-port="$PORT" 2>/dev/null && \
     firewall-cmd --reload 2>/dev/null && \
@@ -2481,7 +2515,7 @@ fwd_del_port() {
 
 fwd_block_ip() {
     print_header "拉黑 IP — firewalld"
-    read -rp "  请输入要拉黑的 IP 或 CIDR: " IP
+    _read IP "  请输入要拉黑的 IP 或 CIDR: "
     [ -z "$IP" ] && { warn "已取消"; return; }
     firewall-cmd --permanent --add-rich-rule="rule family='ipv4' source address='${IP}' reject" 2>/dev/null && \
     firewall-cmd --reload 2>/dev/null && \
@@ -2490,7 +2524,7 @@ fwd_block_ip() {
 
 fwd_allow_ip() {
     print_header "白名单 IP — firewalld"
-    read -rp "  请输入要放行的 IP 或 CIDR: " IP
+    _read IP "  请输入要放行的 IP 或 CIDR: "
     [ -z "$IP" ] && { warn "已取消"; return; }
     firewall-cmd --permanent --add-rich-rule="rule family='ipv4' source address='${IP}' accept" 2>/dev/null && \
     firewall-cmd --reload 2>/dev/null && \
@@ -2505,7 +2539,7 @@ fwd_del_ip() {
         if [ -z "$RULES" ]; then
             echo -e "  ${YELLOW}暂无 IP 规则${NC}"
             echo ""
-            read -rp "  按 Enter 返回..." _
+            _read _ "  按 Enter 返回..."
             return
         fi
         local i=1
@@ -2516,7 +2550,7 @@ fwd_del_ip() {
         echo ""
         echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
         echo -e "  ${DIM}输入 IP 地址删除，直接回车返回上级${NC}"
-        read -rp "  请输入 IP: " IP
+        _read IP "  请输入 IP: "
         [ -z "$IP" ] && return
         firewall-cmd --permanent --remove-rich-rule="rule family='ipv4' source address='${IP}' reject" 2>/dev/null
         firewall-cmd --permanent --remove-rich-rule="rule family='ipv4' source address='${IP}' accept" 2>/dev/null
@@ -2533,7 +2567,7 @@ fwd_quick_allow() {
     echo -e "  ${GREEN}HTTP${NC}  : 80/tcp"
     echo -e "  ${GREEN}HTTPS${NC} : 443/tcp"
     echo ""
-    read -rp "  确认放行？(Y/n，默认Y): " CONFIRM
+    _read CONFIRM "  确认放行？(Y/n，默认Y): "
     [ -z "${CONFIRM}" ] && CONFIRM="y"
     if ! echo "${CONFIRM}" | grep -qiE '^y(es)?$'; then warn "已取消"; return; fi
     firewall-cmd --permanent --add-port="${SSH_PORT}/tcp"  && info "SSH $SSH_PORT 已放行 ✓"
@@ -2569,7 +2603,7 @@ fwd_menu() {
         echo -e "  ${RED}00${NC}) 退出脚本"
         echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
         echo ""
-        read -rp "  请选择 [0-9]: " CH
+        _read CH "  请选择 [0-9]: "
 
         case "$CH" in
             1)
@@ -2589,7 +2623,7 @@ fwd_menu() {
             8) fwd_quick_allow ;;
             9)
                 warn "即将卸载 firewalld，所有规则将清除"
-                read -rp "  确认卸载？(Y/n，默认Y): " CONFIRM
+                _read CONFIRM "  确认卸载？(Y/n，默认Y): "
                 [ -z "${CONFIRM}" ] && CONFIRM="y"
     if echo "${CONFIRM}" | grep -qiE '^y(es)?$'; then
                     systemctl stop firewalld 2>/dev/null
@@ -2621,7 +2655,7 @@ fwd_menu() {
             *) warn "无效选项"; sleep 1; continue ;;
         esac
 
-        [ "${CH}" != "0" ] && { echo ""; read -rp "  按 Enter 返回..." _; }
+        [ "${CH}" != "0" ] && { echo ""; _read _ "  按 Enter 返回..."; }
     done
 }
 
@@ -2644,10 +2678,10 @@ firewall_menu() {
             echo -e "  ${RED}00${NC}) 退出脚本"
             echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
             echo ""
-            read -rp "  请选择 [0-2]: " CH
+            _read CH "  请选择 [0-2]: "
             case "$CH" in
-                1) fw_install "ufw";       echo ""; read -rp "  按 Enter 继续..." _ ;;
-                2) fw_install "firewalld"; echo ""; read -rp "  按 Enter 继续..." _ ;;
+                1) fw_install "ufw";       echo ""; _read _ "  按 Enter 继续..." ;;
+                2) fw_install "firewalld"; echo ""; _read _ "  按 Enter 继续..." ;;
                 0) return ;;
                 00) safe_clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;
                 *) warn "无效选项"; sleep 1 ;;
@@ -2687,7 +2721,7 @@ ssh_tools_menu() {
         echo -e "  ${RED}0${NC}) 返回主菜单        ${RED}00${NC}) 退出脚本"
         echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
         echo ""
-        read -rp "  请选择 [0-6]: " CHOICE
+        _read CHOICE "  请选择 [0-6]: "
 
         local NEED_PAUSE=1
         case "$CHOICE" in
@@ -2702,7 +2736,7 @@ ssh_tools_menu() {
             *) warn "无效选项"; sleep 1; NEED_PAUSE=0 ;;
         esac
 
-        [ "$NEED_PAUSE" -eq 1 ] && { echo ""; read -rp "  按 Enter 返回..." _; }
+        [ "$NEED_PAUSE" -eq 1 ] && { echo ""; _read _ "  按 Enter 返回..."; }
     done
 }
 
@@ -2817,7 +2851,7 @@ dns_menu() {
         echo -e "  ${RED}00${NC}) 退出脚本"
         echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
         echo ""
-        read -rp "  请选择 [0-7]: " CH
+        _read CH "  请选择 [0-7]: "
 
         case "$CH" in
             1) dns_write "1.1.1.1 1.0.0.1" "2606:4700:4700::1111 2606:4700:4700::1001" "$HAS_V6" ;;
@@ -2829,7 +2863,7 @@ dns_menu() {
             7)
                 warn "即将用 $(get_editor) 编辑 /etc/resolv.conf"
                 chattr -i /etc/resolv.conf 2>/dev/null
-                read -rp "  按 Enter 继续..." _
+                _read _ "  按 Enter 继续..."
                 open_editor /etc/resolv.conf
                 info "DNS 配置已保存"
                 ;;
@@ -2838,7 +2872,7 @@ dns_menu() {
             *) warn "无效选项"; sleep 1; continue ;;
         esac
 
-        [ "${CH}" != "0" ] && { echo ""; read -rp "  按 Enter 返回..." _; }
+        [ "${CH}" != "0" ] && { echo ""; _read _ "  按 Enter 返回..."; }
     done
 }
 
@@ -2926,7 +2960,7 @@ mirror_menu() {
                 echo -e "  ${RED}00${NC}) 退出脚本"
                 echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
                 echo ""
-                read -rp "  请选择 [0-5]: " CH
+                _read CH "  请选择 [0-5]: "
                 case "$CH" in
                     1) mirror_apply_ubuntu "https://mirrors.aliyun.com/ubuntu" ;;
                     2) mirror_apply_ubuntu "https://mirrors.tencent.com/ubuntu" ;;
@@ -2949,7 +2983,7 @@ mirror_menu() {
                 echo -e "  ${RED}00${NC}) 退出脚本"
                 echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
                 echo ""
-                read -rp "  请选择 [0-5]: " CH
+                _read CH "  请选择 [0-5]: "
                 case "$CH" in
                     1) mirror_apply_debian "https://mirrors.aliyun.com/debian" ;;
                     2) mirror_apply_debian "https://mirrors.tencent.com/debian" ;;
@@ -2970,7 +3004,7 @@ mirror_menu() {
                 echo -e "  ${RED}00${NC}) 退出脚本"
                 echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
                 echo ""
-                read -rp "  请选择 [0-3]: " CH
+                _read CH "  请选择 [0-3]: "
                 case "$CH" in
                     1) mirror_apply_centos "cn" ;;
                     2) mirror_apply_centos "edu" ;;
@@ -2984,12 +3018,12 @@ mirror_menu() {
                 warn "暂不支持自动换源的系统：${OS_ID}"
                 warn "请手动修改 /etc/apt/sources.list 或对应源文件"
                 echo ""
-                read -rp "  按 Enter 返回..." _
+                _read _ "  按 Enter 返回..."
                 return
                 ;;
         esac
 
-        [ "${CH:-x}" != "0" ] && { echo ""; read -rp "  按 Enter 返回..." _; }
+        [ "${CH:-x}" != "0" ] && { echo ""; _read _ "  按 Enter 返回..."; }
     done
 }
 
@@ -3061,7 +3095,7 @@ ip_prefer_v4() {
     cp "$GAICONF" "${GAICONF}.bak.$(date +%Y%m%d_%H%M%S)" 2>/dev/null
 
     # 注释掉已有的 precedence ::ffff 行，再追加正确的
-    sed -i '/^precedence ::ffff:0:0\/96/d' "$GAICONF" 2>/dev/null
+    sed_i '/^precedence ::ffff:0:0\/96/d' "$GAICONF" 2>/dev/null
     # 确保文件存在
     [ -f "$GAICONF" ] || touch "$GAICONF"
     echo "precedence ::ffff:0:0/96  100" >> "$GAICONF"
@@ -3084,7 +3118,7 @@ ip_disable_v6() {
     print_header "关闭 IPv6"
     warn "关闭 IPv6 后，仅 IPv6 的服务将无法访问！"
     echo ""
-    read -rp "  确认关闭？(Y/n，默认Y): " CONFIRM
+    _read CONFIRM "  确认关闭？(Y/n，默认Y): "
     [ -z "${CONFIRM}" ] && CONFIRM="y"
     if ! echo "${CONFIRM}" | grep -qiE '^y(es)?$'; then warn "已取消"; return; fi
 
@@ -3093,7 +3127,7 @@ ip_disable_v6() {
     # 写入 sysctl
     for KEY in net.ipv6.conf.all.disable_ipv6 net.ipv6.conf.default.disable_ipv6 net.ipv6.conf.lo.disable_ipv6; do
         if grep -q "^${KEY}" "$SYSCTL_FILE" 2>/dev/null; then
-            sed -i "s|^${KEY}.*|${KEY} = 1|" "$SYSCTL_FILE"
+            sed_i "s|^${KEY}.*|${KEY} = 1|" "$SYSCTL_FILE"
         else
             echo "${KEY} = 1" >> "$SYSCTL_FILE"
         fi
@@ -3119,7 +3153,7 @@ ip_enable_v6() {
     # 移除或改为 0
     for KEY in net.ipv6.conf.all.disable_ipv6 net.ipv6.conf.default.disable_ipv6 net.ipv6.conf.lo.disable_ipv6; do
         if grep -q "^${KEY}" "$SYSCTL_FILE" 2>/dev/null; then
-            sed -i "s|^${KEY}.*|${KEY} = 0|" "$SYSCTL_FILE"
+            sed_i "s|^${KEY}.*|${KEY} = 0|" "$SYSCTL_FILE"
         else
             echo "${KEY} = 0" >> "$SYSCTL_FILE"
         fi
@@ -3167,7 +3201,7 @@ ip_config_menu() {
         echo -e "  ${RED}0${NC}) 返回              ${RED}00${NC}) 退出脚本"
         echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
         echo ""
-        read -rp "  请选择 [0-4]: " CH
+        _read CH "  请选择 [0-4]: "
 
         case "$CH" in
             1) ip_show_status ;;
@@ -3179,7 +3213,7 @@ ip_config_menu() {
             *) warn "无效选项"; sleep 1; continue ;;
         esac
 
-        [ "${CH}" != "0" ] && { echo ""; read -rp "  按 Enter 返回..." _; }
+        [ "${CH}" != "0" ] && { echo ""; _read _ "  按 Enter 返回..."; }
     done
 }
 
@@ -3316,7 +3350,7 @@ caddy_uninstall() {
     print_header "卸载 Caddy"
     warn "即将卸载 Caddy（配置文件保留）"
     echo ""
-    read -rp "  确认卸载？(Y/n，默认Y): " CONFIRM
+    _read CONFIRM "  确认卸载？(Y/n，默认Y): "
     [ -z "${CONFIRM}" ] && CONFIRM="y"
     if ! echo "${CONFIRM}" | grep -qiE '^y(es)?$'; then warn "已取消"; return; fi
     systemctl stop caddy 2>/dev/null || rc-service caddy stop 2>/dev/null || true
@@ -3378,9 +3412,9 @@ caddy_add_proxy() {
     print_header "添加反向代理站点"
     echo -e "  ${DIM}Caddy 会自动申请 SSL 证书（需域名已解析到本机）${NC}"
     echo ""
-    read -rp "  域名（如 example.com 或 example.com:36366）: " DOMAIN
+    _read DOMAIN "  域名（如 example.com 或 example.com:36366）: "
     [ -z "$DOMAIN" ] && { warn "已取消"; return; }
-    read -rp "  转发到（如 127.0.0.1:8080）: " BACKEND
+    _read BACKEND "  转发到（如 127.0.0.1:8080）: "
     [ -z "$BACKEND" ] && { warn "已取消"; return; }
 
     if grep -q "^${DOMAIN}" "$CADDYFILE" 2>/dev/null; then
@@ -3436,7 +3470,7 @@ http://%s {
     echo -e "  SSL  : ${SSL_LABEL}"
     echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
     echo ""
-    read -rp "  确认添加？(Y/n，默认Y): " CONFIRM
+    _read CONFIRM "  确认添加？(Y/n，默认Y): "
     [ -z "${CONFIRM}" ] && CONFIRM="y"
     if ! echo "${CONFIRM}" | grep -qiE '^y(es)?$'; then warn "已取消"; return; fi
 
@@ -3449,9 +3483,9 @@ caddy_add_static() {
     print_header "添加静态网站"
     echo -e "  ${DIM}Caddy 会自动申请 SSL 证书（需域名已解析到本机）${NC}"
     echo ""
-    read -rp "  域名（如 example.com 或 example.com:8443）: " DOMAIN
+    _read DOMAIN "  域名（如 example.com 或 example.com:8443）: "
     [ -z "$DOMAIN" ] && { warn "已取消"; return; }
-    read -rp "  网站根目录（默认 /var/www/html）: " WEBROOT
+    _read WEBROOT "  网站根目录（默认 /var/www/html）: "
     WEBROOT="${WEBROOT:-/var/www/html}"
 
     if grep -q "^${DOMAIN}" "$CADDYFILE" 2>/dev/null; then
@@ -3500,7 +3534,7 @@ http://%s {
     echo -e "  SSL  : ${SSL_LABEL}"
     echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
     echo ""
-    read -rp "  确认添加？(Y/n，默认Y): " CONFIRM
+    _read CONFIRM "  确认添加？(Y/n，默认Y): "
     [ -z "${CONFIRM}" ] && CONFIRM="y"
     if ! echo "${CONFIRM}" | grep -qiE '^y(es)?$'; then warn "已取消"; return; fi
 
@@ -3534,7 +3568,7 @@ caddy_del_site() {
     done
     echo ""
     echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
-    read -rp "  请输入编号删除（直接回车取消）: " NUM
+    _read NUM "  请输入编号删除（直接回车取消）: "
     [ -z "$NUM" ] && { warn "已取消"; return; }
     if ! echo "$NUM" | grep -qE '^[0-9]+$' || [ "$NUM" -lt 1 ] || [ "$NUM" -gt ${#SITES[@]} ]; then
         error "无效编号"; return
@@ -3542,7 +3576,7 @@ caddy_del_site() {
     local DOMAIN="${SITES[$((NUM-1))]}"
     echo ""
     warn "即将删除站点：${BOLD}${DOMAIN}${NC}"
-    read -rp "  确认删除？(Y/n，默认Y): " CONFIRM
+    _read CONFIRM "  确认删除？(Y/n，默认Y): "
     [ -z "${CONFIRM}" ] && CONFIRM="y"
     if ! echo "${CONFIRM}" | grep -qiE '^y(es)?$'; then warn "已取消"; return; fi
 
@@ -3621,7 +3655,7 @@ caddy_view_logs() {
             echo -e "  ${GREEN}1${NC}) 开启实时跟踪（Ctrl+C 停止返回菜单）"
             echo -e "  ${RED}0${NC}) 返回"
             echo ""
-            read -rp "  请选择: " _CH
+            _read _CH "  请选择: "
             if [ "$_CH" = "1" ]; then
                 trap 'echo ""; info "已退出实时跟踪"; trap - INT' INT
                 journalctl -u caddy -f 2>/dev/null
@@ -3676,7 +3710,7 @@ except: print('')" 2>/dev/null)
     echo -e "  ${GREEN}1${NC}) 开启实时跟踪（Ctrl+C 停止返回菜单）"
     echo -e "  ${RED}0${NC}) 返回"
     echo ""
-    read -rp "  请选择: " _CH
+    _read _CH "  请选择: "
     if [ "$_CH" = "1" ]; then
         trap 'echo ""; info "已退出实时跟踪"; trap - INT' INT
         tail -f "$LOG_FILE" 2>/dev/null | while IFS= read -r line; do echo -e "  $line"; done
@@ -3691,7 +3725,7 @@ caddy_edit_raw() {
     echo ""
     warn "$(get_editor) 打开 Caddyfile，保存退出后自动验证并重载"
     echo ""
-    read -rp "  按 Enter 开始编辑..." _
+    _read _ "  按 Enter 开始编辑..."
     [ -f "$CADDYFILE" ] || { mkdir -p /etc/caddy; touch "$CADDYFILE"; }
     open_editor "$CADDYFILE"
     echo ""
@@ -3722,9 +3756,9 @@ caddy_menu() {
             echo -e "  ${RED}00${NC}) 退出脚本"
             echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
             echo ""
-            read -rp "  请选择 [0-1]: " CH
+            _read CH "  请选择 [0-1]: "
             case "$CH" in
-                1) caddy_install; echo ""; read -rp "  按 Enter 继续..." _ ;;
+                1) caddy_install; echo ""; _read _ "  按 Enter 继续..." ;;
                 0) return ;;
                 00) safe_clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;
                 *) warn "无效选项"; sleep 1 ;;
@@ -3752,7 +3786,7 @@ caddy_menu() {
         echo -e "  ${RED}0${NC}) 返回              ${RED}00${NC}) 退出脚本"
         echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
         echo ""
-        read -rp "  请选择: " CH
+        _read CH "  请选择: "
 
         case "$CH" in
             1) caddy_list_sites ;;
@@ -3788,7 +3822,7 @@ caddy_menu() {
             *) warn "无效选项"; sleep 1; continue ;;
         esac
 
-        [ "${CH}" != "0" ] && { echo ""; read -rp "  按 Enter 返回..." _; }
+        [ "${CH}" != "0" ] && { echo ""; _read _ "  按 Enter 返回..."; }
     done
 }
 
@@ -3876,13 +3910,13 @@ pf_add() {
     echo ""
     echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
 
-    read -rp "  外部端口（访问的端口，如 16365）: " SRC_PORT
+    _read SRC_PORT "  外部端口（访问的端口，如 16365）: "
     [ -z "$SRC_PORT" ] && { warn "已取消"; return; }
     if ! echo "$SRC_PORT" | grep -qE '^[0-9]+$' || [ "$SRC_PORT" -lt 1 ] || [ "$SRC_PORT" -gt 65535 ]; then
         error "无效端口号"; return
     fi
 
-    read -rp "  目标端口（转发到的端口，如 6365）: " DST_PORT
+    _read DST_PORT "  目标端口（转发到的端口，如 6365）: "
     [ -z "$DST_PORT" ] && { warn "已取消"; return; }
     if ! echo "$DST_PORT" | grep -qE '^[0-9]+$' || [ "$DST_PORT" -lt 1 ] || [ "$DST_PORT" -gt 65535 ]; then
         error "无效端口号"; return
@@ -3893,7 +3927,7 @@ pf_add() {
     echo -e "  ${GREEN}2${NC}) UDP"
     echo -e "  ${GREEN}3${NC}) TCP + UDP"
     echo ""
-    read -rp "  请选择 [1-3，默认1]: " PROTO_CHOICE
+    _read PROTO_CHOICE "  请选择 [1-3，默认1]: "
     PROTO_CHOICE="${PROTO_CHOICE:-1}"
 
     local PROTOS=()
@@ -3910,7 +3944,7 @@ pf_add() {
         echo -e "  ${BOLD}${p}${NC}  外部 :${SRC_PORT}  →  本机 :${DST_PORT}"
     done
     echo ""
-    read -rp "  确认添加？(Y/n，默认Y): " CONFIRM
+    _read CONFIRM "  确认添加？(Y/n，默认Y): "
     [ -z "$CONFIRM" ] && CONFIRM="y"
     if ! echo "$CONFIRM" | grep -qiE '^y(es)?$'; then warn "已取消"; return; fi
 
@@ -3944,7 +3978,7 @@ pf_del() {
         if [ -z "$rules" ]; then
             echo -e "  ${YELLOW}暂无端口转发规则${NC}"
             echo ""
-            read -rp "  按 Enter 返回..." _
+            _read _ "  按 Enter 返回..."
             return
         fi
 
@@ -3963,7 +3997,7 @@ pf_del() {
         echo ""
         echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
         echo -e "  ${DIM}输入编号删除，直接回车返回上级${NC}"
-        read -rp "  请输入编号: " SEL
+        _read SEL "  请输入编号: "
         [ -z "$SEL" ] && return
 
         if ! echo "$SEL" | grep -qE '^[0-9]+$' || [ "$SEL" -lt 1 ] || [ "$SEL" -gt $((i-1)) ]; then
@@ -3989,7 +4023,7 @@ pf_flush() {
     echo ""
     warn "将删除所有 NAT PREROUTING 端口转发规则！"
     echo ""
-    read -rp "  确认清空？(Y/n，默认Y): " CONFIRM
+    _read CONFIRM "  确认清空？(Y/n，默认Y): "
     [ -z "$CONFIRM" ] && CONFIRM="y"
     if ! echo "$CONFIRM" | grep -qiE '^y(es)?$'; then warn "已取消"; return; fi
 
@@ -4014,13 +4048,13 @@ portfwd_menu() {
             echo -e "  ${RED}0${NC}) 返回"
             echo -e "  ${RED}00${NC}) 退出脚本"
             echo ""
-            read -rp "  请选择 [0-1]: " CH
+            _read CH "  请选择 [0-1]: "
             case "$CH" in
                 1) pkg_install iptables && info "iptables 安装成功 ✓" || error "安装失败" ;;
                 0) return ;;
                 00) safe_clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;
             esac
-            echo ""; read -rp "  按 Enter 继续..." _
+            echo ""; _read _ "  按 Enter 继续..."
             continue
         fi
 
@@ -4029,7 +4063,7 @@ portfwd_menu() {
             echo ""
             echo -e "  ${DIM}建议在宿主机或 KVM/独立 VPS 上使用此功能${NC}"
             echo ""
-            read -rp "  按 Enter 返回..." _
+            _read _ "  按 Enter 返回..."
             return
         fi
 
@@ -4046,7 +4080,7 @@ portfwd_menu() {
         echo -e "  ${RED}0${NC}) 返回              ${RED}00${NC}) 退出脚本"
         echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
         echo ""
-        read -rp "  请选择 [0-3]: " CH
+        _read CH "  请选择 [0-3]: "
 
         case "$CH" in
             1) pf_add ;;
@@ -4057,7 +4091,7 @@ portfwd_menu() {
             *) warn "无效选项"; sleep 1; continue ;;
         esac
 
-        [ "${CH}" != "0" ] && { echo ""; read -rp "  按 Enter 返回..." _; }
+        [ "${CH}" != "0" ] && { echo ""; _read _ "  按 Enter 返回..."; }
     done
 }
 
@@ -4097,7 +4131,7 @@ timesync_menu() {
         echo -e "  ${RED}0${NC}) 返回              ${RED}00${NC}) 退出脚本"
         echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
         echo ""
-        read -rp "  请选择 [0-5]: " CH
+        _read CH "  请选择 [0-5]: "
 
         case "$CH" in
             1) ts_sync_time ;;
@@ -4110,7 +4144,7 @@ timesync_menu() {
             *) warn "无效选项"; sleep 1; continue ;;
         esac
 
-        [ "${CH}" != "0" ] && { echo ""; read -rp "  按 Enter 返回..." _; }
+        [ "${CH}" != "0" ] && { echo ""; _read _ "  按 Enter 返回..."; }
     done
 }
 
@@ -4230,7 +4264,7 @@ ts_set_custom_tz() {
     echo -e "  ${GREEN}Europe/London${NC}       伦敦 UTC+0"
     echo -e "  ${GREEN}Europe/Paris${NC}        巴黎 UTC+1"
     echo ""
-    read -rp "  请输入时区名称（直接回车取消）: " TZ_INPUT
+    _read TZ_INPUT "  请输入时区名称（直接回车取消）: "
     [ -z "$TZ_INPUT" ] && { warn "已取消"; return; }
 
     if [ ! -f "/usr/share/zoneinfo/${TZ_INPUT}" ]; then
@@ -4384,7 +4418,7 @@ swap_create() {
     echo -e "  ${RED}00${NC}) 退出脚本"
     echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
     echo ""
-    read -rp "  请选择 [0-5]: " CH
+    _read CH "  请选择 [0-5]: "
 
     local SIZE_MB
     case "$CH" in
@@ -4393,7 +4427,7 @@ swap_create() {
         3) SIZE_MB=2048 ;;
         4) SIZE_MB=4096 ;;
         5)
-            read -rp "  请输入大小（MB，如 512）: " SIZE_MB
+            _read SIZE_MB "  请输入大小（MB，如 512）: "
             if ! echo "$SIZE_MB" | grep -qE '^[0-9]+$' || [ "$SIZE_MB" -lt 64 ]; then
                 error "无效大小（最小 64MB）"; return
             fi
@@ -4478,7 +4512,7 @@ swap_delete() {
     echo ""
     echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
     echo -e "  ${DIM}输入编号删除，直接回车取消${NC}"
-    read -rp "  请输入编号: " NUM
+    _read NUM "  请输入编号: "
     [ -z "$NUM" ] && { warn "已取消"; return; }
 
     if ! echo "$NUM" | grep -qE '^[0-9]+$' || [ "$NUM" -lt 1 ] || [ "$NUM" -gt ${#SWAP_LIST[@]} ]; then
@@ -4488,7 +4522,7 @@ swap_delete() {
     local TARGET="${SWAP_LIST[$((NUM-1))]}"
     echo ""
     warn "即将删除 Swap：${BOLD}${TARGET}${NC}"
-    read -rp "  确认删除？(Y/n，默认Y): " CONFIRM
+    _read CONFIRM "  确认删除？(Y/n，默认Y): "
     [ -z "$CONFIRM" ] && CONFIRM="y"
     if ! echo "$CONFIRM" | grep -qiE '^y(es)?$'; then warn "已取消"; return; fi
 
@@ -4521,7 +4555,7 @@ swap_set_swappiness() {
     echo -e "  ${RED}0${NC}) 返回"
     echo -e "  ${RED}00${NC}) 退出脚本"
     echo ""
-    read -rp "  请选择 [0-4]: " CH
+    _read CH "  请选择 [0-4]: "
 
     local VAL
     case "$CH" in
@@ -4529,7 +4563,7 @@ swap_set_swappiness() {
         2) VAL=30 ;;
         3) VAL=60 ;;
         4)
-            read -rp "  请输入值（0-100）: " VAL
+            _read VAL "  请输入值（0-100）: "
             if ! echo "$VAL" | grep -qE '^[0-9]+$' || [ "$VAL" -gt 100 ]; then
                 error "无效值（0-100）"; return
             fi
@@ -4544,7 +4578,7 @@ swap_set_swappiness() {
 
     # 持久化到 sysctl.conf
     if grep -q "vm.swappiness" /etc/sysctl.conf 2>/dev/null; then
-        sed -i "s/^vm.swappiness.*/vm.swappiness = ${VAL}/" /etc/sysctl.conf
+        sed_i "s/^vm.swappiness.*/vm.swappiness = ${VAL}/" /etc/sysctl.conf
     else
         echo "vm.swappiness = ${VAL}" >> /etc/sysctl.conf
     fi
@@ -4564,7 +4598,7 @@ swap_menu() {
         echo -e "  ${RED}0${NC}) 返回              ${RED}00${NC}) 退出脚本"
         echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
         echo ""
-        read -rp "  请选择 [0-3]: " CH
+        _read CH "  请选择 [0-3]: "
 
         case "$CH" in
             1) swap_create ;;
@@ -4575,7 +4609,7 @@ swap_menu() {
             *) warn "无效选项"; sleep 1; continue ;;
         esac
 
-        [ "${CH}" != "0" ] && { echo ""; read -rp "  按 Enter 返回..." _; }
+        [ "${CH}" != "0" ] && { echo ""; _read _ "  按 Enter 返回..."; }
     done
 }
 
@@ -4702,7 +4736,7 @@ self_uninstall() {
     echo -e "  ${DIM}/usr/local/bin/V${NC}"
     echo -e "  ${DIM}各 shell 配置文件中的 alias v=...${NC}"
     echo ""
-    read -rp "  确认删除？(Y/n，默认Y): " CONFIRM
+    _read CONFIRM "  确认删除？(Y/n，默认Y): "
     [ -z "$CONFIRM" ] && CONFIRM="y"
     if ! echo "$CONFIRM" | grep -qiE '^y(es)?$'; then warn "已取消"; return; fi
 
@@ -4726,7 +4760,7 @@ self_uninstall() {
     info "清理完成，快捷键 v 已移除"
     warn "当前会话仍可使用 alias，重新登录后完全生效"
     echo ""
-    read -rp "  按 Enter 返回..." _
+    _read _ "  按 Enter 返回..."
     return
 }
 
@@ -4753,12 +4787,12 @@ self_check_first_run() {
     echo -e "  ${GREEN}0${NC}) 跳过，直接进入"
     echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
     echo ""
-    read -rp "  请选择 [0-1]: " CH
+    _read CH "  请选择 [0-1]: "
     case "$CH" in
         1)
             self_install
             echo ""
-            read -rp "  按 Enter 继续进入主菜单..." _
+            _read _ "  按 Enter 继续进入主菜单..."
             ;;
         *) ;;
     esac
@@ -4792,7 +4826,7 @@ self_manage_menu() {
         echo -e "  ${RED}0${NC}) 返回              ${RED}00${NC}) 退出脚本"
         echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
         echo ""
-        read -rp "  请选择 [0-3]: " CH
+        _read CH "  请选择 [0-3]: "
 
         case "$CH" in
             1) self_install ;;
@@ -4803,7 +4837,7 @@ self_manage_menu() {
             *) warn "无效选项"; sleep 1; continue ;;
         esac
 
-        [ "${CH}" != "0" ] && [ "${CH}" != "3" ] && { echo ""; read -rp "  按 Enter 返回..." _; }
+        [ "${CH}" != "0" ] && [ "${CH}" != "3" ] && { echo ""; _read _ "  按 Enter 返回..."; }
     done
 }
 
@@ -4915,30 +4949,30 @@ ddns_install() {
     ddns_start_cron_service >/dev/null 2>&1 || warn "cron 服务未能自动启动，请稍后手动检查"
 
     echo -e "  ${CYAN}$(printf \'─%.0s\' $(seq 1 38))${NC}"
-    read -rp "  子域名（如 home）: " DDNS_SUB
+    _read DDNS_SUB "  子域名（如 home）: "
     [ -z "$DDNS_SUB" ] && { warn "已取消"; return; }
 
-    read -rp "  根域名（如 example.com）: " DDNS_ZONE_NAME
+    _read DDNS_ZONE_NAME "  根域名（如 example.com）: "
     [ -z "$DDNS_ZONE_NAME" ] && { warn "已取消"; return; }
 
     local DDNS_DOMAIN="${DDNS_SUB}.${DDNS_ZONE_NAME}"
 
-    read -rp "  Cloudflare API Token: " DDNS_TOKEN
+    _read DDNS_TOKEN "  Cloudflare API Token: "
     [ -z "$DDNS_TOKEN" ] && { warn "已取消"; return; }
 
     local DDNS_MODE="ipv4"
-    read -rp "  记录模式 [1=仅IPv4 / 2=IPv4+IPv6，默认1]: " DDNS_MODE_CH
+    _read DDNS_MODE_CH "  记录模式 [1=仅IPv4 / 2=IPv4+IPv6，默认1]: "
     case "$DDNS_MODE_CH" in
         2) DDNS_MODE="dual" ;;
         *) DDNS_MODE="ipv4" ;;
     esac
 
     local DDNS_PROXIED="false"
-    read -rp "  是否开启 Cloudflare 代理（橙云）？(y/N，默认N): " DDNS_PROXY_CH
+    _read DDNS_PROXY_CH "  是否开启 Cloudflare 代理（橙云）？(y/N，默认N): "
     echo "$DDNS_PROXY_CH" | grep -qiE '^y(es)?$' && DDNS_PROXIED="true"
 
     local DDNS_TTL="60"
-    read -rp "  TTL 秒数（默认60）: " DDNS_TTL_IN
+    _read DDNS_TTL_IN "  TTL 秒数（默认60）: "
     [ -n "$DDNS_TTL_IN" ] && echo "$DDNS_TTL_IN" | grep -qE '^[0-9]+$' && DDNS_TTL="$DDNS_TTL_IN"
 
     echo ""
@@ -4950,7 +4984,7 @@ ddns_install() {
     echo -e "  Token  : ${BOLD}${DDNS_TOKEN:0:8}…${NC}"
     echo -e "  ${CYAN}$(printf \'─%.0s\' $(seq 1 38))${NC}"
     echo ""
-    read -rp "  确认安装？(Y/n，默认Y): " CONFIRM
+    _read CONFIRM "  确认安装？(Y/n，默认Y): "
     [ -z "$CONFIRM" ] && CONFIRM="y"
     if ! echo "$CONFIRM" | grep -qiE '^y(es)?$'; then warn "已取消"; return; fi
 
@@ -5113,11 +5147,11 @@ if [ "$MODE" = "dual" ]; then
 fi
 DDNS_INNER
 
-    sed -i "s/__DOMAIN__/${DDNS_DOMAIN}/g" "$DDNS_SCRIPT"
-    sed -i "s/__ZONE__/${DDNS_ZONE_NAME}/g" "$DDNS_SCRIPT"
-    sed -i "s/__MODE__/${DDNS_MODE}/g" "$DDNS_SCRIPT"
-    sed -i "s/__PROXIED__/${DDNS_PROXIED}/g" "$DDNS_SCRIPT"
-    sed -i "s/__TTL__/${DDNS_TTL}/g" "$DDNS_SCRIPT"
+    sed_i "s/__DOMAIN__/${DDNS_DOMAIN}/g" "$DDNS_SCRIPT"
+    sed_i "s/__ZONE__/${DDNS_ZONE_NAME}/g" "$DDNS_SCRIPT"
+    sed_i "s/__MODE__/${DDNS_MODE}/g" "$DDNS_SCRIPT"
+    sed_i "s/__PROXIED__/${DDNS_PROXIED}/g" "$DDNS_SCRIPT"
+    sed_i "s/__TTL__/${DDNS_TTL}/g" "$DDNS_SCRIPT"
     chmod 700 "$DDNS_SCRIPT"
 
     local CRON_JOB="*/5 * * * * ${DDNS_SCRIPT} >> ${DDNS_LOG} 2>&1"
@@ -5194,14 +5228,14 @@ ddns_tg_config() {
     [ -f "$DDNS_TG_FILE" ] && echo -e "  ${YELLOW}3${NC}) 关闭 Telegram 通知"
     echo -e "  ${RED}0${NC}) 返回"
     echo ""
-    read -rp "  请选择: " CH
+    _read CH "  请选择: "
 
     case "$CH" in
         1)
             echo ""
-            read -rp "  Bot Token: " TG_BOT
+            _read TG_BOT "  Bot Token: "
             [ -z "$TG_BOT" ] && { warn "已取消"; return; }
-            read -rp "  Chat ID: " TG_CHAT
+            _read TG_CHAT "  Chat ID: "
             [ -z "$TG_CHAT" ] && { warn "已取消"; return; }
             {
                 echo "BOT_TOKEN=${TG_BOT}"
@@ -5243,7 +5277,7 @@ ddns_uninstall() {
     print_header "卸载 DDNS"
     warn "将移除 crontab 定时任务、DDNS 脚本和 Token 文件"
     echo ""
-    read -rp "  确认卸载？(Y/n，默认Y): " CONFIRM
+    _read CONFIRM "  确认卸载？(Y/n，默认Y): "
     [ -z "$CONFIRM" ] && CONFIRM="y"
     if ! echo "$CONFIRM" | grep -qiE '^y(es)?$'; then warn "已取消"; return; fi
     ( crontab -l 2>/dev/null | grep -v "ddns.sh" ) | crontab - 2>/dev/null
@@ -5274,7 +5308,7 @@ ddns_view_logs() {
     echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
     echo -e "  ${GREEN}1${NC}) 实时跟踪（Ctrl+C 返回）  ${RED}0${NC}) 返回"
     echo ""
-    read -rp "  请选择: " CH
+    _read CH "  请选择: "
     if [ "$CH" = "1" ]; then
         trap 'echo ""; info "已退出实时跟踪"; trap - INT' INT
         tail -f "$LOG"
@@ -5377,7 +5411,7 @@ ddns_menu() {
         fi
         echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
         echo ""
-        read -rp "  请选择: " CH
+        _read CH "  请选择: "
 
         if [ "$D_ST" = "not_installed" ]; then
             case "$CH" in
@@ -5391,7 +5425,7 @@ ddns_menu() {
                 1) ddns_run_now ;;
                 2) ddns_view_logs ;;
                 3) warn "修改配置将重新安装 DDNS"
-                   read -rp "  确认继续？(Y/n，默认Y): " C
+                   _read C "  确认继续？(Y/n，默认Y): "
                    [ -z "$C" ] && C="y"
                    echo "$C" | grep -qiE '^y(es)?$' && ddns_install || warn "已取消" ;;
                 4) [ "$D_ST" = "running" ] && ddns_pause || ddns_resume ;;
@@ -5403,360 +5437,9 @@ ddns_menu() {
             esac
         fi
 
-        [ "$CH" != "0" ] && { echo ""; read -rp "  按 Enter 返回..." _; }
+        [ "$CH" != "0" ] && { echo ""; _read _ "  按 Enter 返回..."; }
     done
 }
-
-# ══════════════════════════════════════════════════════════
-#  脚本自我管理模块
-# ══════════════════════════════════════════════════════════
-
-SCRIPT_URL="https://raw.githubusercontent.com/chnnic/SSH-Hardening/refs/heads/main/SSH-Hardening.sh"
-LOCAL_SCRIPT="/usr/local/bin/vps-tools"
-
-# ── 安装脚本到本地（设置快捷键 v）────────────────────────
-
-
-
-# ══════════════════════════════════════════════════════════
-#  Cloudflare DDNS 模块
-# ══════════════════════════════════════════════════════════
-
-DDNS_SCRIPT="/root/ddns.sh"
-DDNS_TOKEN_FILE="/root/.cf_token"
-DDNS_LOG="/var/log/ddns.log"
-DDNS_ZONE_FILE="/root/.cf_zone"
-DDNS_TG_FILE="/root/.cf_tg"    # Telegram 通知配置   # 保存 zone/domain 信息
-
-# ── 检测 DDNS 安装状态 ────────────────────────────────────
-ddns_status() {
-    if [ ! -f "$DDNS_SCRIPT" ]; then
-        echo "not_installed"
-    elif ! crontab -l 2>/dev/null | grep -q "ddns.sh"; then
-        echo "stopped"
-    else
-        echo "running"
-    fi
-}
-
-# ── 安装/配置 DDNS ────────────────────────────────────────
-ddns_install() {
-    print_header "Cloudflare DDNS 配置"
-    echo -e "  ${DIM}动态 DNS：自动将域名 A 记录更新为本机公网 IP${NC}"
-    echo ""
-
-    # 检查依赖
-    for cmd in curl python3; do
-        if ! command -v "$cmd" &>/dev/null; then
-            info "安装依赖 $cmd..."
-            pkg_install "$cmd" &>/dev/null
-        fi
-    done
-
-    echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
-
-    # 收集信息
-    read -rp "  子域名（如 home）: " DDNS_SUB
-    [ -z "$DDNS_SUB" ] && { warn "已取消"; return; }
-
-    read -rp "  根域名（如 example.com）: " DDNS_ZONE
-    [ -z "$DDNS_ZONE" ] && { warn "已取消"; return; }
-
-    local DDNS_DOMAIN="${DDNS_SUB}.${DDNS_ZONE}"
-
-    read -rp "  Cloudflare API Token: " DDNS_TOKEN
-    [ -z "$DDNS_TOKEN" ] && { warn "已取消"; return; }
-
-    echo ""
-    echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
-    echo -e "  域名  : ${BOLD}${DDNS_DOMAIN}${NC}"
-    echo -e "  Token : ${BOLD}${DDNS_TOKEN:0:8}…（已隐藏）${NC}"
-    echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
-    echo ""
-    read -rp "  确认安装？(Y/n，默认Y): " CONFIRM
-    [ -z "$CONFIRM" ] && CONFIRM="y"
-    if ! echo "$CONFIRM" | grep -qiE '^y(es)?$'; then warn "已取消"; return; fi
-
-    # 验证 Token 和域名
-    echo ""
-    info "验证 Token 和域名..."
-    local ZONE_RESP
-    ZONE_RESP=$(curl -s --max-time 10 \
-        "https://api.cloudflare.com/client/v4/zones?name=${DDNS_ZONE}" \
-        -H "Authorization: Bearer ${DDNS_TOKEN}")
-
-    local ZONE_OK
-    ZONE_OK=$(echo "$ZONE_RESP" | python3 -c \
-        "import sys,json; print(json.load(sys.stdin).get('success',''))" 2>/dev/null)
-
-    if [ "$ZONE_OK" != "True" ]; then
-        error "Token 验证失败，请检查 Token 权限（需要 Zone:DNS:Edit）"
-        return
-    fi
-
-    local ZONE_COUNT
-    ZONE_COUNT=$(echo "$ZONE_RESP" | python3 -c \
-        "import sys,json; print(len(json.load(sys.stdin)['result']))" 2>/dev/null)
-
-    if [ "$ZONE_COUNT" = "0" ]; then
-        error "找不到域名 ${DDNS_ZONE}，请确认已托管到此 Cloudflare 账号"
-        return
-    fi
-
-    local ZONE_ID
-    ZONE_ID=$(echo "$ZONE_RESP" | python3 -c \
-        "import sys,json; print(json.load(sys.stdin)['result'][0]['id'])")
-    info "Token 有效，Zone ID: ${ZONE_ID} ✓"
-
-    # 检查 A 记录，不存在则创建
-    local RECORD_RESP
-    RECORD_RESP=$(curl -s --max-time 10 \
-        "https://api.cloudflare.com/client/v4/zones/${ZONE_ID}/dns_records?name=${DDNS_DOMAIN}&type=A" \
-        -H "Authorization: Bearer ${DDNS_TOKEN}")
-
-    local RECORD_COUNT
-    RECORD_COUNT=$(echo "$RECORD_RESP" | python3 -c \
-        "import sys,json; print(len(json.load(sys.stdin)['result']))" 2>/dev/null)
-
-    if [ "$RECORD_COUNT" = "0" ]; then
-        warn "未找到 A 记录，正在自动创建..."
-        local CREATE_RESP
-        CREATE_RESP=$(curl -s -X POST --max-time 10 \
-            "https://api.cloudflare.com/client/v4/zones/${ZONE_ID}/dns_records" \
-            -H "Authorization: Bearer ${DDNS_TOKEN}" \
-            -H "Content-Type: application/json" \
-            --data "{\"type\":\"A\",\"name\":\"${DDNS_DOMAIN}\",\"content\":\"1.1.1.1\",\"ttl\":60,\"proxied\":false}")
-        local CREATE_OK
-        CREATE_OK=$(echo "$CREATE_RESP" | python3 -c \
-            "import sys,json; print(json.load(sys.stdin).get('success',''))" 2>/dev/null)
-        if [ "$CREATE_OK" = "True" ]; then
-            info "A 记录已创建（稍后自动更新为真实 IP）✓"
-        else
-            error "创建 A 记录失败，请手动在 Cloudflare 面板创建后重试"
-            return
-        fi
-    else
-        info "A 记录已存在 ✓"
-    fi
-
-    # 保存 Token
-    echo "$DDNS_TOKEN" > "$DDNS_TOKEN_FILE"
-    chmod 600 "$DDNS_TOKEN_FILE"
-
-    # 保存域名信息
-    echo "DOMAIN=${DDNS_DOMAIN}" > "$DDNS_ZONE_FILE"
-    echo "ZONE=${DDNS_ZONE}" >> "$DDNS_ZONE_FILE"
-
-    # 生成 DDNS 执行脚本
-    cat > "$DDNS_SCRIPT" << 'DDNS_INNER'
-#!/bin/bash
-# 注入 PATH，确保 crontab 环境下能找到 curl / python3
-PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-
-DOMAIN="__DOMAIN__"
-ZONE="__ZONE__"
-MODE="__MODE__"
-PROXIED="__PROXIED__"
-TTL="__TTL__"
-TOKEN_FILE="/root/.cf_token"
-LOG_FILE="/var/log/ddns.log"
-
-API_TOKEN=$(cat "$TOKEN_FILE" 2>/dev/null)
-[ -z "$API_TOKEN" ] && exit 1
-
-# 发送 Telegram 通知（实时读取配置，兼容 crontab 环境）
-tg_notify() {
-    local MSG="$1"
-    local TG_FILE="/root/.cf_tg"
-    [ -f "$TG_FILE" ] || return 0
-    local B_TOKEN C_ID
-    B_TOKEN=$(grep "^BOT_TOKEN=" "$TG_FILE" | cut -d= -f2-)
-    C_ID=$(grep "^CHAT_ID=" "$TG_FILE" | cut -d= -f2-)
-    [ -z "$B_TOKEN" ] || [ -z "$C_ID" ] && return 0
-    curl -s --max-time 15         "https://api.telegram.org/bot${B_TOKEN}/sendMessage"         -d "chat_id=${C_ID}"         -d "text=${MSG}"         -d "parse_mode=HTML" > /dev/null 2>&1
-}
-
-CURRENT_IP4=$(curl -4 -s --max-time 5 https://api.ipify.org 2>/dev/null     || curl -4 -s --max-time 5 https://ifconfig.me/ip 2>/dev/null | tr -d '
- '     || curl -4 -s --max-time 5 https://ip.sb 2>/dev/null | tr -d '
- ')
-CURRENT_IP6=""
-if [ "$MODE" = "dual" ]; then
-    CURRENT_IP6=$(curl -6 -s --max-time 5 https://api64.ipify.org 2>/dev/null         || curl -6 -s --max-time 5 https://ipv6.icanhazip.com 2>/dev/null | tr -d '
- ')
-fi
-
-[ -z "$CURRENT_IP4" ] && {
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] ERROR: 无法获取公网 IPv4" >> "$LOG_FILE"
-    exit 1
-}
-
-ZONE_ID=$(curl -s --max-time 8 "https://api.cloudflare.com/client/v4/zones?name=${ZONE}"     -H "Authorization: Bearer ${API_TOKEN}" |     python3 -c "import sys,json; print(json.load(sys.stdin)['result'][0]['id'])" 2>/dev/null)
-[ -z "$ZONE_ID" ] && {
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] ERROR: 获取 Zone ID 失败" >> "$LOG_FILE"
-    exit 1
-}
-
-update_record() {
-    local TYPE="$1" NEW_IP="$2"
-    [ -z "$NEW_IP" ] && return 0
-    local RECORD_ID OLD_IP RESULT SUCCESS
-    RECORD_ID=$(curl -s --max-time 8         "https://api.cloudflare.com/client/v4/zones/${ZONE_ID}/dns_records?name=${DOMAIN}&type=${TYPE}"         -H "Authorization: Bearer ${API_TOKEN}" |         python3 -c "import sys,json; print(json.load(sys.stdin)['result'][0]['id'])" 2>/dev/null)
-    [ -z "$RECORD_ID" ] && {
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] ERROR: ${TYPE} 记录不存在" >> "$LOG_FILE"
-        return 1
-    }
-    OLD_IP=$(curl -s --max-time 8         "https://api.cloudflare.com/client/v4/zones/${ZONE_ID}/dns_records/${RECORD_ID}"         -H "Authorization: Bearer ${API_TOKEN}" |         python3 -c "import sys,json; print(json.load(sys.stdin)['result']['content'])" 2>/dev/null)
-    if [ "$NEW_IP" = "$OLD_IP" ]; then
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] OK: ${TYPE} 未变化 ${NEW_IP}" >> "$LOG_FILE"
-        return 0
-    fi
-    local JSON_BODY
-    JSON_BODY=$(printf '{"type":"%s","name":"%s","content":"%s","ttl":%s,"proxied":%s}' \
-        "$TYPE" "$DOMAIN" "$NEW_IP" "$TTL" "$PROXIED")
-    RESULT=$(curl -s -X PUT --max-time 10 \
-        "https://api.cloudflare.com/client/v4/zones/${ZONE_ID}/dns_records/${RECORD_ID}" \
-        -H "Authorization: Bearer ${API_TOKEN}" \
-        -H "Content-Type: application/json" \
-        --data "$JSON_BODY")
-    SUCCESS=$(echo "$RESULT" | python3 -c         "import sys,json; print(json.load(sys.stdin).get('success'))" 2>/dev/null)
-    if [ "$SUCCESS" = "True" ]; then
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] OK: ${TYPE} 更新成功 ${OLD_IP} → ${NEW_IP}" >> "$LOG_FILE"
-        tg_notify "🌐 <b>DDNS IP 已更新</b>
-域名：<code>${DOMAIN}</code>
-类型：${TYPE}
-旧IP：<code>${OLD_IP}</code>
-新IP：<code>${NEW_IP}</code>
-时间：$(date '+%Y-%m-%d %H:%M:%S')"
-    else
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] ERROR: ${TYPE} 更新失败 $RESULT" >> "$LOG_FILE"
-        return 1
-    fi
-}
-
-update_record A "$CURRENT_IP4"
-if [ "$MODE" = "dual" ]; then
-    if [ -n "$CURRENT_IP6" ]; then
-        update_record AAAA "$CURRENT_IP6"
-    else
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] WARN: 未获取到公网 IPv6，跳过 AAAA" >> "$LOG_FILE"
-    fi
-fi
-DDNS_INNER
-
-    sed -i "s/__DOMAIN__/${DDNS_DOMAIN}/g" "$DDNS_SCRIPT"
-    sed -i "s/__ZONE__/${DDNS_ZONE}/g" "$DDNS_SCRIPT"
-    sed -i "s/__MODE__/${DDNS_MODE:-ipv4}/g" "$DDNS_SCRIPT"
-    sed -i "s/__PROXIED__/${DDNS_PROXIED:-false}/g" "$DDNS_SCRIPT"
-    sed -i "s/__TTL__/${DDNS_TTL:-60}/g" "$DDNS_SCRIPT"
-    chmod 700 "$DDNS_SCRIPT"
-
-    # 创建日志文件
-    touch "$DDNS_LOG" 2>/dev/null || { DDNS_LOG="$HOME/ddns.log"; touch "$DDNS_LOG"; }
-    chmod 644 "$DDNS_LOG" 2>/dev/null || true
-
-    # 设置 crontab（每5分钟）
-    local CRON_JOB="*/5 * * * * ${DDNS_SCRIPT} >> ${DDNS_LOG} 2>&1"
-    ( crontab -l 2>/dev/null | grep -v "ddns.sh"; echo "$CRON_JOB" ) | crontab -
-    info "crontab 已设置（每5分钟自动更新）✓"
-
-    # 立即执行一次
-    echo ""
-    info "立即执行一次测试..."
-    if bash "$DDNS_SCRIPT"; then
-        tail -1 "$DDNS_LOG" 2>/dev/null | while IFS= read -r l; do
-            echo -e "  ${GREEN}$l${NC}"
-        done
-    else
-        error "执行失败，请查看日志"
-    fi
-
-    echo ""
-    info "DDNS 配置完成 ✓"
-    echo -e "  域名 : ${BOLD}${DDNS_DOMAIN}${NC}"
-    echo -e "  日志 : ${DIM}${DDNS_LOG}${NC}"
-}
-
-# ── 卸载 DDNS ─────────────────────────────────────────────
-ddns_uninstall() {
-    print_header "卸载 DDNS"
-    warn "将移除 crontab 定时任务、DDNS 脚本和 Token 文件"
-    echo ""
-    read -rp "  确认卸载？(Y/n，默认Y): " CONFIRM
-    [ -z "$CONFIRM" ] && CONFIRM="y"
-    if ! echo "$CONFIRM" | grep -qiE '^y(es)?$'; then warn "已取消"; return; fi
-
-    # 移除 crontab
-    ( crontab -l 2>/dev/null | grep -v "ddns.sh" ) | crontab - 2>/dev/null
-    info "crontab 定时任务已移除 ✓"
-
-    # 删除文件
-    rm -f "$DDNS_SCRIPT" && info "DDNS 脚本已删除 ✓"
-    rm -f "$DDNS_TOKEN_FILE" && info "Token 文件已删除 ✓"
-    rm -f "$DDNS_ZONE_FILE"
-    warn "日志文件保留：${DDNS_LOG}"
-}
-
-# ── 查看日志 ──────────────────────────────────────────────
-ddns_view_logs() {
-    print_header "DDNS 日志"
-    local LOG="$DDNS_LOG"
-    [ ! -f "$LOG" ] && LOG="$HOME/ddns.log"
-    if [ ! -f "$LOG" ]; then
-        warn "日志文件不存在"
-        return
-    fi
-    echo -e "  ${DIM}${LOG}${NC}"
-    echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
-    tail -20 "$LOG" | while IFS= read -r line; do
-        if echo "$line" | grep -q "ERROR"; then
-            echo -e "  ${RED}$line${NC}"
-        elif echo "$line" | grep -q "更新成功"; then
-            echo -e "  ${GREEN}$line${NC}"
-        else
-            echo -e "  ${DIM}$line${NC}"
-        fi
-    done
-    echo ""
-    echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
-    echo -e "  ${GREEN}1${NC}) 实时跟踪（Ctrl+C 返回）"
-    echo -e "  ${RED}0${NC}) 返回"
-    echo ""
-    read -rp "  请选择: " CH
-    if [ "$CH" = "1" ]; then
-        trap 'echo ""; info "已退出实时跟踪"; trap - INT' INT
-        tail -f "$LOG"
-        trap - INT
-    fi
-}
-
-# ── 手动立即更新 ──────────────────────────────────────────
-ddns_run_now() {
-    print_header "手动更新 DDNS"
-    if [ ! -f "$DDNS_SCRIPT" ]; then
-        error "DDNS 未安装"; return
-    fi
-    info "正在更新..."
-    if bash "$DDNS_SCRIPT"; then
-        local LOG="$DDNS_LOG"
-        [ ! -f "$LOG" ] && LOG="$HOME/ddns.log"
-        tail -1 "$LOG" 2>/dev/null | while IFS= read -r l; do
-            echo -e "  ${GREEN}$l${NC}"
-        done
-    else
-        error "更新失败，请查看日志"
-    fi
-}
-
-# ── 修改配置 ──────────────────────────────────────────────
-ddns_reconfig() {
-    warn "修改配置将重新安装 DDNS"
-    read -rp "  确认继续？(Y/n，默认Y): " C
-    [ -z "$C" ] && C="y"
-    echo "$C" | grep -qiE '^y(es)?$' && ddns_install || warn "已取消"
-}
-
-# ── DDNS 主菜单 ───────────────────────────────────────────
-
 
 # ══════════════════════════════════════════════════════════
 #  主菜单
@@ -5866,7 +5549,7 @@ main_menu() {
         box_line "  0) 退出"             "  ${RED}0${NC}) 退出"
         box_bot
         echo ""
-        read -rp "  请选择功能 [0-9/p/t/s/m]: " CHOICE
+        _read CHOICE "  请选择功能 [0-9/p/t/s/m]: "
 
         case "$CHOICE" in
             1) ssh_tools_menu ;;
