@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # ============================================================
-#  VPS 开荒脚本 V3.2.2 — 银趴火山帮
+#  VPS 开荒脚本 V3.2.3 — 银趴火山帮
 #  功能：SSH管理 / Fail2ban / BBR TCP 调优
 # ============================================================
 
@@ -127,7 +127,7 @@ print_header() {
     safe_clear
     echo ""
     box_top
-    box_title "VPS 开荒脚本 V3.2.2"
+    box_title "VPS 开荒脚本 V3.2.3"
     box_line "  ··银趴火山帮··" "  ${DIM}··银趴火山帮··${NC}"
     box_sep
     box_title "$1"
@@ -1182,7 +1182,7 @@ fail2ban_menu() {
         safe_clear
         echo ""
         box_top
-        box_title "VPS 开荒脚本 V3.2.2"
+        box_title "VPS 开荒脚本 V3.2.3"
         box_line "  ··银趴火山帮··" "  ${DIM}··银趴火山帮··${NC}"
         box_sep
         box_title "Fail2ban 管理"
@@ -4739,7 +4739,7 @@ self_check_first_run() {
     clear
     echo ""
     box_top
-    box_title "VPS 开荒脚本 V3.2.2"
+    box_title "VPS 开荒脚本 V3.2.3"
     box_line "  ··银趴火山帮··" "  ${DIM}··银趴火山帮··${NC}"
     box_sep
     box_title "首次运行检测"
@@ -5415,349 +5415,6 @@ ddns_menu() {
 
 # ══════════════════════════════════════════════════════════
 #  脚本自我管理模块
-# ══════════════════════════════════════════════════════════
-
-SCRIPT_URL="https://raw.githubusercontent.com/chnnic/SSH-Hardening/refs/heads/main/SSH-Hardening.sh"
-LOCAL_SCRIPT="/usr/local/bin/vps-tools"
-
-# ── 安装脚本到本地（设置快捷键 v）────────────────────────
-
-
-
-# ══════════════════════════════════════════════════════════
-#  Cloudflare DDNS 模块
-# ══════════════════════════════════════════════════════════
-
-DDNS_SCRIPT="/root/ddns.sh"
-DDNS_TOKEN_FILE="/root/.cf_token"
-DDNS_LOG="/var/log/ddns.log"
-DDNS_ZONE_FILE="/root/.cf_zone"
-DDNS_TG_FILE="/root/.cf_tg"    # Telegram 通知配置   # 保存 zone/domain 信息
-
-# ── 检测 DDNS 安装状态 ────────────────────────────────────
-ddns_status() {
-    if [ ! -f "$DDNS_SCRIPT" ]; then
-        echo "not_installed"
-    elif ! crontab -l 2>/dev/null | grep -q "ddns.sh"; then
-        echo "stopped"
-    else
-        echo "running"
-    fi
-}
-
-# ── 安装/配置 DDNS ────────────────────────────────────────
-ddns_install() {
-    print_header "Cloudflare DDNS 配置"
-    echo -e "  ${DIM}动态 DNS：自动将域名 A 记录更新为本机公网 IP${NC}"
-    echo ""
-
-    # 检查依赖
-    for cmd in curl python3; do
-        if ! command -v "$cmd" &>/dev/null; then
-            info "安装依赖 $cmd..."
-            pkg_install "$cmd" &>/dev/null
-        fi
-    done
-
-    echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
-
-    # 收集信息
-    read -rp "  子域名（如 home）: " DDNS_SUB
-    [ -z "$DDNS_SUB" ] && { warn "已取消"; return; }
-
-    read -rp "  根域名（如 example.com）: " DDNS_ZONE
-    [ -z "$DDNS_ZONE" ] && { warn "已取消"; return; }
-
-    local DDNS_DOMAIN="${DDNS_SUB}.${DDNS_ZONE}"
-
-    read -rp "  Cloudflare API Token: " DDNS_TOKEN
-    [ -z "$DDNS_TOKEN" ] && { warn "已取消"; return; }
-
-    echo ""
-    echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
-    echo -e "  域名  : ${BOLD}${DDNS_DOMAIN}${NC}"
-    echo -e "  Token : ${BOLD}${DDNS_TOKEN:0:8}…（已隐藏）${NC}"
-    echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
-    echo ""
-    read -rp "  确认安装？(Y/n，默认Y): " CONFIRM
-    [ -z "$CONFIRM" ] && CONFIRM="y"
-    if ! echo "$CONFIRM" | grep -qiE '^y(es)?$'; then warn "已取消"; return; fi
-
-    # 验证 Token 和域名
-    echo ""
-    info "验证 Token 和域名..."
-    local ZONE_RESP
-    ZONE_RESP=$(curl -s --max-time 10 \
-        "https://api.cloudflare.com/client/v4/zones?name=${DDNS_ZONE}" \
-        -H "Authorization: Bearer ${DDNS_TOKEN}")
-
-    local ZONE_OK
-    ZONE_OK=$(echo "$ZONE_RESP" | python3 -c \
-        "import sys,json; print(json.load(sys.stdin).get('success',''))" 2>/dev/null)
-
-    if [ "$ZONE_OK" != "True" ]; then
-        error "Token 验证失败，请检查 Token 权限（需要 Zone:DNS:Edit）"
-        return
-    fi
-
-    local ZONE_COUNT
-    ZONE_COUNT=$(echo "$ZONE_RESP" | python3 -c \
-        "import sys,json; print(len(json.load(sys.stdin)['result']))" 2>/dev/null)
-
-    if [ "$ZONE_COUNT" = "0" ]; then
-        error "找不到域名 ${DDNS_ZONE}，请确认已托管到此 Cloudflare 账号"
-        return
-    fi
-
-    local ZONE_ID
-    ZONE_ID=$(echo "$ZONE_RESP" | python3 -c \
-        "import sys,json; print(json.load(sys.stdin)['result'][0]['id'])")
-    info "Token 有效，Zone ID: ${ZONE_ID} ✓"
-
-    # 检查 A 记录，不存在则创建
-    local RECORD_RESP
-    RECORD_RESP=$(curl -s --max-time 10 \
-        "https://api.cloudflare.com/client/v4/zones/${ZONE_ID}/dns_records?name=${DDNS_DOMAIN}&type=A" \
-        -H "Authorization: Bearer ${DDNS_TOKEN}")
-
-    local RECORD_COUNT
-    RECORD_COUNT=$(echo "$RECORD_RESP" | python3 -c \
-        "import sys,json; print(len(json.load(sys.stdin)['result']))" 2>/dev/null)
-
-    if [ "$RECORD_COUNT" = "0" ]; then
-        warn "未找到 A 记录，正在自动创建..."
-        local CREATE_RESP
-        CREATE_RESP=$(curl -s -X POST --max-time 10 \
-            "https://api.cloudflare.com/client/v4/zones/${ZONE_ID}/dns_records" \
-            -H "Authorization: Bearer ${DDNS_TOKEN}" \
-            -H "Content-Type: application/json" \
-            --data "{\"type\":\"A\",\"name\":\"${DDNS_DOMAIN}\",\"content\":\"1.1.1.1\",\"ttl\":60,\"proxied\":false}")
-        local CREATE_OK
-        CREATE_OK=$(echo "$CREATE_RESP" | python3 -c \
-            "import sys,json; print(json.load(sys.stdin).get('success',''))" 2>/dev/null)
-        if [ "$CREATE_OK" = "True" ]; then
-            info "A 记录已创建（稍后自动更新为真实 IP）✓"
-        else
-            error "创建 A 记录失败，请手动在 Cloudflare 面板创建后重试"
-            return
-        fi
-    else
-        info "A 记录已存在 ✓"
-    fi
-
-    # 保存 Token
-    echo "$DDNS_TOKEN" > "$DDNS_TOKEN_FILE"
-    chmod 600 "$DDNS_TOKEN_FILE"
-
-    # 保存域名信息
-    echo "DOMAIN=${DDNS_DOMAIN}" > "$DDNS_ZONE_FILE"
-    echo "ZONE=${DDNS_ZONE}" >> "$DDNS_ZONE_FILE"
-
-    # 生成 DDNS 执行脚本
-    cat > "$DDNS_SCRIPT" << 'DDNS_INNER'
-#!/bin/bash
-# 注入 PATH，确保 crontab 环境下能找到 curl / python3
-PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-
-DOMAIN="__DOMAIN__"
-ZONE="__ZONE__"
-MODE="__MODE__"
-PROXIED="__PROXIED__"
-TTL="__TTL__"
-TOKEN_FILE="/root/.cf_token"
-LOG_FILE="/var/log/ddns.log"
-
-API_TOKEN=$(cat "$TOKEN_FILE" 2>/dev/null)
-[ -z "$API_TOKEN" ] && exit 1
-
-# 发送 Telegram 通知（实时读取配置，兼容 crontab 环境）
-tg_notify() {
-    local MSG="$1"
-    local TG_FILE="/root/.cf_tg"
-    [ -f "$TG_FILE" ] || return 0
-    local B_TOKEN C_ID
-    B_TOKEN=$(grep "^BOT_TOKEN=" "$TG_FILE" | cut -d= -f2-)
-    C_ID=$(grep "^CHAT_ID=" "$TG_FILE" | cut -d= -f2-)
-    [ -z "$B_TOKEN" ] || [ -z "$C_ID" ] && return 0
-    curl -s --max-time 15         "https://api.telegram.org/bot${B_TOKEN}/sendMessage"         -d "chat_id=${C_ID}"         -d "text=${MSG}"         -d "parse_mode=HTML" > /dev/null 2>&1
-}
-
-CURRENT_IP4=$(curl -4 -s --max-time 5 https://api.ipify.org 2>/dev/null     || curl -4 -s --max-time 5 https://ifconfig.me/ip 2>/dev/null | tr -d '
- '     || curl -4 -s --max-time 5 https://ip.sb 2>/dev/null | tr -d '
- ')
-CURRENT_IP6=""
-if [ "$MODE" = "dual" ]; then
-    CURRENT_IP6=$(curl -6 -s --max-time 5 https://api64.ipify.org 2>/dev/null         || curl -6 -s --max-time 5 https://ipv6.icanhazip.com 2>/dev/null | tr -d '
- ')
-fi
-
-if [ -z "$CURRENT_IP4" ]; then
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] ERROR: 无法获取公网 IPv4（可能仅有 IPv6 网络）" >> "$LOG_FILE"
-    exit 1
-fi
-
-# 校验是否为合法 IPv4 格式（防止获取到 IPv6 或 HTML 错误页）
-if ! echo "$CURRENT_IP4" | grep -qE '^([0-9]{1,3}\.){3}[0-9]{1,3}$'; then
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] ERROR: 获取到的 IP 非法：${CURRENT_IP4}（可能为 IPv6 或网络异常）" >> "$LOG_FILE"
-    exit 1
-fi
-
-ZONE_ID=$(curl -s --max-time 8 "https://api.cloudflare.com/client/v4/zones?name=${ZONE}"     -H "Authorization: Bearer ${API_TOKEN}" |     python3 -c "import sys,json; print(json.load(sys.stdin)['result'][0]['id'])" 2>/dev/null)
-[ -z "$ZONE_ID" ] && {
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] ERROR: 获取 Zone ID 失败" >> "$LOG_FILE"
-    exit 1
-}
-
-update_record() {
-    local TYPE="$1" NEW_IP="$2"
-    [ -z "$NEW_IP" ] && return 0
-    local RECORD_ID OLD_IP RESULT SUCCESS
-    RECORD_ID=$(curl -s --max-time 8         "https://api.cloudflare.com/client/v4/zones/${ZONE_ID}/dns_records?name=${DOMAIN}&type=${TYPE}"         -H "Authorization: Bearer ${API_TOKEN}" |         python3 -c "import sys,json; print(json.load(sys.stdin)['result'][0]['id'])" 2>/dev/null)
-    [ -z "$RECORD_ID" ] && {
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] ERROR: ${TYPE} 记录不存在" >> "$LOG_FILE"
-        return 1
-    }
-    OLD_IP=$(curl -s --max-time 8         "https://api.cloudflare.com/client/v4/zones/${ZONE_ID}/dns_records/${RECORD_ID}"         -H "Authorization: Bearer ${API_TOKEN}" |         python3 -c "import sys,json; print(json.load(sys.stdin)['result']['content'])" 2>/dev/null)
-    if [ "$NEW_IP" = "$OLD_IP" ]; then
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] OK: ${TYPE} 未变化 ${NEW_IP}" >> "$LOG_FILE"
-        return 0
-    fi
-    local JSON_BODY
-    JSON_BODY=$(printf '{"type":"%s","name":"%s","content":"%s","ttl":%s,"proxied":%s}' \
-        "$TYPE" "$DOMAIN" "$NEW_IP" "$TTL" "$PROXIED")
-    RESULT=$(curl -s -X PUT --max-time 10 \
-        "https://api.cloudflare.com/client/v4/zones/${ZONE_ID}/dns_records/${RECORD_ID}" \
-        -H "Authorization: Bearer ${API_TOKEN}" \
-        -H "Content-Type: application/json" \
-        --data "$JSON_BODY")
-    SUCCESS=$(echo "$RESULT" | python3 -c         "import sys,json; print(json.load(sys.stdin).get('success'))" 2>/dev/null)
-    if [ "$SUCCESS" = "True" ]; then
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] OK: ${TYPE} 更新成功 ${OLD_IP} → ${NEW_IP}" >> "$LOG_FILE"
-        tg_notify "🌐 <b>DDNS IP 已更新</b>
-域名：<code>${DOMAIN}</code>
-类型：${TYPE}
-旧IP：<code>${OLD_IP}</code>
-新IP：<code>${NEW_IP}</code>
-时间：$(date '+%Y-%m-%d %H:%M:%S')"
-    else
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] ERROR: ${TYPE} 更新失败 $RESULT" >> "$LOG_FILE"
-        return 1
-    fi
-}
-
-update_record A "$CURRENT_IP4"
-if [ "$MODE" = "dual" ]; then
-    if [ -n "$CURRENT_IP6" ]; then
-        update_record AAAA "$CURRENT_IP6"
-    else
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] WARN: 未获取到公网 IPv6，跳过 AAAA" >> "$LOG_FILE"
-    fi
-fi
-DDNS_INNER
-
-    sed -i "s/__DOMAIN__/${DDNS_DOMAIN}/g" "$DDNS_SCRIPT"
-    sed -i "s/__ZONE__/${DDNS_ZONE}/g" "$DDNS_SCRIPT"
-    sed -i "s/__MODE__/${DDNS_MODE:-ipv4}/g" "$DDNS_SCRIPT"
-    sed -i "s/__PROXIED__/${DDNS_PROXIED:-false}/g" "$DDNS_SCRIPT"
-    sed -i "s/__TTL__/${DDNS_TTL:-60}/g" "$DDNS_SCRIPT"
-    chmod 700 "$DDNS_SCRIPT"
-
-    # 创建日志文件
-    touch "$DDNS_LOG" 2>/dev/null || { DDNS_LOG="$HOME/ddns.log"; touch "$DDNS_LOG"; }
-    chmod 644 "$DDNS_LOG" 2>/dev/null || true
-
-    # 设置 crontab（每5分钟）
-    local CRON_JOB="*/5 * * * * ${DDNS_SCRIPT} >> ${DDNS_LOG} 2>&1"
-    ( crontab -l 2>/dev/null | grep -v "ddns.sh"; echo "$CRON_JOB" ) | crontab -
-    info "crontab 已设置（每5分钟自动更新）✓"
-
-    # 立即执行一次
-    echo ""
-    info "立即执行一次测试..."
-    if bash "$DDNS_SCRIPT"; then
-        tail -1 "$DDNS_LOG" 2>/dev/null | while IFS= read -r l; do
-            echo -e "  ${GREEN}$l${NC}"
-        done
-    else
-        error "执行失败，请查看日志"
-    fi
-
-    echo ""
-    info "DDNS 配置完成 ✓"
-    echo -e "  域名 : ${BOLD}${DDNS_DOMAIN}${NC}"
-    echo -e "  日志 : ${DIM}${DDNS_LOG}${NC}"
-}
-
-# ── 卸载 DDNS ─────────────────────────────────────────────
-ddns_uninstall() {
-    print_header "卸载 DDNS"
-    warn "将移除 crontab 定时任务、DDNS 脚本和 Token 文件"
-    echo ""
-    read -rp "  确认卸载？(Y/n，默认Y): " CONFIRM
-    [ -z "$CONFIRM" ] && CONFIRM="y"
-    if ! echo "$CONFIRM" | grep -qiE '^y(es)?$'; then warn "已取消"; return; fi
-
-    # 移除 crontab
-    ( crontab -l 2>/dev/null | grep -v "ddns.sh" ) | crontab - 2>/dev/null
-    info "crontab 定时任务已移除 ✓"
-
-    # 删除文件
-    rm -f "$DDNS_SCRIPT" && info "DDNS 脚本已删除 ✓"
-    rm -f "$DDNS_TOKEN_FILE" && info "Token 文件已删除 ✓"
-    rm -f "$DDNS_ZONE_FILE"
-    warn "日志文件保留：${DDNS_LOG}"
-}
-
-# ── 查看日志 ──────────────────────────────────────────────
-ddns_view_logs() {
-    print_header "DDNS 日志"
-    local LOG="$DDNS_LOG"
-    [ ! -f "$LOG" ] && LOG="$HOME/ddns.log"
-    if [ ! -f "$LOG" ]; then
-        warn "日志文件不存在"
-        return
-    fi
-    echo -e "  ${DIM}${LOG}${NC}"
-    echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
-    tail -20 "$LOG" | while IFS= read -r line; do
-        if echo "$line" | grep -q "ERROR"; then
-            echo -e "  ${RED}$line${NC}"
-        elif echo "$line" | grep -q "更新成功"; then
-            echo -e "  ${GREEN}$line${NC}"
-        else
-            echo -e "  ${DIM}$line${NC}"
-        fi
-    done
-    echo ""
-    echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
-    echo -e "  ${GREEN}1${NC}) 实时跟踪（Ctrl+C 返回）"
-    echo -e "  ${RED}0${NC}) 返回"
-    echo ""
-    read -rp "  请选择: " CH
-    if [ "$CH" = "1" ]; then
-        trap 'echo ""; info "已退出实时跟踪"; trap - INT' INT
-        tail -f "$LOG"
-        trap - INT
-    fi
-}
-
-# ── 手动立即更新 ──────────────────────────────────────────
-ddns_run_now() {
-    print_header "手动更新 DDNS"
-    if [ ! -f "$DDNS_SCRIPT" ]; then
-        error "DDNS 未安装"; return
-    fi
-    info "正在更新..."
-    if bash "$DDNS_SCRIPT"; then
-        local LOG="$DDNS_LOG"
-        [ ! -f "$LOG" ] && LOG="$HOME/ddns.log"
-        tail -1 "$LOG" 2>/dev/null | while IFS= read -r l; do
-            echo -e "  ${GREEN}$l${NC}"
-        done
-    else
-        error "更新失败，请查看日志"
-    fi
-}
 
 # ── 修改配置 ──────────────────────────────────────────────
 ddns_reconfig() {
@@ -5805,7 +5462,7 @@ main_menu() {
         volcano_art_banner
         echo ""
         box_top
-        box_title "VPS 开荒脚本 V3.2.2"
+        box_title "VPS 开荒脚本 V3.2.3"
         box_line "  ··银趴火山帮··" "  ${DIM}··银趴火山帮··${NC}"
         box_sep
         # 收集状态数据
