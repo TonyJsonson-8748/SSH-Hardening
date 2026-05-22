@@ -3806,275 +3806,6 @@ caddy_menu() {
 
 
 # ══════════════════════════════════════════════════════════
-#  端口转发模块（iptables NAT）
-# ══════════════════════════════════════════════════════════
-
-PORT_FWD_MARK="# VPS-SCRIPT-PORTFWD"
-
-# ── 检测 iptables 是否可用 ────────────────────────────────
-pf_check() {
-    if ! command -v iptables &>/dev/null; then
-        echo "not_installed"
-        return
-    fi
-    iptables -t nat -L PREROUTING &>/dev/null 2>&1 && echo "ok" || echo "no_permission"
-}
-
-# ── 持久化保存规则 ────────────────────────────────────────
-pf_save() {
-    # 尝试 iptables-save 持久化
-    if command -v iptables-save &>/dev/null; then
-        if [ -f /etc/iptables/rules.v4 ]; then
-            iptables-save > /etc/iptables/rules.v4 2>/dev/null && return
-        fi
-        if [ -f /etc/sysconfig/iptables ]; then
-            iptables-save > /etc/sysconfig/iptables 2>/dev/null && return
-        fi
-    fi
-    # 写入 rc.local 作为兜底
-    local RC_LOCAL="/etc/rc.local"
-    if [ ! -f "$RC_LOCAL" ]; then
-        echo '#!/bin/bash' > "$RC_LOCAL"
-        chmod +x "$RC_LOCAL"
-    fi
-    # 删除旧的端口转发规则再重写
-    grep -v "$PORT_FWD_MARK" "$RC_LOCAL" > "${RC_LOCAL}.tmp" && mv "${RC_LOCAL}.tmp" "$RC_LOCAL"
-    # 追加当前所有端口转发规则
-    echo "" >> "$RC_LOCAL"
-    echo "# 端口转发规则 $PORT_FWD_MARK" >> "$RC_LOCAL"
-    iptables -t nat -L PREROUTING -n --line-numbers 2>/dev/null \
-        | grep "REDIRECT\|DNAT" | grep "$PORT_FWD_MARK\|dpt:" \
-        | while read -r line; do
-            local DPORT; DPORT=$(echo "$line" | grep -oE 'dpt:[0-9]+' | cut -d: -f2)
-            local TOPORT; TOPORT=$(echo "$line" | grep -oE 'redir ports [0-9]+' | awk '{print $3}')
-            [ -n "$DPORT" ] && [ -n "$TOPORT" ] && \
-                echo "iptables -t nat -A PREROUTING -p tcp --dport $DPORT -j REDIRECT --to-port $TOPORT $PORT_FWD_MARK" >> "$RC_LOCAL"
-        done
-}
-
-# ── 列出所有端口转发规则 ──────────────────────────────────
-pf_list() {
-    local rules
-    rules=$(iptables -t nat -L PREROUTING -n --line-numbers 2>/dev/null \
-        | grep -E 'REDIRECT|DNAT' | grep -v "^$")
-
-    if [ -z "$rules" ]; then
-        echo -e "  ${YELLOW}暂无端口转发规则${NC}"
-        return 1
-    fi
-
-    local i=1
-    while IFS= read -r line; do
-        local DPORT; DPORT=$(echo "$line" | grep -oE 'dpt:[0-9]+' | cut -d: -f2)
-        local TOPORT; TOPORT=$(echo "$line" | grep -oE 'redir ports [0-9]+' | awk '{print $3}')
-        local PROTO; PROTO=$(echo "$line" | awk '{print $3}')
-        local NUM; NUM=$(echo "$line" | awk '{print $1}')
-        if [ -n "$DPORT" ] && [ -n "$TOPORT" ]; then
-            echo -e "  ${GREEN}[$i]${NC} ${BOLD}${PROTO}${NC}  ${CYAN}:${DPORT}${NC}  →  ${GREEN}:${TOPORT}${NC}  ${DIM}(规则编号 $NUM)${NC}"
-        else
-            echo -e "  ${GREEN}[$i]${NC} $line"
-        fi
-        i=$((i+1))
-    done <<< "$rules"
-    return 0
-}
-
-# ── 添加端口转发 ──────────────────────────────────────────
-pf_add() {
-    print_header "添加端口转发"
-    echo -e "  将外部访问的端口转发到本机另一个端口"
-    echo -e "  ${DIM}例：访问 16365 → 自动转发到 6365${NC}"
-    echo ""
-    echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
-
-    read -rp "  外部端口（访问的端口，如 16365）: " SRC_PORT
-    [ -z "$SRC_PORT" ] && { warn "已取消"; return; }
-    if ! echo "$SRC_PORT" | grep -qE '^[0-9]+$' || [ "$SRC_PORT" -lt 1 ] || [ "$SRC_PORT" -gt 65535 ]; then
-        error "无效端口号"; return
-    fi
-
-    read -rp "  目标端口（转发到的端口，如 6365）: " DST_PORT
-    [ -z "$DST_PORT" ] && { warn "已取消"; return; }
-    if ! echo "$DST_PORT" | grep -qE '^[0-9]+$' || [ "$DST_PORT" -lt 1 ] || [ "$DST_PORT" -gt 65535 ]; then
-        error "无效端口号"; return
-    fi
-
-    echo -e "  协议："
-    echo -e "  ${GREEN}1${NC}) TCP（默认，适合 HTTP/HTTPS/SSH 等）"
-    echo -e "  ${GREEN}2${NC}) UDP"
-    echo -e "  ${GREEN}3${NC}) TCP + UDP"
-    echo ""
-    read -rp "  请选择 [1-3，默认1]: " PROTO_CHOICE
-    PROTO_CHOICE="${PROTO_CHOICE:-1}"
-
-    local PROTOS=()
-    case "$PROTO_CHOICE" in
-        1) PROTOS=("tcp") ;;
-        2) PROTOS=("udp") ;;
-        3) PROTOS=("tcp" "udp") ;;
-        *) PROTOS=("tcp") ;;
-    esac
-
-    echo ""
-    echo -e "  ${YELLOW}将添加以下规则：${NC}"
-    for p in "${PROTOS[@]}"; do
-        echo -e "  ${BOLD}${p}${NC}  外部 :${SRC_PORT}  →  本机 :${DST_PORT}"
-    done
-    echo ""
-    read -rp "  确认添加？(Y/n，默认Y): " CONFIRM
-    [ -z "$CONFIRM" ] && CONFIRM="y"
-    if ! echo "$CONFIRM" | grep -qiE '^y(es)?$'; then warn "已取消"; return; fi
-
-    echo ""
-    for p in "${PROTOS[@]}"; do
-        # PREROUTING：外部访问转发
-        iptables -t nat -A PREROUTING -p "$p" --dport "$SRC_PORT" -j REDIRECT --to-port "$DST_PORT"
-        # OUTPUT：本机访问自身也生效
-        iptables -t nat -A OUTPUT -p "$p" --dport "$SRC_PORT" -j REDIRECT --to-port "$DST_PORT"
-        info "${p} 规则已添加：:${SRC_PORT} → :${DST_PORT} ✓"
-    done
-
-    # 确保 ip_forward 开启
-    echo 1 > /proc/sys/net/ipv4/ip_forward 2>/dev/null
-    grep -q "net.ipv4.ip_forward" /etc/sysctl.conf 2>/dev/null \
-        || echo "net.ipv4.ip_forward = 1" >> /etc/sysctl.conf
-
-    pf_save
-    info "规则已持久化，重启后继续生效 ✓"
-}
-
-# ── 删除端口转发 ──────────────────────────────────────────
-pf_del() {
-    while true; do
-        print_header "删除端口转发规则"
-
-        local rules
-        rules=$(iptables -t nat -L PREROUTING -n --line-numbers 2>/dev/null \
-            | grep -E 'REDIRECT|DNAT')
-
-        if [ -z "$rules" ]; then
-            echo -e "  ${YELLOW}暂无端口转发规则${NC}"
-            echo ""
-            read -rp "  按 Enter 返回..." _
-            return
-        fi
-
-        local i=1 DPORTS=() NUMS=()
-        while IFS= read -r line; do
-            local DPORT; DPORT=$(echo "$line" | grep -oE 'dpt:[0-9]+' | cut -d: -f2)
-            local TOPORT; TOPORT=$(echo "$line" | grep -oE 'redir ports [0-9]+' | awk '{print $3}')
-            local PROTO; PROTO=$(echo "$line" | awk '{print $3}')
-            local NUM; NUM=$(echo "$line" | awk '{print $1}')
-            echo -e "  ${GREEN}[$i]${NC} ${BOLD}${PROTO}${NC}  :${DPORT}  →  :${TOPORT}  ${DIM}(编号 $NUM)${NC}"
-            DPORTS+=("$DPORT")
-            NUMS+=("$NUM")
-            i=$((i+1))
-        done <<< "$rules"
-
-        echo ""
-        echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
-        echo -e "  ${DIM}输入编号删除，直接回车返回上级${NC}"
-        read -rp "  请输入编号: " SEL
-        [ -z "$SEL" ] && return
-
-        if ! echo "$SEL" | grep -qE '^[0-9]+$' || [ "$SEL" -lt 1 ] || [ "$SEL" -gt $((i-1)) ]; then
-            error "无效编号"; sleep 1; continue
-        fi
-
-        local TARGET_NUM="${NUMS[$((SEL-1))]}"
-        # 删除 PREROUTING 规则（按编号，删后编号会变，所以每次只删一条）
-        iptables -t nat -D PREROUTING "$TARGET_NUM" 2>/dev/null && info "规则 [$SEL] 已删除 ✓" || error "删除失败"
-        # 尝试同步删除 OUTPUT 中对应规则
-        local DEL_DPORT="${DPORTS[$((SEL-1))]}"
-        iptables -t nat -D OUTPUT -p tcp --dport "$DEL_DPORT" -j REDIRECT 2>/dev/null || true
-        iptables -t nat -D OUTPUT -p udp --dport "$DEL_DPORT" -j REDIRECT 2>/dev/null || true
-
-        pf_save
-        sleep 1
-    done
-}
-
-# ── 清空所有端口转发 ──────────────────────────────────────
-pf_flush() {
-    print_header "清空所有端口转发规则"
-    echo ""
-    warn "将删除所有 NAT PREROUTING 端口转发规则！"
-    echo ""
-    read -rp "  确认清空？(Y/n，默认Y): " CONFIRM
-    [ -z "$CONFIRM" ] && CONFIRM="y"
-    if ! echo "$CONFIRM" | grep -qiE '^y(es)?$'; then warn "已取消"; return; fi
-
-    warn "注意：将清空所有 NAT PREROUTING/OUTPUT 规则，包括其他应用设置的规则！"
-    iptables -t nat -F PREROUTING 2>/dev/null
-    iptables -t nat -F OUTPUT 2>/dev/null
-    pf_save
-    info "已清空所有端口转发规则 ✓"
-}
-
-# ── 端口转发主菜单 ────────────────────────────────────────
-portfwd_menu() {
-    while true; do
-        local PF_OK; PF_OK=$(pf_check)
-
-        print_header "端口转发管理"
-
-        if [ "$PF_OK" = "not_installed" ]; then
-            warn "iptables 未安装！"
-            echo ""
-            echo -e "  ${GREEN}1${NC}) 安装 iptables"
-            echo -e "  ${RED}0${NC}) 返回"
-            echo -e "  ${RED}00${NC}) 退出脚本"
-            echo ""
-            read -rp "  请选择 [0-1]: " CH
-            case "$CH" in
-                1) pkg_install iptables && info "iptables 安装成功 ✓" || error "安装失败" ;;
-                0) return ;;
-                00) safe_clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;
-            esac
-            echo ""; read -rp "  按 Enter 继续..." _
-            continue
-        fi
-
-        if [ "$PF_OK" = "no_permission" ]; then
-            error "当前环境不支持 iptables NAT（可能是 LXC 容器权限限制）"
-            echo ""
-            echo -e "  ${DIM}建议在宿主机或 KVM/独立 VPS 上使用此功能${NC}"
-            echo ""
-            read -rp "  按 Enter 返回..." _
-            return
-        fi
-
-        # 显示当前规则
-        local RULE_COUNT
-        RULE_COUNT=$(iptables -t nat -L PREROUTING -n 2>/dev/null | grep -cE 'REDIRECT|DNAT' || echo 0)
-        echo -e "  当前规则数：${BOLD}${RULE_COUNT}${NC}"
-        echo ""
-        pf_list
-        echo ""
-        echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
-        echo -e "  ${GREEN}1${NC}) 添加端口转发     ${GREEN}2${NC}) 删除端口转发"
-        echo -e "  ${YELLOW}3${NC}) 清空所有规则"
-        echo -e "  ${RED}0${NC}) 返回              ${RED}00${NC}) 退出脚本"
-        echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
-        echo ""
-        read -rp "  请选择 [0-3]: " CH
-
-        case "$CH" in
-            1) pf_add ;;
-            2) pf_del ;;
-            3) pf_flush ;;
-            0) return ;;
-            00) safe_clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;
-            *) warn "无效选项"; sleep 1; continue ;;
-        esac
-
-        [ "${CH}" != "0" ] && { echo ""; read -rp "  按 Enter 返回..." _; }
-    done
-}
-
-
-
-# ══════════════════════════════════════════════════════════
 #  时间同步模块
 # ══════════════════════════════════════════════════════════
 
@@ -4829,31 +4560,27 @@ self_manage_menu() {
 
 
 
-# ══════════════════════════════════════════════════════════
-#  落地机入站白名单模块（nftables）
-# ══════════════════════════════════════════════════════════
-NFT_WHITELIST_CONF="/etc/nftables.conf"
-NFT_WHITELIST_TABLE="landing_whitelist"
 
-wl_status() {
-    if ! command -v nft &>/dev/null; then
-        echo "no_nft"
-    elif ! nft list table inet "$NFT_WHITELIST_TABLE" &>/dev/null; then
-        echo "not_set"
-    else
-        echo "active"
-    fi
+# ══════════════════════════════════════════════════════════
+#  NFT 转发管理模块（端口转发 / DDNS / 访问控制）
+# ══════════════════════════════════════════════════════════
+NFT_CONFIG_FILE="${NFT_CONFIG_FILE:-/etc/nftables.conf}"
+NFT_STATE_DIR="${NFT_STATE_DIR:-/etc/nft-port-forward}"
+NFT_RULES_FILE="${NFT_RULES_FILE:-$NFT_STATE_DIR/rules.db}"
+NFT_ACCESS_FILE="${NFT_ACCESS_FILE:-$NFT_STATE_DIR/access.conf}"
+NFT_RENDER_VERSION="1"
+NFT_TRACK_TIMEOUT="${NFT_TRACK_TIMEOUT:-30m}"
+NFT_DDNS_TIMER_FILE="/etc/systemd/system/nftpf-ddns.timer"
+NFT_DDNS_SERVICE_FILE="/etc/systemd/system/nftpf-ddns.service"
+
+# ── 基础工具 ──────────────────────────────────────────────
+nft_ensure_state_dir() {
+    mkdir -p "$NFT_STATE_DIR"
+    touch "$NFT_RULES_FILE"
+    [ -f "$NFT_ACCESS_FILE" ] || echo "mode=off" > "$NFT_ACCESS_FILE"
 }
 
-wl_get_ips() {
-    nft list table inet "$NFT_WHITELIST_TABLE" 2>/dev/null \
-        | grep -A1 "elements" \
-        | tr -d '{},' \
-        | grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3}' \
-        | sort -u
-}
-
-wl_install_nft() {
+nft_install() {
     command -v nft &>/dev/null && return 0
     info "正在安装 nftables..."
     if command -v apt-get &>/dev/null; then
@@ -4869,289 +4596,795 @@ wl_install_nft() {
     command -v nft &>/dev/null
 }
 
-wl_validate_ip() {
-    echo "$1" | grep -qE '^([0-9]{1,3}\.){3}[0-9]{1,3}(/[0-9]{1,2})?$'
+nft_enable_ip_forward() {
+    sysctl -w net.ipv4.ip_forward=1 >/dev/null 2>&1
+    sysctl -w net.ipv6.conf.all.forwarding=1 >/dev/null 2>&1
+    if [ -f /etc/sysctl.conf ]; then
+        grep -q '^net.ipv4.ip_forward=1' /etc/sysctl.conf \
+            || echo 'net.ipv4.ip_forward=1' >> /etc/sysctl.conf
+        grep -q '^net.ipv6.conf.all.forwarding=1' /etc/sysctl.conf \
+            || echo 'net.ipv6.conf.all.forwarding=1' >> /etc/sysctl.conf
+    fi
 }
 
-wl_apply() {
-    local IPS="$1"
-    [ -z "$IPS" ] && { error "至少需要一个 IP"; return 1; }
+# ── IP / 端口 校验 ────────────────────────────────────────
+nft_is_ipv4() {
+    echo "$1" | grep -qE '^([0-9]{1,3}\.){3}[0-9]{1,3}$' || return 1
+    local IFS='.'
+    set -- $1
+    for p in "$@"; do [ "$p" -ge 0 ] && [ "$p" -le 255 ] || return 1; done
+}
 
-    cat > "$NFT_WHITELIST_CONF" <<NFTEOF
+nft_is_ipv6() {
+    [ "${1#*:}" != "$1" ] || return 1
+    echo "$1" | grep -qE '^[0-9A-Fa-f:.]+$'
+}
+
+nft_is_hostname() {
+    [ ${#1} -le 253 ] || return 1
+    echo "$1" | grep -qE '^[A-Za-z0-9][A-Za-z0-9.-]*[A-Za-z0-9]$'
+}
+
+nft_classify() {
+    if nft_is_ipv4 "$1"; then echo "ipv4"
+    elif nft_is_ipv6 "$1"; then echo "ipv6"
+    elif nft_is_hostname "$1"; then echo "domain"
+    else echo "invalid"
+    fi
+}
+
+nft_check_port() {
+    [[ "$1" =~ ^[0-9]+$ ]] && [ "$1" -ge 1 ] && [ "$1" -le 65535 ]
+}
+
+nft_resolve_domain() {
+    local domain="$1" family="$2" result=""
+    if [ "$family" = "ipv4" ]; then
+        result=$(getent ahostsv4 "$domain" 2>/dev/null | awk '{print $1; exit}')
+        nft_is_ipv4 "$result" && echo "$result" && return 0
+    else
+        result=$(getent ahostsv6 "$domain" 2>/dev/null | awk '{print $1; exit}')
+        nft_is_ipv6 "$result" && echo "$result" && return 0
+    fi
+    return 1
+}
+
+# ── 规则数据库读写 ────────────────────────────────────────
+# 格式: id|family|listen_ip|lstart|lend|target_type|target_host|resolved|tstart|tend|mode
+nft_next_rule_id() {
+    local max=0 id
+    while IFS='|' read -r id _; do
+        [[ -z "$id" || "$id" = \#* ]] && continue
+        [[ "$id" =~ ^[0-9]+$ ]] && [ "$id" -gt "$max" ] && max=$id
+    done < "$NFT_RULES_FILE"
+    echo $((max + 1))
+}
+
+nft_get_access_mode() {
+    local m
+    m=$(grep -m1 '^mode=' "$NFT_ACCESS_FILE" 2>/dev/null | cut -d= -f2)
+    case "$m" in whitelist|blacklist|off) echo "$m" ;; *) echo "off" ;; esac
+}
+
+nft_access_entries_for() {
+    grep "^entry=$1|" "$NFT_ACCESS_FILE" 2>/dev/null | cut -d'|' -f2-
+}
+
+nft_format_access_for() {
+    local family="$1" out="" sep="" entry
+    while IFS= read -r entry; do
+        [ -n "$entry" ] || continue
+        out="${out}${sep}${entry}"; sep=", "
+    done < <(nft_access_entries_for "$family")
+    echo "$out"
+}
+
+nft_rules_has_family() {
+    local family="$1" line
+    while IFS= read -r line; do
+        [[ -z "$line" || "$line" = \#* ]] && continue
+        case "$line" in
+            *"|$family|"*) return 0 ;;
+        esac
+    done < "$NFT_RULES_FILE"
+    return 1
+}
+
+# ── 生成 nftables 配置 ────────────────────────────────────
+nft_build_dnat() {
+    local family="$1" ip="$2" port="$3"
+    if [ "$family" = "ipv6" ] && [ -n "$port" ]; then
+        echo "[$ip]:$port"
+    elif [ -n "$port" ]; then
+        echo "$ip:$port"
+    else
+        echo "$ip"
+    fi
+}
+
+nft_build_port_map() {
+    local lstart="$1" lend="$2" tstart="$3"
+    local lp="$lstart" rp="$tstart" first=1 out="{ "
+    while [ "$lp" -le "$lend" ]; do
+        [ "$first" -eq 1 ] && first=0 || out="$out, "
+        out="${out}${lp} : ${rp}"
+        lp=$((lp+1)); rp=$((rp+1))
+    done
+    echo "$out }"
+}
+
+nft_render_rule_line() {
+    local id="$1" family="$2" lip="$3" ls="$4" le="$5" \
+          ttype="$6" thost="$7" tip="$8" ts="$9" te="${10}" mode="${11}"
+    local listen_match="" port_expr dnat map_str
+
+    if [ -n "$lip" ]; then
+        if [ "$family" = "ipv6" ]; then listen_match="ip6 daddr $lip "
+        else listen_match="ip daddr $lip "; fi
+    fi
+
+    if [ "$ls" = "$le" ]; then
+        port_expr="$ls"
+    else
+        port_expr="{ $ls-$le }"
+    fi
+
+    case "$mode" in
+        single)
+            dnat=$(nft_build_dnat "$family" "$tip" "$ts")
+            echo "        ${listen_match}meta l4proto {tcp, udp} th dport $port_expr dnat to $dnat"
+            ;;
+        range_1_to_1)
+            dnat=$(nft_build_dnat "$family" "$tip" "")
+            echo "        ${listen_match}meta l4proto {tcp, udp} th dport $port_expr dnat to $dnat"
+            ;;
+        range_offset)
+            dnat=$(nft_build_dnat "$family" "$tip" "")
+            map_str=$(nft_build_port_map "$ls" "$le" "$ts")
+            echo "        ${listen_match}meta l4proto {tcp, udp} th dport $port_expr dnat to $dnat : th dport map $map_str"
+            ;;
+    esac
+}
+
+nft_render_rules_for() {
+    local family="$1" line
+    while IFS='|' read -r id f lip ls le ttype thost tip ts te mode; do
+        [[ -z "$id" || "$id" = \#* ]] && continue
+        [ "$f" = "$family" ] || continue
+        nft_render_rule_line "$id" "$f" "$lip" "$ls" "$le" "$ttype" "$thost" "$tip" "$ts" "$te" "$mode"
+    done < "$NFT_RULES_FILE"
+}
+
+nft_render_access_table_for() {
+    local family="$1" mode entries tf addr addr_type
+    mode=$(nft_get_access_mode)
+    [ "$mode" != "off" ] || return 0
+    nft_rules_has_family "$family" || return 0
+
+    entries=$(nft_format_access_for "$family")
+    [ "$mode" = "blacklist" ] && [ -z "$entries" ] && return 0
+
+    if [ "$family" = "ipv6" ]; then
+        tf="ip6"; addr="ip6"; addr_type="ipv6_addr"
+    else
+        tf="ip"; addr="ip"; addr_type="ipv4_addr"
+    fi
+
+    echo "table $tf nftpf_access {"
+    if [ -n "$entries" ]; then
+        cat <<EOF
+    set sources {
+        type $addr_type
+        flags interval
+        elements = { $entries }
+    }
+EOF
+    fi
+    echo "    chain prerouting {"
+    echo "        type filter hook prerouting priority -101; policy accept;"
+    echo "        # NFTPF_ACCESS_MODE=$mode"
+
+    # 为每条规则生成访问控制匹配
+    local id f lip ls le ttype thost tip ts te md match
+    while IFS='|' read -r id f lip ls le ttype thost tip ts te md; do
+        [[ -z "$id" || "$id" = \#* ]] && continue
+        [ "$f" = "$family" ] || continue
+        # 构造匹配（不带 dnat 的版本）
+        if [ -n "$lip" ]; then
+            if [ "$f" = "ipv6" ]; then match="ip6 daddr $lip "
+            else match="ip daddr $lip "; fi
+        else
+            match=""
+        fi
+        if [ "$ls" = "$le" ]; then
+            match="${match}meta l4proto {tcp, udp} th dport $ls"
+        else
+            match="${match}meta l4proto {tcp, udp} th dport { $ls-$le }"
+        fi
+        if [ "$mode" = "whitelist" ]; then
+            if [ -n "$entries" ]; then
+                echo "        $match $addr saddr != @sources drop"
+            else
+                echo "        $match drop"
+            fi
+        else
+            echo "        $match $addr saddr @sources drop"
+        fi
+    done < "$NFT_RULES_FILE"
+    echo "    }"
+    echo "}"
+    echo ""
+}
+
+nft_generate_config() {
+    cat <<EOF
 #!/usr/sbin/nft -f
+# NFTPF_RENDER_VERSION=$NFT_RENDER_VERSION
 
 flush ruleset
 
-table inet ${NFT_WHITELIST_TABLE} {
-    set admin_ip4 {
-        type ipv4_addr
-        elements = { ${IPS} }
-    }
+EOF
+    nft_render_access_table_for "ipv4"
+    nft_render_access_table_for "ipv6"
 
-    chain input {
-        type filter hook input priority 0; policy drop;
-        iif "lo" accept
-        ct state established,related accept
-        ip saddr @admin_ip4 accept
+    cat <<EOF
+table ip nat {
+    chain prerouting {
+        type nat hook prerouting priority dstnat; policy accept;
+EOF
+    nft_render_rules_for "ipv4"
+    cat <<EOF
     }
-
-    chain forward {
-        type filter hook forward priority 0; policy drop;
-    }
-
-    chain output {
-        type filter hook output priority 0; policy accept;
+    chain postrouting {
+        type nat hook postrouting priority srcnat; policy accept;
+        ct status dnat masquerade
     }
 }
-NFTEOF
 
-    info "校验规则语法..."
-    if ! nft -c -f "$NFT_WHITELIST_CONF" 2>&1; then
-        error "规则语法错误，已取消应用"
+table ip6 nat {
+    chain prerouting {
+        type nat hook prerouting priority dstnat; policy accept;
+EOF
+    nft_render_rules_for "ipv6"
+    cat <<EOF
+    }
+    chain postrouting {
+        type nat hook postrouting priority srcnat; policy accept;
+        ct status dnat masquerade
+    }
+}
+EOF
+}
+
+nft_write_and_apply() {
+    local tmp
+    tmp=$(mktemp) || return 1
+    nft_generate_config > "$tmp"
+
+    if ! nft -c -f "$tmp" 2>&1; then
+        rm -f "$tmp"
+        error "nftables 配置语法校验失败"
         return 1
     fi
 
-    info "应用规则..."
-    nft -f "$NFT_WHITELIST_CONF"
+    [ -f "$NFT_CONFIG_FILE" ] && cp "$NFT_CONFIG_FILE" "${NFT_CONFIG_FILE}.bak.last"
+    mv "$tmp" "$NFT_CONFIG_FILE"
+    chmod +x "$NFT_CONFIG_FILE"
 
     if command -v systemctl &>/dev/null && pidof systemd &>/dev/null; then
         systemctl enable nftables &>/dev/null || true
-        systemctl restart nftables &>/dev/null || true
-    elif command -v rc-update &>/dev/null; then
+        systemctl restart nftables &>/dev/null
+    elif command -v rc-service &>/dev/null; then
         rc-update add nftables default 2>/dev/null || true
-        rc-service nftables restart 2>/dev/null || true
-    fi
-
-    info "白名单已部署 ✓"
-}
-
-wl_add_ip() {
-    print_header "添加白名单 IP"
-
-    local CUR_IPS NEW_IP
-    CUR_IPS=$(wl_get_ips | tr '\n' ',' | sed 's/,$//' | sed 's/,/, /g')
-
-    if [ -n "$CUR_IPS" ]; then
-        echo -e "  当前白名单：${BOLD}${CUR_IPS}${NC}"
-        echo ""
-    fi
-
-    read -rp "  新增 IP（IPv4 格式）: " NEW_IP
-    [ -z "$NEW_IP" ] && { warn "已取消"; return; }
-    if ! wl_validate_ip "$NEW_IP"; then
-        error "IP 格式不正确"
-        return
-    fi
-
-    if echo "$CUR_IPS" | grep -qF "$NEW_IP"; then
-        warn "该 IP 已在白名单中"
-        return
-    fi
-
-    local MERGED
-    if [ -z "$CUR_IPS" ]; then
-        MERGED="$NEW_IP"
+        rc-service nftables restart &>/dev/null || nft -f "$NFT_CONFIG_FILE"
     else
-        MERGED="${CUR_IPS}, ${NEW_IP}"
+        nft -f "$NFT_CONFIG_FILE"
     fi
-
-    warn "重要：应用后只有以下 IP 能访问本机所有入站端口！"
-    echo -e "  ${BOLD}${MERGED}${NC}"
-    echo ""
-    warn "请确认你当前的 SSH 来源 IP 已包含在内，否则会自我封锁！"
-    read -rp "  确认应用？(y/N，默认N): " C
-    [ -z "$C" ] && C="n"
-    if ! echo "$C" | grep -qiE '^y(es)?$'; then warn "已取消"; return; fi
-
-    wl_apply "$MERGED"
+    info "nftables 配置已应用 ✓"
 }
 
-wl_remove_ip() {
-    print_header "删除白名单 IP"
+# ── 规则展示 ──────────────────────────────────────────────
+nft_display_host() {
+    nft_is_ipv6 "$1" && echo "[$1]" || echo "$1"
+}
 
-    local CUR_IPS_FILE="/tmp/vps_wl_ips_$$"
-    wl_get_ips > "$CUR_IPS_FILE"
+nft_rule_summary() {
+    local id="$1" family="$2" lip="$3" ls="$4" le="$5" \
+          ttype="$6" thost="$7" tip="$8" ts="$9" te="${10}" mode="${11}"
+    local listen_disp target_disp mode_text note=""
 
-    if [ ! -s "$CUR_IPS_FILE" ]; then
-        rm -f "$CUR_IPS_FILE"
-        warn "白名单为空"
-        return
+    [ -z "$lip" ] && lip="$([ "$family" = "ipv6" ] && echo "::" || echo "0.0.0.0")"
+    if [ "$ls" = "$le" ]; then
+        listen_disp="$(nft_display_host "$lip"):$ls"
+    else
+        listen_disp="$(nft_display_host "$lip"):${ls}-${le}"
     fi
 
-    local i=1
-    while IFS= read -r ip; do
-        echo -e "  ${GREEN}[$i]${NC} $ip"
-        i=$(( i + 1 ))
-    done < "$CUR_IPS_FILE"
-    echo ""
-    read -rp "  选择要删除的编号（多个逗号分隔，0 取消）: " CH
-    if [ -z "$CH" ] || [ "$CH" = "0" ]; then
-        rm -f "$CUR_IPS_FILE"
-        warn "已取消"
-        return
+    [ "$ttype" = "domain" ] && note=" (${tip})"
+    if [ "$ts" = "$te" ]; then
+        target_disp="$(nft_display_host "$thost"):${ts}${note}"
+    else
+        target_disp="$(nft_display_host "$thost"):${ts}-${te}${note}"
     fi
 
-    local TO_DEL
-    TO_DEL=$(echo "$CH" | tr ',' '\n' | tr -d ' ')
+    case "$mode" in
+        single) mode_text="单端口" ;;
+        range_1_to_1) mode_text="端口段1:1" ;;
+        range_offset) mode_text="端口段偏移" ;;
+    esac
 
-    local REMAIN=""
-    i=1
-    while IFS= read -r ip; do
-        if ! echo "$TO_DEL" | grep -qE "^${i}$"; then
-            if [ -z "$REMAIN" ]; then
-                REMAIN="$ip"
-            else
-                REMAIN="${REMAIN}, ${ip}"
-            fi
+    echo "[${id}] [${family}] [${mode_text}] ${listen_disp} → ${target_disp}"
+}
+
+nft_list_rules() {
+    local count=0 line
+    while IFS='|' read -r id f lip ls le ttype thost tip ts te mode; do
+        [[ -z "$id" || "$id" = \#* ]] && continue
+        nft_rule_summary "$id" "$f" "$lip" "$ls" "$le" "$ttype" "$thost" "$tip" "$ts" "$te" "$mode"
+        count=$((count + 1))
+    done < "$NFT_RULES_FILE"
+    [ "$count" -gt 0 ]
+}
+
+nft_find_rule() {
+    local target_id="$1" line
+    while IFS= read -r line; do
+        [[ -z "$line" || "$line" = \#* ]] && continue
+        local id="${line%%|*}"
+        if [ "$id" = "$target_id" ]; then
+            NFT_FOUND_RULE="$line"
+            return 0
         fi
-        i=$(( i + 1 ))
-    done < "$CUR_IPS_FILE"
-    rm -f "$CUR_IPS_FILE"
+    done < "$NFT_RULES_FILE"
+    return 1
+}
 
-    if [ -z "$REMAIN" ]; then
-        warn "删除后白名单将为空，等同于关闭白名单（恢复正常）"
-        read -rp "  确认？(y/N，默认N): " C
-        [ -z "$C" ] && C="n"
-        echo "$C" | grep -qiE '^y(es)?$' || { warn "已取消"; return; }
-        wl_clear
+# ── 添加规则 ──────────────────────────────────────────────
+nft_choose_family() {
+    local lip="$1" thost="$2" choice="$3"
+    if [ -n "$lip" ]; then
+        echo "$(nft_classify "$lip")"
         return
     fi
-
-    info "删除后剩余：${REMAIN}"
-    read -rp "  确认应用？(y/N，默认N): " C
-    [ -z "$C" ] && C="n"
-    echo "$C" | grep -qiE '^y(es)?$' || { warn "已取消"; return; }
-
-    wl_apply "$REMAIN"
+    case "$choice" in
+        4|ipv4) echo "ipv4"; return ;;
+        6|ipv6) echo "ipv6"; return ;;
+    esac
+    local k; k=$(nft_classify "$thost")
+    case "$k" in
+        ipv4|ipv6) echo "$k" ;;
+        domain)
+            if nft_resolve_domain "$thost" ipv4 >/dev/null 2>&1; then echo "ipv4"
+            elif nft_resolve_domain "$thost" ipv6 >/dev/null 2>&1; then echo "ipv6"
+            else echo "invalid"; fi
+            ;;
+        *) echo "invalid" ;;
+    esac
 }
 
-wl_clear() {
-    info "正在关闭入站白名单..."
-    if nft list table inet "$NFT_WHITELIST_TABLE" &>/dev/null; then
-        nft delete table inet "$NFT_WHITELIST_TABLE"
+nft_add_rule() {
+    local mode="$1"
+    local lip ls le thost ts te family resolved_ip
+    print_header "添加端口转发规则（${mode}）"
+
+    read -rp "  监听 IP（留空=所有，IPv6 输入 ::）: " lip
+    [ "$lip" = "0.0.0.0" ] || [ "$lip" = "::" ] && lip=""
+
+    if [ "$mode" = "single" ]; then
+        read -rp "  监听端口: " ls
+        nft_check_port "$ls" || { error "端口无效"; return; }
+        le="$ls"
+    else
+        read -rp "  监听起始端口: " ls
+        read -rp "  监听结束端口: " le
+        nft_check_port "$ls" || { error "起始端口无效"; return; }
+        nft_check_port "$le" || { error "结束端口无效"; return; }
+        [ "$ls" -le "$le" ] || { error "起始端口不能大于结束端口"; return; }
     fi
-    if [ -f "$NFT_WHITELIST_CONF" ] && grep -q "table inet ${NFT_WHITELIST_TABLE}" "$NFT_WHITELIST_CONF"; then
-        cat > "$NFT_WHITELIST_CONF" <<NFTEOF
-#!/usr/sbin/nft -f
 
-flush ruleset
-NFTEOF
-    fi
-    info "入站白名单已关闭 ✓"
-}
+    read -rp "  目标 IP / 域名: " thost
+    [ -z "$thost" ] && { warn "已取消"; return; }
+    [ "$(nft_classify "$thost")" != "invalid" ] || { error "目标地址格式无效"; return; }
 
-wl_enable() {
-    print_header "启用入站白名单"
-    echo -e "  ${RED}${BOLD}⚠ 警告：启用后只有白名单 IP 能访问本机！${NC}"
-    echo -e "  ${DIM}所有 SSH/HTTP/HTTPS/Ping 等入站请求都会被拒绝${NC}"
-    echo -e "  ${DIM}如果当前 SSH 来源 IP 不在白名单，将立即断开且无法重连${NC}"
-    echo ""
-
-    local SSH_FROM
-    SSH_FROM=$(echo "${SSH_CONNECTION:-}" | awk '{print $1}')
-    if [ -n "$SSH_FROM" ]; then
-        echo -e "  ${YELLOW}检测到当前 SSH 来源：${BOLD}${SSH_FROM}${NC}"
-        echo -e "  ${DIM}强烈建议将此 IP 加入白名单${NC}"
+    if [ "$mode" = "single" ]; then
+        read -rp "  目标端口（留空=同监听端口）: " ts
+        [ -z "$ts" ] && ts="$ls"
+        nft_check_port "$ts" || { error "目标端口无效"; return; }
+        te="$ts"
+        local rule_mode="single"
+    else
         echo ""
+        echo -e "  ${GREEN}1${NC}) 1:1 映射（目标端口段=监听端口段）"
+        echo -e "  ${GREEN}2${NC}) 端口段偏移（目标段从指定起始端口开始）"
+        read -rp "  选择映射模式 [1/2]，默认 1: " mc
+        [ -z "$mc" ] && mc=1
+        local count=$((le - ls + 1))
+        if [ "$mc" = "2" ]; then
+            read -rp "  目标起始端口: " ts
+            nft_check_port "$ts" || { error "目标端口无效"; return; }
+            te=$((ts + count - 1))
+            [ "$te" -le 65535 ] || { error "目标结束端口超过 65535"; return; }
+            local rule_mode="range_offset"
+        else
+            ts="$ls"; te="$le"
+            local rule_mode="range_1_to_1"
+        fi
     fi
 
-    read -rp "  输入允许访问的 IP（多个用逗号分隔，如 1.2.3.4,5.6.7.8）: " IPS_RAW
-    [ -z "$IPS_RAW" ] && { warn "已取消"; return; }
+    # 协议族判定
+    family=$(nft_choose_family "$lip" "$thost" "auto")
+    [ "$family" = "invalid" ] && { error "无法确定协议族"; return; }
 
-    local IPS_OK=""
-    for ip in $(echo "$IPS_RAW" | tr ',' ' '); do
-        if wl_validate_ip "$ip"; then
-            if [ -z "$IPS_OK" ]; then
-                IPS_OK="$ip"
-            else
-                IPS_OK="${IPS_OK}, ${ip}"
-            fi
-        else
-            warn "忽略无效 IP：$ip"
+    # 目标地址解析
+    local ttype="ip"
+    if [ "$(nft_classify "$thost")" = "domain" ]; then
+        ttype="domain"
+        resolved_ip=$(nft_resolve_domain "$thost" "$family") || { error "域名解析失败"; return; }
+    else
+        resolved_ip="$thost"
+    fi
+
+    local id; id=$(nft_next_rule_id)
+    local record="${id}|${family}|${lip}|${ls}|${le}|${ttype}|${thost}|${resolved_ip}|${ts}|${te}|${rule_mode}"
+
+    echo ""
+    info "即将添加："
+    nft_rule_summary "$id" "$family" "$lip" "$ls" "$le" "$ttype" "$thost" "$resolved_ip" "$ts" "$te" "$rule_mode"
+    echo ""
+    read -rp "  确认添加？(Y/n，默认Y): " c
+    [ -z "$c" ] && c="y"
+    echo "$c" | grep -qiE '^y(es)?$' || { warn "已取消"; return; }
+
+    echo "$record" >> "$NFT_RULES_FILE"
+    nft_write_and_apply || {
+        # 回滚
+        sed -i "/^${id}|/d" "$NFT_RULES_FILE"
+        return 1
+    }
+}
+
+# ── 删除规则 ──────────────────────────────────────────────
+nft_delete_rule() {
+    print_header "删除端口转发规则"
+    if ! nft_list_rules; then
+        warn "暂无规则"
+        return
+    fi
+    echo ""
+    read -rp "  请输入要删除的规则 ID（0 取消）: " id
+    [ "$id" = "0" ] || [ -z "$id" ] && { warn "已取消"; return; }
+    nft_find_rule "$id" || { error "未找到该规则"; return; }
+
+    echo ""
+    info "即将删除："
+    local fields; IFS='|' read -ra fields <<< "$NFT_FOUND_RULE"
+    nft_rule_summary "${fields[@]}"
+    echo ""
+    read -rp "  确认删除？(Y/n，默认Y): " c
+    [ -z "$c" ] && c="y"
+    echo "$c" | grep -qiE '^y(es)?$' || { warn "已取消"; return; }
+
+    sed -i "/^${id}|/d" "$NFT_RULES_FILE"
+    nft_write_and_apply
+}
+
+# ── 清空所有规则 ──────────────────────────────────────────
+nft_clear_all_rules() {
+    warn "将清空所有 NFT 转发规则！"
+    read -rp "  确认清空？(y/N，默认N): " c
+    [ -z "$c" ] && c="n"
+    echo "$c" | grep -qiE '^y(es)?$' || { warn "已取消"; return; }
+
+    : > "$NFT_RULES_FILE"
+    nft_write_and_apply
+}
+
+# ── DDNS 刷新 ─────────────────────────────────────────────
+nft_refresh_ddns() {
+    local tmp; tmp=$(mktemp) || return 1
+    local changed=0 domain_count=0 line
+    while IFS= read -r line; do
+        if [[ -z "$line" || "$line" = \#* ]]; then
+            echo "$line" >> "$tmp"
+            continue
         fi
+        IFS='|' read -r id f lip ls le ttype thost tip ts te mode <<< "$line"
+        if [ "$ttype" = "domain" ]; then
+            domain_count=$((domain_count + 1))
+            local new_ip
+            if new_ip=$(nft_resolve_domain "$thost" "$f"); then
+                if [ "$new_ip" != "$tip" ]; then
+                    info "[$id] ${thost}: ${tip} → ${new_ip}"
+                    tip="$new_ip"
+                    changed=$((changed + 1))
+                fi
+            else
+                warn "[$id] ${thost} 解析失败，保留旧值 ${tip}"
+            fi
+        fi
+        echo "${id}|${f}|${lip}|${ls}|${le}|${ttype}|${thost}|${tip}|${ts}|${te}|${mode}" >> "$tmp"
+    done < "$NFT_RULES_FILE"
+
+    if [ "$domain_count" -eq 0 ]; then
+        warn "没有配置 DDNS 域名目标"
+        rm -f "$tmp"
+        return 0
+    fi
+    if [ "$changed" -eq 0 ]; then
+        info "DDNS 检查完成，无变化"
+        rm -f "$tmp"
+        return 0
+    fi
+    mv "$tmp" "$NFT_RULES_FILE"
+    nft_write_and_apply
+}
+
+# ── DDNS 自动刷新 timer ──────────────────────────────────
+nft_ddns_timer_status() {
+    if command -v systemctl &>/dev/null && systemctl is-active --quiet nftpf-ddns.timer 2>/dev/null; then
+        echo "active"
+    else
+        echo "inactive"
+    fi
+}
+
+nft_ddns_timer_enable() {
+    print_header "启用 DDNS 自动刷新"
+    if ! command -v systemctl &>/dev/null; then
+        error "需要 systemd 才能启用自动刷新"
+        return 1
+    fi
+    read -rp "  刷新间隔（10s-24h，默认 5m）: " interval
+    [ -z "$interval" ] && interval="5m"
+
+    cat > "$NFT_DDNS_SERVICE_FILE" <<EOF
+[Unit]
+Description=NFT Port Forward DDNS refresh
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=$LOCAL_SCRIPT --nft-refresh-ddns
+EOF
+
+    cat > "$NFT_DDNS_TIMER_FILE" <<EOF
+[Unit]
+Description=NFT Port Forward DDNS auto refresh
+
+[Timer]
+OnBootSec=${interval}
+OnUnitActiveSec=${interval}
+AccuracySec=1s
+Unit=nftpf-ddns.service
+
+[Install]
+WantedBy=timers.target
+EOF
+
+    systemctl daemon-reload
+    systemctl enable --now nftpf-ddns.timer &>/dev/null && info "DDNS 自动刷新已启用（每 ${interval}）✓" \
+        || error "启用失败"
+}
+
+nft_ddns_timer_disable() {
+    if command -v systemctl &>/dev/null; then
+        systemctl disable --now nftpf-ddns.timer &>/dev/null || true
+    fi
+    rm -f "$NFT_DDNS_TIMER_FILE" "$NFT_DDNS_SERVICE_FILE"
+    command -v systemctl &>/dev/null && systemctl daemon-reload
+    info "DDNS 自动刷新已关闭"
+}
+
+# ── 访问控制 ──────────────────────────────────────────────
+nft_validate_access_entry() {
+    local entry="$1" base prefix=""
+    if [[ "$entry" = */* ]]; then
+        base="${entry%%/*}"
+        prefix="${entry##*/}"
+        [[ "$prefix" =~ ^[0-9]+$ ]] || return 1
+    else
+        base="$entry"
+    fi
+    local family; family=$(nft_classify "$base")
+    case "$family" in
+        ipv4)
+            [ -z "$prefix" ] || [ "$prefix" -ge 0 -a "$prefix" -le 32 ] || return 1
+            NFT_AC_FAMILY="ipv4"
+            ;;
+        ipv6)
+            [ -z "$prefix" ] || [ "$prefix" -ge 0 -a "$prefix" -le 128 ] || return 1
+            NFT_AC_FAMILY="ipv6"
+            ;;
+        *) return 1 ;;
+    esac
+}
+
+nft_set_access_mode() {
+    local mode="$1" entries_raw="$2"
+    local tmp; tmp=$(mktemp) || return 1
+    echo "mode=$mode" > "$tmp"
+
+    local entry count=0
+    for entry in $(echo "$entries_raw" | tr ',' ' '); do
+        [ -n "$entry" ] || continue
+        if ! nft_validate_access_entry "$entry"; then
+            error "无效的 IP/CIDR：$entry"
+            rm -f "$tmp"
+            return 1
+        fi
+        grep -qxF "entry=$NFT_AC_FAMILY|$entry" "$tmp" || {
+            echo "entry=$NFT_AC_FAMILY|$entry" >> "$tmp"
+            count=$((count + 1))
+        }
     done
 
-    if [ -z "$IPS_OK" ]; then
-        error "没有有效的 IP，已取消"
-        return
+    if [ "$mode" != "off" ] && [ "$count" -eq 0 ]; then
+        error "启用白/黑名单需要至少一个 IP/CIDR"
+        rm -f "$tmp"
+        return 1
     fi
 
-    if [ -n "$SSH_FROM" ] && ! echo "$IPS_OK" | grep -qF "$SSH_FROM"; then
-        warn "你输入的白名单不包含当前 SSH 来源 IP（${SSH_FROM}）"
-        read -rp "  是否自动添加 ${SSH_FROM} 到白名单？(Y/n，默认Y): " ADD_SELF
-        [ -z "$ADD_SELF" ] && ADD_SELF="y"
-        echo "$ADD_SELF" | grep -qiE '^y(es)?$' && IPS_OK="${IPS_OK}, ${SSH_FROM}"
-    fi
-
-    echo ""
-    echo -e "  最终白名单：${BOLD}${IPS_OK}${NC}"
-    echo ""
-    read -rp "  应用此规则？(y/N，默认N): " C
-    [ -z "$C" ] && C="n"
-    echo "$C" | grep -qiE '^y(es)?$' || { warn "已取消"; return; }
-
-    wl_install_nft || { error "nftables 安装失败"; return; }
-    wl_apply "$IPS_OK"
+    mv "$tmp" "$NFT_ACCESS_FILE"
+    nft_write_and_apply
 }
 
-whitelist_menu() {
+nft_access_menu() {
     while true; do
-        local W_ST; W_ST=$(wl_status)
-        local W_COLOR W_LABEL
-        case "$W_ST" in
-            active)  W_COLOR="$GREEN";  W_LABEL="已启用" ;;
-            not_set) W_COLOR="$YELLOW"; W_LABEL="未启用" ;;
-            no_nft)  W_COLOR="$RED";    W_LABEL="nftables 未安装" ;;
+        local mode count v4 v6
+        mode=$(nft_get_access_mode)
+        count=$(grep -c '^entry=' "$NFT_ACCESS_FILE" 2>/dev/null || echo 0)
+        v4=$(nft_format_access_for "ipv4")
+        v6=$(nft_format_access_for "ipv6")
+
+        local mode_label mode_color
+        case "$mode" in
+            whitelist) mode_label="白名单"; mode_color="$GREEN" ;;
+            blacklist) mode_label="黑名单"; mode_color="$YELLOW" ;;
+            *) mode_label="关闭"; mode_color="$DIM" ;;
         esac
 
-        print_header "落地机入站白名单"
-        echo -e "  状态 : ${W_COLOR}${BOLD}${W_LABEL}${NC}"
-        if [ "$W_ST" = "active" ]; then
-            local IPS; IPS=$(wl_get_ips | tr '\n' ',' | sed 's/,$//' | sed 's/,/, /g')
-            echo -e "  白名单 IP : ${BOLD}${IPS:-（无）}${NC}"
-        fi
-        local SSH_FROM
-        SSH_FROM=$(echo "${SSH_CONNECTION:-}" | awk '{print $1}')
-        [ -n "$SSH_FROM" ] && echo -e "  当前 SSH 来源 : ${DIM}${SSH_FROM}${NC}"
-
+        print_header "访问控制（白名单 / 黑名单）"
+        echo -e "  当前模式: ${mode_color}${BOLD}${mode_label}${NC}    名单数: ${BOLD}${count}${NC}"
+        [ -n "$v4" ] && echo -e "  IPv4: ${BOLD}${v4}${NC}"
+        [ -n "$v6" ] && echo -e "  IPv6: ${BOLD}${v6}${NC}"
         echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
-        if [ "$W_ST" = "active" ]; then
-            echo -e "  ${GREEN}1${NC}) 查看白名单 IP    ${GREEN}2${NC}) 添加 IP"
-            echo -e "  ${GREEN}3${NC}) 删除 IP          ${YELLOW}4${NC}) 关闭白名单"
-        else
-            echo -e "  ${GREEN}1${NC}) 启用入站白名单"
-        fi
+        echo -e "  ${DIM}白名单：只允许名单内 IP 访问转发端口${NC}"
+        echo -e "  ${DIM}黑名单：拒绝名单内 IP 访问转发端口${NC}"
+        echo -e "  ${DIM}仅影响 NFT 转发端口，不影响 SSH 等其他服务${NC}"
+        echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+        echo -e "  ${GREEN}1${NC}) 启用白名单    ${GREEN}2${NC}) 启用黑名单"
+        echo -e "  ${YELLOW}3${NC}) 关闭访问控制"
         echo -e "  ${RED}0${NC}) 返回   ${RED}00${NC}) 退出脚本"
-        echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
         echo ""
-        read -rp "  请选择: " CH
+        read -rp "  请选择: " ch
 
-        if [ "$W_ST" = "active" ]; then
-            case "$CH" in
-                1) wl_get_ips | nl ;;
-                2) wl_add_ip ;;
-                3) wl_remove_ip ;;
-                4)
-                    warn "关闭后所有 IP 都能访问，是否确认？"
-                    read -rp "  确认？(y/N，默认N): " C
-                    [ -z "$C" ] && C="n"
-                    echo "$C" | grep -qiE '^y(es)?$' && wl_clear || warn "已取消"
-                    ;;
-                0) return ;;
-                00) safe_clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;
-                *) warn "无效选项"; sleep 1 ;;
-            esac
-        else
-            case "$CH" in
-                1) wl_enable ;;
-                0) return ;;
-                00) safe_clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;
-                *) warn "无效选项"; sleep 1 ;;
-            esac
-        fi
-        [ "${CH}" != "0" ] && { echo ""; read -rp "  按 Enter 返回..." _; }
+        case "$ch" in
+            1)
+                # 白名单警告：自动检测当前 SSH 来源
+                local ssh_from
+                ssh_from=$(echo "${SSH_CONNECTION:-}" | awk '{print $1}')
+                if [ -n "$ssh_from" ]; then
+                    echo ""
+                    echo -e "  ${YELLOW}当前 SSH 来源：${BOLD}${ssh_from}${NC}"
+                    echo -e "  ${DIM}建议加入白名单避免自我封锁${NC}"
+                fi
+                echo ""
+                echo -e "  ${DIM}多个用空格或逗号分隔，例如：1.2.3.4 5.6.7.0/24${NC}"
+                read -rp "  白名单 IP/CIDR: " entries
+                [ -z "$entries" ] && { warn "已取消"; sleep 1; continue; }
+                if [ -n "$ssh_from" ] && ! echo "$entries" | grep -qF "$ssh_from"; then
+                    read -rp "  自动添加 ${ssh_from}？(Y/n，默认Y): " a
+                    [ -z "$a" ] && a="y"
+                    echo "$a" | grep -qiE '^y(es)?$' && entries="$entries $ssh_from"
+                fi
+                nft_set_access_mode whitelist "$entries"
+                ;;
+            2)
+                echo ""
+                read -rp "  黑名单 IP/CIDR: " entries
+                [ -z "$entries" ] && { warn "已取消"; sleep 1; continue; }
+                nft_set_access_mode blacklist "$entries"
+                ;;
+            3)
+                nft_set_access_mode off ""
+                ;;
+            0) return ;;
+            00) safe_clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;
+            *) warn "无效选项"; sleep 1; continue ;;
+        esac
+        echo ""
+        read -rp "  按 Enter 继续..." _
     done
 }
+
+# ── NFT 主菜单 ────────────────────────────────────────────
+nft_menu() {
+    nft_ensure_state_dir
+
+    while true; do
+        local rule_count
+        rule_count=$(grep -c '^[0-9]' "$NFT_RULES_FILE" 2>/dev/null || echo 0)
+        local access_mode; access_mode=$(nft_get_access_mode)
+        local timer_st; timer_st=$(nft_ddns_timer_status)
+
+        print_header "NFT 转发管理（端口转发 / DDNS / 访问控制）"
+
+        # 状态栏
+        if command -v nft &>/dev/null; then
+            echo -e "  nftables : ${GREEN}已安装${NC}    规则数: ${BOLD}${rule_count}${NC}"
+        else
+            echo -e "  nftables : ${RED}未安装${NC}"
+        fi
+
+        case "$access_mode" in
+            whitelist) echo -e "  访问控制 : ${GREEN}${BOLD}白名单${NC}" ;;
+            blacklist) echo -e "  访问控制 : ${YELLOW}${BOLD}黑名单${NC}" ;;
+            *) echo -e "  访问控制 : ${DIM}关闭${NC}" ;;
+        esac
+        case "$timer_st" in
+            active)  echo -e "  DDNS 定时刷新 : ${GREEN}${BOLD}运行中${NC}" ;;
+            *)       echo -e "  DDNS 定时刷新 : ${DIM}未启用${NC}" ;;
+        esac
+
+        # 显示规则列表（不超过 10 条）
+        if [ "$rule_count" -gt 0 ]; then
+            echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+            echo -e "  ${DIM}当前规则：${NC}"
+            local shown=0
+            while IFS='|' read -r id f lip ls le ttype thost tip ts te mode; do
+                [[ -z "$id" || "$id" = \#* ]] && continue
+                [ "$shown" -ge 10 ] && { echo -e "  ${DIM}（更多规则请用「查看所有规则」）${NC}"; break; }
+                echo "  $(nft_rule_summary "$id" "$f" "$lip" "$ls" "$le" "$ttype" "$thost" "$tip" "$ts" "$te" "$mode")"
+                shown=$((shown + 1))
+            done < "$NFT_RULES_FILE"
+        fi
+
+        echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+        echo -e "  ${GREEN}1${NC}) 添加单端口转发     ${GREEN}2${NC}) 添加端口段转发"
+        echo -e "  ${GREEN}3${NC}) 查看所有规则       ${YELLOW}4${NC}) 删除规则"
+        echo -e "  ${YELLOW}5${NC}) 清空所有规则"
+        echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+        echo -e "  ${GREEN}6${NC}) 立即刷新 DDNS"
+        if [ "$timer_st" = "active" ]; then
+            echo -e "  ${YELLOW}7${NC}) 关闭 DDNS 自动刷新"
+        else
+            echo -e "  ${GREEN}7${NC}) 启用 DDNS 自动刷新"
+        fi
+        echo -e "  ${GREEN}8${NC}) 访问控制（白/黑名单）"
+        echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+        echo -e "  ${RED}0${NC}) 返回   ${RED}00${NC}) 退出脚本"
+        echo ""
+        read -rp "  请选择: " ch
+
+        case "$ch" in
+            1|2)
+                if ! command -v nft &>/dev/null; then
+                    nft_install || { error "nftables 安装失败"; sleep 2; continue; }
+                fi
+                nft_enable_ip_forward
+                if [ "$ch" = "1" ]; then nft_add_rule single
+                else nft_add_rule range; fi
+                ;;
+            3)
+                print_header "所有 NFT 转发规则"
+                nft_list_rules || warn "暂无规则"
+                ;;
+            4) nft_delete_rule ;;
+            5) nft_clear_all_rules ;;
+            6) nft_refresh_ddns ;;
+            7)
+                [ "$timer_st" = "active" ] && nft_ddns_timer_disable || nft_ddns_timer_enable
+                ;;
+            8) nft_access_menu ;;
+            0) return ;;
+            00) safe_clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;
+            *) warn "无效选项"; sleep 1; continue ;;
+        esac
+        echo ""
+        read -rp "  按 Enter 继续..." _
+    done
+}
+
 
 # ══════════════════════════════════════════════════════════
 #  Cloudflare DDNS 模块
@@ -5889,15 +6122,14 @@ main_menu() {
         box_line "  7) 系统换源"         "  ${GREEN}7${NC}) 系统换源"
         box_line "  8) IPv4/IPv6 配置"   "  ${GREEN}8${NC}) IPv4/IPv6 配置"
         box_line "  9) Caddy 管理"       "  ${GREEN}9${NC}) Caddy 管理"
-        box_line "  p) 端口转发"         "  ${GREEN}p${NC}) 端口转发"
+        box_line "  n) NFT 转发管理"     "  ${GREEN}n${NC}) NFT 转发管理（端口转发 / DDNS / 访问控制）"
         box_line "  t) 时间同步"         "  ${GREEN}t${NC}) 时间同步"
         box_line "  s) Swap 管理"        "  ${GREEN}s${NC}) Swap 管理"
-        box_line "  a) 入站白名单"       "  ${GREEN}a${NC}) 入站白名单（nftables）"
         box_line "  m) 脚本管理"         "  ${GREEN}m${NC}) 脚本管理（安装 / 更新 / 卸载）"
         box_line "  0) 退出"             "  ${RED}0${NC}) 退出"
         box_bot
         echo ""
-        read -rp "  请选择功能 [0-9/p/t/s/m/a]: " CHOICE
+        read -rp "  请选择功能 [0-9/n/t/s/m]: " CHOICE
 
         case "$CHOICE" in
             1) ssh_tools_menu ;;
@@ -5909,10 +6141,9 @@ main_menu() {
             7) mirror_menu ;;
             8) ip_config_menu ;;
             9) caddy_menu ;;
-            p|P) portfwd_menu ;;
+            n|N) nft_menu ;;
             t|T) timesync_menu ;;
             s|S) swap_menu ;;
-            a|A) whitelist_menu ;;
             m|M) self_manage_menu ;;
             0) safe_clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;
             *) warn "无效选项，请重新输入。"; sleep 1 ;;
@@ -5920,6 +6151,12 @@ main_menu() {
         continue
     done
 }
+
+# CLI 处理：systemd timer 调用 DDNS 刷新（非交互）
+if [ "${1:-}" = "--nft-refresh-ddns" ]; then
+    nft_refresh_ddns
+    exit $?
+fi
 
 self_check_first_run
 # 后台检测新版本（不阻塞主菜单）
