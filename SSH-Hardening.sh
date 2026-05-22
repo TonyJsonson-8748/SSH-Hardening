@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # ============================================================
-#  VPS 开荒脚本 V3.3.0 — 银趴火山帮
+#  VPS 开荒脚本 V3.3.2 — 银趴火山帮
 #  功能：SSH管理 / Fail2ban / BBR TCP 调优
 # ============================================================
 
@@ -127,7 +127,7 @@ print_header() {
     safe_clear
     echo ""
     box_top
-    box_title "VPS 开荒脚本 V3.3.0"
+    box_title "VPS 开荒脚本 V3.3.2"
     box_line "  ··银趴火山帮··" "  ${DIM}··银趴火山帮··${NC}"
     box_sep
     box_title "$1"
@@ -1181,7 +1181,7 @@ fail2ban_menu() {
         safe_clear
         echo ""
         box_top
-        box_title "VPS 开荒脚本 V3.3.0"
+        box_title "VPS 开荒脚本 V3.3.2"
         box_line "  ··银趴火山帮··" "  ${DIM}··银趴火山帮··${NC}"
         box_sep
         box_title "Fail2ban 管理"
@@ -4731,6 +4731,15 @@ self_update() {
     ln -sf "$LOCAL_SCRIPT" /usr/local/bin/V 2>/dev/null
 
     info "更新完成 ✓"
+    # 清理 DDNS 日志，保留最后 500 行（避免文件过大）
+    if [ -f /var/log/ddns.log ]; then
+        local _LL; _LL=$(wc -l < /var/log/ddns.log 2>/dev/null || echo 0)
+        if [ "$_LL" -gt 500 ]; then
+            tail -n 500 /var/log/ddns.log > /var/log/ddns.log.tmp \
+                && mv /var/log/ddns.log.tmp /var/log/ddns.log
+            info "DDNS 日志已清理（保留最近 500 条）✓"
+        fi
+    fi
     # 清理旧版写入的 alias（旧版本会写 alias v=，会拦截其他命令如 volss）
     for RC in /root/.bashrc /root/.bash_profile ~/.bashrc ~/.bash_profile ~/.zshrc; do
         [ -f "$RC" ] || continue
@@ -4795,7 +4804,7 @@ self_check_first_run() {
     clear
     echo ""
     box_top
-    box_title "VPS 开荒脚本 V3.3.0"
+    box_title "VPS 开荒脚本 V3.3.2"
     box_line "  ··银趴火山帮··" "  ${DIM}··银趴火山帮··${NC}"
     box_sep
     box_title "首次运行检测"
@@ -5414,6 +5423,14 @@ LOG_FILE="/var/log/ddns.log"
 API_TOKEN=$(cat "$TOKEN_FILE" 2>/dev/null)
 [ -z "$API_TOKEN" ] && exit 1
 
+# 日志轮转：最多保留 500 条记录（每次运行检查）
+if [ -f "$LOG_FILE" ]; then
+    LOG_LINES=$(wc -l < "$LOG_FILE" 2>/dev/null || echo 0)
+    if [ "$LOG_LINES" -gt 500 ]; then
+        tail -n 500 "$LOG_FILE" > "${LOG_FILE}.tmp" && mv "${LOG_FILE}.tmp" "$LOG_FILE"
+    fi
+fi
+
 # 发送 Telegram 通知（每次调用时实时读取配置文件，避免 crontab 变量丢失）
 tg_notify() {
     local MSG="$1"
@@ -5842,7 +5859,7 @@ main_menu() {
         volcano_art_banner
         echo ""
         box_top
-        box_title "VPS 开荒脚本 V3.3.0"
+        box_title "VPS 开荒脚本 V3.3.2"
         box_line "  ··银趴火山帮··" "  ${DIM}··银趴火山帮··${NC}"
         box_sep
         # 收集状态数据
