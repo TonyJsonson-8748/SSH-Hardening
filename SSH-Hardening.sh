@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # ============================================================
-#  VPS 开荒脚本 V3.3.2 — 银趴火山帮
+#  VPS 开荒脚本 V3.3.4 — 银趴火山帮
 #  功能：SSH管理 / Fail2ban / BBR TCP 调优
 # ============================================================
 
@@ -127,7 +127,7 @@ print_header() {
     safe_clear
     echo ""
     box_top
-    box_title "VPS 开荒脚本 V3.3.2"
+    box_title "VPS 开荒脚本 V3.3.4"
     box_line "  ··银趴火山帮··" "  ${DIM}··银趴火山帮··${NC}"
     box_sep
     box_title "$1"
@@ -1104,7 +1104,7 @@ JAILEOF
                 echo ""
                 echo -e "  ${DIM}--- $JAIL_CONF（只读）---${NC}"
                 echo ""
-                less "$JAIL_CONF"
+                LANG=C.UTF-8 LESSCHARSET=utf-8 less -R "$JAIL_CONF"
             else
                 warn "$JAIL_CONF 不存在"
             fi
@@ -1181,7 +1181,7 @@ fail2ban_menu() {
         safe_clear
         echo ""
         box_top
-        box_title "VPS 开荒脚本 V3.3.2"
+        box_title "VPS 开荒脚本 V3.3.4"
         box_line "  ··银趴火山帮··" "  ${DIM}··银趴火山帮··${NC}"
         box_sep
         box_title "Fail2ban 管理"
@@ -4804,7 +4804,7 @@ self_check_first_run() {
     clear
     echo ""
     box_top
-    box_title "VPS 开荒脚本 V3.3.2"
+    box_title "VPS 开荒脚本 V3.3.4"
     box_line "  ··银趴火山帮··" "  ${DIM}··银趴火山帮··${NC}"
     box_sep
     box_title "首次运行检测"
@@ -5479,8 +5479,27 @@ update_record() {
         return 1
     }
     OLD_IP=$(curl -s --max-time 8         "https://api.cloudflare.com/client/v4/zones/${ZONE_ID}/dns_records/${RECORD_ID}"         -H "Authorization: Bearer ${API_TOKEN}" |         python3 -c "import sys,json; print(json.load(sys.stdin)['result']['content'])" 2>/dev/null)
+    # OLD_IP 为空说明查询失败，跳过本次更新避免误推 Telegram
+    if [ -z "$OLD_IP" ]; then
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] WARN: ${TYPE} 无法获取当前记录值，跳过更新" >> "$LOG_FILE"
+        return 0
+    fi
     if [ "$NEW_IP" = "$OLD_IP" ]; then
         echo "[$(date '+%Y-%m-%d %H:%M:%S')] OK: ${TYPE} 未变化 ${NEW_IP}" >> "$LOG_FILE"
+        return 0
+    fi
+    # 二次校验：再次查询确认 OLD_IP 是否真的不一样（防止偶发查询返回错误数据）
+    local VERIFY_IP
+    VERIFY_IP=$(curl -s --max-time 8 \
+        "https://api.cloudflare.com/client/v4/zones/${ZONE_ID}/dns_records/${RECORD_ID}" \
+        -H "Authorization: Bearer ${API_TOKEN}" | \
+        python3 -c "import sys,json; print(json.load(sys.stdin)['result']['content'])" 2>/dev/null)
+    if [ -z "$VERIFY_IP" ] || [ "$VERIFY_IP" != "$OLD_IP" ]; then
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] WARN: ${TYPE} 二次校验异常 (1st:${OLD_IP} 2nd:${VERIFY_IP})，跳过更新" >> "$LOG_FILE"
+        return 0
+    fi
+    if [ "$NEW_IP" = "$VERIFY_IP" ]; then
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] OK: ${TYPE} 未变化 ${NEW_IP}（二次确认）" >> "$LOG_FILE"
         return 0
     fi
     local JSON_BODY
@@ -5675,13 +5694,16 @@ ddns_view_logs() {
     done
     echo ""
     echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
-    echo -e "  ${GREEN}1${NC}) 实时跟踪（Ctrl+C 返回）  ${RED}0${NC}) 返回"
+    echo -e "  ${GREEN}1${NC}) 实时跟踪（Ctrl+C 返回）  ${GREEN}2${NC}) 查看完整日志  ${RED}0${NC}) 返回"
     echo ""
     read -rp "  请选择: " CH
     if [ "$CH" = "1" ]; then
         trap 'echo ""; info "已退出实时跟踪"; trap - INT' INT
         tail -f "$LOG"
         trap - INT
+    elif [ "$CH" = "2" ]; then
+        # 强制 UTF-8 显示，避免中文乱码
+        LANG=C.UTF-8 LESSCHARSET=utf-8 less -R "$LOG"
     fi
 }
 
@@ -5859,7 +5881,7 @@ main_menu() {
         volcano_art_banner
         echo ""
         box_top
-        box_title "VPS 开荒脚本 V3.3.2"
+        box_title "VPS 开荒脚本 V3.3.4"
         box_line "  ··银趴火山帮··" "  ${DIM}··银趴火山帮··${NC}"
         box_sep
         # 收集状态数据
