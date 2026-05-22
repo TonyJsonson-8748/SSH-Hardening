@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # ============================================================
-#  VPS 开荒脚本 V3.3.4 — 银趴火山帮
+#  VPS 开荒脚本 V3.3.5 — 银趴火山帮
 #  功能：SSH管理 / Fail2ban / BBR TCP 调优
 # ============================================================
 
@@ -122,12 +122,29 @@ ensure_sysctl() {
     return 1
 }
 
+
+# iptables/ip6tables 残留规则清理（卸载防火墙时使用）
+clear_iptables_residue() {
+    if command -v iptables &>/dev/null; then
+        iptables -F 2>/dev/null
+        iptables -X 2>/dev/null
+        iptables -P INPUT ACCEPT 2>/dev/null
+        iptables -P FORWARD ACCEPT 2>/dev/null
+        iptables -P OUTPUT ACCEPT 2>/dev/null
+        ip6tables -F 2>/dev/null
+        ip6tables -X 2>/dev/null
+        ip6tables -P INPUT ACCEPT 2>/dev/null
+        ip6tables -P FORWARD ACCEPT 2>/dev/null
+        ip6tables -P OUTPUT ACCEPT 2>/dev/null
+    fi
+}
+
 # 统一标题栏
 print_header() {
     safe_clear
     echo ""
     box_top
-    box_title "VPS 开荒脚本 V3.3.4"
+    box_title "VPS 开荒脚本 V3.3.5"
     box_line "  ··银趴火山帮··" "  ${DIM}··银趴火山帮··${NC}"
     box_sep
     box_title "$1"
@@ -139,17 +156,7 @@ print_header() {
 # ── 兼容工具函数（支持 BusyBox / Alpine）─────────────────
 
 # 替代 grep -oP '(?:maxrate|rate) \K\S+'
-# 用法: tc_get_rate <tc_output>
-tc_get_rate() {
-    echo "$1" | grep -oE '(maxrate|rate) [^ ]+' | head -1 | awk '{print $2}'
-}
-
 # 替代 grep -oE 'initcwnd [0-9]+' | awk '{print $2}'
-# 用法: route_get_cwnd <route_line>
-route_get_cwnd() {
-    echo "$1" | grep -oE 'initcwnd [0-9]+' | awk '{print $2}'
-}
-
 # 检测服务管理器并重启 SSH
 restart_ssh() {
     if command -v systemctl &>/dev/null && pidof systemd &>/dev/null; then
@@ -214,12 +221,6 @@ stop_fail2ban() {
     fi
     [ -x /etc/init.d/fail2ban ] && /etc/init.d/fail2ban stop 2>/dev/null
 }
-
-# 检测 grep 是否支持 -P
-grep_has_P() {
-    echo "" | grep -P "" &>/dev/null && echo "yes" || echo "no"
-}
-
 
 # ── 系统检测工具 ──────────────────────────────────────────
 
@@ -308,28 +309,6 @@ get_codename() {
         cat /etc/debian_version | cut -d. -f1
     else
         echo "unknown"
-    fi
-}
-
-# mapfile 兼容（Alpine ash 不支持 mapfile）
-read_array() {
-    # 用法: read_array ARRAY_NAME < <(command)
-    # 改为: read_array_from "ARRAY_NAME" "$(command)"
-    local -n _arr="$1"
-    _arr=()
-    while IFS= read -r line; do
-        _arr+=("$line")
-    done
-}
-
-# fail2ban 日志文件路径检测
-f2b_log_file() {
-    if [ -f /var/log/fail2ban.log ]; then
-        echo "/var/log/fail2ban.log"
-    elif [ -f /var/log/fail2ban/fail2ban.log ]; then
-        echo "/var/log/fail2ban/fail2ban.log"
-    else
-        echo ""
     fi
 }
 
@@ -1181,7 +1160,7 @@ fail2ban_menu() {
         safe_clear
         echo ""
         box_top
-        box_title "VPS 开荒脚本 V3.3.4"
+        box_title "VPS 开荒脚本 V3.3.5"
         box_line "  ··银趴火山帮··" "  ${DIM}··银趴火山帮··${NC}"
         box_sep
         box_title "Fail2ban 管理"
@@ -2456,19 +2435,7 @@ ufw_menu() {
                     pkg_remove ufw
                     # 清理残留文件（防止重装时读到旧配置）
                     rm -rf /etc/ufw /lib/ufw /usr/share/ufw 2>/dev/null
-                    # 清理 iptables 残留规则
-                    if command -v iptables &>/dev/null; then
-                        iptables -F 2>/dev/null
-                        iptables -X 2>/dev/null
-                        iptables -P INPUT ACCEPT 2>/dev/null
-                        iptables -P FORWARD ACCEPT 2>/dev/null
-                        iptables -P OUTPUT ACCEPT 2>/dev/null
-                        ip6tables -F 2>/dev/null
-                        ip6tables -X 2>/dev/null
-                        ip6tables -P INPUT ACCEPT 2>/dev/null
-                        ip6tables -P FORWARD ACCEPT 2>/dev/null
-                        ip6tables -P OUTPUT ACCEPT 2>/dev/null
-                    fi
+                    clear_iptables_residue  # 清理 iptables 残留规则
                     info "ufw 已完整卸载 ✓（iptables 规则已清空，SSH 仍可连接）"
                     return
                 else
@@ -2653,19 +2620,7 @@ fwd_menu() {
                     pkg_remove firewalld
                     # 清理残留配置
                     rm -rf /etc/firewalld/zones /etc/firewalld/services 2>/dev/null
-                    # 清理 iptables 残留规则
-                    if command -v iptables &>/dev/null; then
-                        iptables -F 2>/dev/null
-                        iptables -X 2>/dev/null
-                        iptables -P INPUT ACCEPT 2>/dev/null
-                        iptables -P FORWARD ACCEPT 2>/dev/null
-                        iptables -P OUTPUT ACCEPT 2>/dev/null
-                        ip6tables -F 2>/dev/null
-                        ip6tables -X 2>/dev/null
-                        ip6tables -P INPUT ACCEPT 2>/dev/null
-                        ip6tables -P FORWARD ACCEPT 2>/dev/null
-                        ip6tables -P OUTPUT ACCEPT 2>/dev/null
-                    fi
+                    clear_iptables_residue  # 清理 iptables 残留规则
                     info "firewalld 已完整卸载 ✓（iptables 规则已清空）"
                     return
                 else
@@ -4804,7 +4759,7 @@ self_check_first_run() {
     clear
     echo ""
     box_top
-    box_title "VPS 开荒脚本 V3.3.4"
+    box_title "VPS 开荒脚本 V3.3.5"
     box_line "  ··银趴火山帮··" "  ${DIM}··银趴火山帮··${NC}"
     box_sep
     box_title "首次运行检测"
@@ -5207,11 +5162,6 @@ DDNS_TOKEN_FILE="/root/.cf_token"
 DDNS_LOG="/var/log/ddns.log"
 DDNS_ZONE_FILE="/root/.cf_zone"
 DDNS_TG_FILE="/root/.cf_tg"    # Telegram 通知配置
-
-cf_json_get() {
-    local expr="$1"
-    python3 -c "import sys,json; data=json.load(sys.stdin); print(${expr})" 2>/dev/null
-}
 
 ddns_cfg_get() {
     local key="$1"
@@ -5835,14 +5785,6 @@ ddns_menu() {
 # ══════════════════════════════════════════════════════════
 #  脚本自我管理模块
 
-# ── 修改配置 ──────────────────────────────────────────────
-ddns_reconfig() {
-    warn "修改配置将重新安装 DDNS"
-    read -rp "  确认继续？(Y/n，默认Y): " C
-    [ -z "$C" ] && C="y"
-    echo "$C" | grep -qiE '^y(es)?$' && ddns_install || warn "已取消"
-}
-
 # ── DDNS 主菜单 ───────────────────────────────────────────
 
 
@@ -5881,7 +5823,7 @@ main_menu() {
         volcano_art_banner
         echo ""
         box_top
-        box_title "VPS 开荒脚本 V3.3.4"
+        box_title "VPS 开荒脚本 V3.3.5"
         box_line "  ··银趴火山帮··" "  ${DIM}··银趴火山帮··${NC}"
         box_sep
         # 收集状态数据
