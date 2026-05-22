@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # ============================================================
-#  VPS 开荒脚本 V3.2.6 — 银趴火山帮
+#  VPS 开荒脚本 V3.3.0 — 银趴火山帮
 #  功能：SSH管理 / Fail2ban / BBR TCP 调优
 # ============================================================
 
@@ -127,7 +127,7 @@ print_header() {
     safe_clear
     echo ""
     box_top
-    box_title "VPS 开荒脚本 V3.2.6"
+    box_title "VPS 开荒脚本 V3.3.0"
     box_line "  ··银趴火山帮··" "  ${DIM}··银趴火山帮··${NC}"
     box_sep
     box_title "$1"
@@ -1181,7 +1181,7 @@ fail2ban_menu() {
         safe_clear
         echo ""
         box_top
-        box_title "VPS 开荒脚本 V3.2.6"
+        box_title "VPS 开荒脚本 V3.3.0"
         box_line "  ··银趴火山帮··" "  ${DIM}··银趴火山帮··${NC}"
         box_sep
         box_title "Fail2ban 管理"
@@ -4795,7 +4795,7 @@ self_check_first_run() {
     clear
     echo ""
     box_top
-    box_title "VPS 开荒脚本 V3.2.6"
+    box_title "VPS 开荒脚本 V3.3.0"
     box_line "  ··银趴火山帮··" "  ${DIM}··银趴火山帮··${NC}"
     box_sep
     box_title "首次运行检测"
@@ -4864,6 +4864,330 @@ self_manage_menu() {
 }
 
 
+
+# ══════════════════════════════════════════════════════════
+#  落地机入站白名单模块（nftables）
+# ══════════════════════════════════════════════════════════
+NFT_WHITELIST_CONF="/etc/nftables.conf"
+NFT_WHITELIST_TABLE="landing_whitelist"
+
+wl_status() {
+    if ! command -v nft &>/dev/null; then
+        echo "no_nft"
+    elif ! nft list table inet "$NFT_WHITELIST_TABLE" &>/dev/null; then
+        echo "not_set"
+    else
+        echo "active"
+    fi
+}
+
+wl_get_ips() {
+    nft list table inet "$NFT_WHITELIST_TABLE" 2>/dev/null \
+        | grep -A1 "elements" \
+        | tr -d '{},' \
+        | grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3}' \
+        | sort -u
+}
+
+wl_install_nft() {
+    command -v nft &>/dev/null && return 0
+    info "正在安装 nftables..."
+    if command -v apt-get &>/dev/null; then
+        apt-get update -qq 2>/dev/null
+        apt-get install -y nftables 2>/dev/null
+    elif command -v apk &>/dev/null; then
+        apk add --no-cache nftables 2>/dev/null
+    elif command -v yum &>/dev/null; then
+        yum install -y nftables 2>/dev/null
+    elif command -v dnf &>/dev/null; then
+        dnf install -y nftables 2>/dev/null
+    fi
+    command -v nft &>/dev/null
+}
+
+wl_validate_ip() {
+    echo "$1" | grep -qE '^([0-9]{1,3}\.){3}[0-9]{1,3}(/[0-9]{1,2})?$'
+}
+
+wl_apply() {
+    local IPS="$1"
+    [ -z "$IPS" ] && { error "至少需要一个 IP"; return 1; }
+
+    cat > "$NFT_WHITELIST_CONF" <<NFTEOF
+#!/usr/sbin/nft -f
+
+flush ruleset
+
+table inet ${NFT_WHITELIST_TABLE} {
+    set admin_ip4 {
+        type ipv4_addr
+        elements = { ${IPS} }
+    }
+
+    chain input {
+        type filter hook input priority 0; policy drop;
+        iif "lo" accept
+        ct state established,related accept
+        ip saddr @admin_ip4 accept
+    }
+
+    chain forward {
+        type filter hook forward priority 0; policy drop;
+    }
+
+    chain output {
+        type filter hook output priority 0; policy accept;
+    }
+}
+NFTEOF
+
+    info "校验规则语法..."
+    if ! nft -c -f "$NFT_WHITELIST_CONF" 2>&1; then
+        error "规则语法错误，已取消应用"
+        return 1
+    fi
+
+    info "应用规则..."
+    nft -f "$NFT_WHITELIST_CONF"
+
+    if command -v systemctl &>/dev/null && pidof systemd &>/dev/null; then
+        systemctl enable nftables &>/dev/null || true
+        systemctl restart nftables &>/dev/null || true
+    elif command -v rc-update &>/dev/null; then
+        rc-update add nftables default 2>/dev/null || true
+        rc-service nftables restart 2>/dev/null || true
+    fi
+
+    info "白名单已部署 ✓"
+}
+
+wl_add_ip() {
+    print_header "添加白名单 IP"
+
+    local CUR_IPS NEW_IP
+    CUR_IPS=$(wl_get_ips | tr '\n' ',' | sed 's/,$//' | sed 's/,/, /g')
+
+    if [ -n "$CUR_IPS" ]; then
+        echo -e "  当前白名单：${BOLD}${CUR_IPS}${NC}"
+        echo ""
+    fi
+
+    read -rp "  新增 IP（IPv4 格式）: " NEW_IP
+    [ -z "$NEW_IP" ] && { warn "已取消"; return; }
+    if ! wl_validate_ip "$NEW_IP"; then
+        error "IP 格式不正确"
+        return
+    fi
+
+    if echo "$CUR_IPS" | grep -qF "$NEW_IP"; then
+        warn "该 IP 已在白名单中"
+        return
+    fi
+
+    local MERGED
+    if [ -z "$CUR_IPS" ]; then
+        MERGED="$NEW_IP"
+    else
+        MERGED="${CUR_IPS}, ${NEW_IP}"
+    fi
+
+    warn "重要：应用后只有以下 IP 能访问本机所有入站端口！"
+    echo -e "  ${BOLD}${MERGED}${NC}"
+    echo ""
+    warn "请确认你当前的 SSH 来源 IP 已包含在内，否则会自我封锁！"
+    read -rp "  确认应用？(y/N，默认N): " C
+    [ -z "$C" ] && C="n"
+    if ! echo "$C" | grep -qiE '^y(es)?$'; then warn "已取消"; return; fi
+
+    wl_apply "$MERGED"
+}
+
+wl_remove_ip() {
+    print_header "删除白名单 IP"
+
+    local CUR_IPS_FILE="/tmp/vps_wl_ips_$$"
+    wl_get_ips > "$CUR_IPS_FILE"
+
+    if [ ! -s "$CUR_IPS_FILE" ]; then
+        rm -f "$CUR_IPS_FILE"
+        warn "白名单为空"
+        return
+    fi
+
+    local i=1
+    while IFS= read -r ip; do
+        echo -e "  ${GREEN}[$i]${NC} $ip"
+        i=$(( i + 1 ))
+    done < "$CUR_IPS_FILE"
+    echo ""
+    read -rp "  选择要删除的编号（多个逗号分隔，0 取消）: " CH
+    if [ -z "$CH" ] || [ "$CH" = "0" ]; then
+        rm -f "$CUR_IPS_FILE"
+        warn "已取消"
+        return
+    fi
+
+    local TO_DEL
+    TO_DEL=$(echo "$CH" | tr ',' '\n' | tr -d ' ')
+
+    local REMAIN=""
+    i=1
+    while IFS= read -r ip; do
+        if ! echo "$TO_DEL" | grep -qE "^${i}$"; then
+            if [ -z "$REMAIN" ]; then
+                REMAIN="$ip"
+            else
+                REMAIN="${REMAIN}, ${ip}"
+            fi
+        fi
+        i=$(( i + 1 ))
+    done < "$CUR_IPS_FILE"
+    rm -f "$CUR_IPS_FILE"
+
+    if [ -z "$REMAIN" ]; then
+        warn "删除后白名单将为空，等同于关闭白名单（恢复正常）"
+        read -rp "  确认？(y/N，默认N): " C
+        [ -z "$C" ] && C="n"
+        echo "$C" | grep -qiE '^y(es)?$' || { warn "已取消"; return; }
+        wl_clear
+        return
+    fi
+
+    info "删除后剩余：${REMAIN}"
+    read -rp "  确认应用？(y/N，默认N): " C
+    [ -z "$C" ] && C="n"
+    echo "$C" | grep -qiE '^y(es)?$' || { warn "已取消"; return; }
+
+    wl_apply "$REMAIN"
+}
+
+wl_clear() {
+    info "正在关闭入站白名单..."
+    if nft list table inet "$NFT_WHITELIST_TABLE" &>/dev/null; then
+        nft delete table inet "$NFT_WHITELIST_TABLE"
+    fi
+    if [ -f "$NFT_WHITELIST_CONF" ] && grep -q "table inet ${NFT_WHITELIST_TABLE}" "$NFT_WHITELIST_CONF"; then
+        cat > "$NFT_WHITELIST_CONF" <<NFTEOF
+#!/usr/sbin/nft -f
+
+flush ruleset
+NFTEOF
+    fi
+    info "入站白名单已关闭 ✓"
+}
+
+wl_enable() {
+    print_header "启用入站白名单"
+    echo -e "  ${RED}${BOLD}⚠ 警告：启用后只有白名单 IP 能访问本机！${NC}"
+    echo -e "  ${DIM}所有 SSH/HTTP/HTTPS/Ping 等入站请求都会被拒绝${NC}"
+    echo -e "  ${DIM}如果当前 SSH 来源 IP 不在白名单，将立即断开且无法重连${NC}"
+    echo ""
+
+    local SSH_FROM
+    SSH_FROM=$(echo "${SSH_CONNECTION:-}" | awk '{print $1}')
+    if [ -n "$SSH_FROM" ]; then
+        echo -e "  ${YELLOW}检测到当前 SSH 来源：${BOLD}${SSH_FROM}${NC}"
+        echo -e "  ${DIM}强烈建议将此 IP 加入白名单${NC}"
+        echo ""
+    fi
+
+    read -rp "  输入允许访问的 IP（多个用逗号分隔，如 1.2.3.4,5.6.7.8）: " IPS_RAW
+    [ -z "$IPS_RAW" ] && { warn "已取消"; return; }
+
+    local IPS_OK=""
+    for ip in $(echo "$IPS_RAW" | tr ',' ' '); do
+        if wl_validate_ip "$ip"; then
+            if [ -z "$IPS_OK" ]; then
+                IPS_OK="$ip"
+            else
+                IPS_OK="${IPS_OK}, ${ip}"
+            fi
+        else
+            warn "忽略无效 IP：$ip"
+        fi
+    done
+
+    if [ -z "$IPS_OK" ]; then
+        error "没有有效的 IP，已取消"
+        return
+    fi
+
+    if [ -n "$SSH_FROM" ] && ! echo "$IPS_OK" | grep -qF "$SSH_FROM"; then
+        warn "你输入的白名单不包含当前 SSH 来源 IP（${SSH_FROM}）"
+        read -rp "  是否自动添加 ${SSH_FROM} 到白名单？(Y/n，默认Y): " ADD_SELF
+        [ -z "$ADD_SELF" ] && ADD_SELF="y"
+        echo "$ADD_SELF" | grep -qiE '^y(es)?$' && IPS_OK="${IPS_OK}, ${SSH_FROM}"
+    fi
+
+    echo ""
+    echo -e "  最终白名单：${BOLD}${IPS_OK}${NC}"
+    echo ""
+    read -rp "  应用此规则？(y/N，默认N): " C
+    [ -z "$C" ] && C="n"
+    echo "$C" | grep -qiE '^y(es)?$' || { warn "已取消"; return; }
+
+    wl_install_nft || { error "nftables 安装失败"; return; }
+    wl_apply "$IPS_OK"
+}
+
+whitelist_menu() {
+    while true; do
+        local W_ST; W_ST=$(wl_status)
+        local W_COLOR W_LABEL
+        case "$W_ST" in
+            active)  W_COLOR="$GREEN";  W_LABEL="已启用" ;;
+            not_set) W_COLOR="$YELLOW"; W_LABEL="未启用" ;;
+            no_nft)  W_COLOR="$RED";    W_LABEL="nftables 未安装" ;;
+        esac
+
+        print_header "落地机入站白名单"
+        echo -e "  状态 : ${W_COLOR}${BOLD}${W_LABEL}${NC}"
+        if [ "$W_ST" = "active" ]; then
+            local IPS; IPS=$(wl_get_ips | tr '\n' ',' | sed 's/,$//' | sed 's/,/, /g')
+            echo -e "  白名单 IP : ${BOLD}${IPS:-（无）}${NC}"
+        fi
+        local SSH_FROM
+        SSH_FROM=$(echo "${SSH_CONNECTION:-}" | awk '{print $1}')
+        [ -n "$SSH_FROM" ] && echo -e "  当前 SSH 来源 : ${DIM}${SSH_FROM}${NC}"
+
+        echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+        if [ "$W_ST" = "active" ]; then
+            echo -e "  ${GREEN}1${NC}) 查看白名单 IP    ${GREEN}2${NC}) 添加 IP"
+            echo -e "  ${GREEN}3${NC}) 删除 IP          ${YELLOW}4${NC}) 关闭白名单"
+        else
+            echo -e "  ${GREEN}1${NC}) 启用入站白名单"
+        fi
+        echo -e "  ${RED}0${NC}) 返回   ${RED}00${NC}) 退出脚本"
+        echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+        echo ""
+        read -rp "  请选择: " CH
+
+        if [ "$W_ST" = "active" ]; then
+            case "$CH" in
+                1) wl_get_ips | nl ;;
+                2) wl_add_ip ;;
+                3) wl_remove_ip ;;
+                4)
+                    warn "关闭后所有 IP 都能访问，是否确认？"
+                    read -rp "  确认？(y/N，默认N): " C
+                    [ -z "$C" ] && C="n"
+                    echo "$C" | grep -qiE '^y(es)?$' && wl_clear || warn "已取消"
+                    ;;
+                0) return ;;
+                00) safe_clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;
+                *) warn "无效选项"; sleep 1 ;;
+            esac
+        else
+            case "$CH" in
+                1) wl_enable ;;
+                0) return ;;
+                00) safe_clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;
+                *) warn "无效选项"; sleep 1 ;;
+            esac
+        fi
+        [ "${CH}" != "0" ] && { echo ""; read -rp "  按 Enter 返回..." _; }
+    done
+}
 
 # ══════════════════════════════════════════════════════════
 #  Cloudflare DDNS 模块
@@ -5518,7 +5842,7 @@ main_menu() {
         volcano_art_banner
         echo ""
         box_top
-        box_title "VPS 开荒脚本 V3.2.6"
+        box_title "VPS 开荒脚本 V3.3.0"
         box_line "  ··银趴火山帮··" "  ${DIM}··银趴火山帮··${NC}"
         box_sep
         # 收集状态数据
@@ -5587,11 +5911,12 @@ main_menu() {
         box_line "  p) 端口转发"         "  ${GREEN}p${NC}) 端口转发"
         box_line "  t) 时间同步"         "  ${GREEN}t${NC}) 时间同步"
         box_line "  s) Swap 管理"        "  ${GREEN}s${NC}) Swap 管理"
+        box_line "  a) 入站白名单"       "  ${GREEN}a${NC}) 入站白名单（nftables）"
         box_line "  m) 脚本管理"         "  ${GREEN}m${NC}) 脚本管理（安装 / 更新 / 卸载）"
         box_line "  0) 退出"             "  ${RED}0${NC}) 退出"
         box_bot
         echo ""
-        read -rp "  请选择功能 [0-9/p/t/s/m]: " CHOICE
+        read -rp "  请选择功能 [0-9/p/t/s/m/a]: " CHOICE
 
         case "$CHOICE" in
             1) ssh_tools_menu ;;
@@ -5606,6 +5931,7 @@ main_menu() {
             p|P) portfwd_menu ;;
             t|T) timesync_menu ;;
             s|S) swap_menu ;;
+            a|A) whitelist_menu ;;
             m|M) self_manage_menu ;;
             0) safe_clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;
             *) warn "无效选项，请重新输入。"; sleep 1 ;;
