@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # ============================================================
-#  VPS 开荒脚本 V3.2.4 — 银趴火山帮
+#  VPS 开荒脚本 V3.2.5 — 银趴火山帮
 #  功能：SSH管理 / Fail2ban / BBR TCP 调优
 # ============================================================
 
@@ -127,7 +127,7 @@ print_header() {
     safe_clear
     echo ""
     box_top
-    box_title "VPS 开荒脚本 V3.2.4"
+    box_title "VPS 开荒脚本 V3.2.5"
     box_line "  ··银趴火山帮··" "  ${DIM}··银趴火山帮··${NC}"
     box_sep
     box_title "$1"
@@ -1181,7 +1181,7 @@ fail2ban_menu() {
         safe_clear
         echo ""
         box_top
-        box_title "VPS 开荒脚本 V3.2.4"
+        box_title "VPS 开荒脚本 V3.2.5"
         box_line "  ··银趴火山帮··" "  ${DIM}··银趴火山帮··${NC}"
         box_sep
         box_title "Fail2ban 管理"
@@ -1660,17 +1660,30 @@ bbr_auto_calc() {
     local BUF_CALC=$(( BDP_MB * 3 / 2 ))
 
     local RMEM WMEM ADV_WIN NOTSENT TCP_RMEM_DEFAULT
-    if   [ "$BUF_CALC" -le 10 ];  then RMEM=12582912;  WMEM=12582912;  ADV_WIN=2; NOTSENT=131072; TCP_RMEM_DEFAULT=1048576
-    elif [ "$BUF_CALC" -le 20 ];  then RMEM=20971520;  WMEM=20971520;  ADV_WIN=2; NOTSENT=131072; TCP_RMEM_DEFAULT=1048576
-    elif [ "$BUF_CALC" -le 40 ];  then RMEM=41943040;  WMEM=41943040;  ADV_WIN=3; NOTSENT=262144; TCP_RMEM_DEFAULT=1048576
-    elif [ "$BUF_CALC" -le 64 ];  then RMEM=67108864;  WMEM=67108864;  ADV_WIN=3; NOTSENT=524288; TCP_RMEM_DEFAULT=1048576
-    else                                RMEM=134217728; WMEM=134217728; ADV_WIN=3; NOTSENT=524288; TCP_RMEM_DEFAULT=1048576
+    if   [ "$BUF_CALC" -le 10 ];  then RMEM=12582912;   WMEM=12582912;   ADV_WIN=2; NOTSENT=131072;  TCP_RMEM_DEFAULT=1048576
+    elif [ "$BUF_CALC" -le 20 ];  then RMEM=20971520;   WMEM=20971520;   ADV_WIN=2; NOTSENT=131072;  TCP_RMEM_DEFAULT=1048576
+    elif [ "$BUF_CALC" -le 40 ];  then RMEM=41943040;   WMEM=41943040;   ADV_WIN=3; NOTSENT=262144;  TCP_RMEM_DEFAULT=1048576
+    elif [ "$BUF_CALC" -le 64 ];  then RMEM=67108864;   WMEM=67108864;   ADV_WIN=3; NOTSENT=524288;  TCP_RMEM_DEFAULT=1048576
+    elif [ "$BUF_CALC" -le 128 ]; then RMEM=134217728;  WMEM=134217728;  ADV_WIN=3; NOTSENT=524288;  TCP_RMEM_DEFAULT=2097152
+    elif [ "$BUF_CALC" -le 256 ]; then RMEM=268435456;  WMEM=268435456;  ADV_WIN=3; NOTSENT=1048576; TCP_RMEM_DEFAULT=2097152
+    elif [ "$BUF_CALC" -le 512 ]; then RMEM=536870912;  WMEM=536870912;  ADV_WIN=3; NOTSENT=2097152; TCP_RMEM_DEFAULT=4194304
+    else                                RMEM=1073741824; WMEM=1073741824; ADV_WIN=3; NOTSENT=2097152; TCP_RMEM_DEFAULT=4194304
+    fi
+
+    # 限制：缓冲区不超过物理内存一半
+    local HALF_MEM=$(( MEM_MB * 1048576 / 2 ))
+    if [ "$RMEM" -gt "$HALF_MEM" ]; then
+        warn "缓冲区 $(( RMEM / 1048576 ))MB 超过物理内存 ${MEM_MB}MB 的一半，自动降级"
+        RMEM=$HALF_MEM
+        WMEM=$HALF_MEM
     fi
 
     local MIN_FREE SWAP TCP_MEM
-    if   [ "$MEM_MB" -eq 512  ]; then MIN_FREE=32768; SWAP=10; TCP_MEM="32768 49152 98304"
-    elif [ "$MEM_MB" -eq 1024 ]; then MIN_FREE=65536; SWAP=10; TCP_MEM="49152 65536 131072"
-    else                               MIN_FREE=65536; SWAP=5;  TCP_MEM="131072 196608 393216"
+    if   [ "$MEM_MB" -le 768  ]; then MIN_FREE=32768;  SWAP=10; TCP_MEM="32768 49152 98304"
+    elif [ "$MEM_MB" -le 1536 ]; then MIN_FREE=65536;  SWAP=10; TCP_MEM="49152 65536 131072"
+    elif [ "$MEM_MB" -le 4096 ]; then MIN_FREE=65536;  SWAP=5;  TCP_MEM="131072 196608 393216"
+    elif [ "$MEM_MB" -le 8192 ]; then MIN_FREE=131072; SWAP=5;  TCP_MEM="262144 393216 786432"
+    else                               MIN_FREE=262144; SWAP=5;  TCP_MEM="524288 786432 1572864"
     fi
 
     local BUF_MB=$(( RMEM / 1048576 ))
@@ -1693,18 +1706,22 @@ bbr_menu_bandwidth() {
     echo -e "  ${GREEN}1${NC}) 100 Mbps"
     echo -e "  ${GREEN}2${NC}) 200 Mbps"
     echo -e "  ${GREEN}3${NC}) 500 Mbps"
-    echo -e "  ${GREEN}4${NC}) 1 Gbps  (1024 Mbps)"
-    echo -e "  ${GREEN}5${NC}) 2 Gbps  (2048 Mbps)"
+    echo -e "  ${GREEN}4${NC}) 1 Gbps   (1024 Mbps)"
+    echo -e "  ${GREEN}5${NC}) 2 Gbps   (2048 Mbps)"
+    echo -e "  ${GREEN}6${NC}) 5 Gbps   (5120 Mbps)"
+    echo -e "  ${GREEN}7${NC}) 10 Gbps  (10240 Mbps)"
     echo -e "  ${RED}0${NC}) 返回"
     echo -e "  ${RED}00${NC}) 退出脚本"
     echo ""
-    read -rp "  请选择 [0-5]: " CH
+    read -rp "  请选择 [0-7]: " CH
     case "$CH" in
-        1) bbr_auto_calc "$MEM_MB" "$LAT_MS" 100  "$MEM_LBL" "$LAT_LBL" "100Mbps" ;;
-        2) bbr_auto_calc "$MEM_MB" "$LAT_MS" 200  "$MEM_LBL" "$LAT_LBL" "200Mbps" ;;
-        3) bbr_auto_calc "$MEM_MB" "$LAT_MS" 500  "$MEM_LBL" "$LAT_LBL" "500Mbps" ;;
-        4) bbr_auto_calc "$MEM_MB" "$LAT_MS" 1024 "$MEM_LBL" "$LAT_LBL" "1Gbps" ;;
-        5) bbr_auto_calc "$MEM_MB" "$LAT_MS" 2048 "$MEM_LBL" "$LAT_LBL" "2Gbps" ;;
+        1) bbr_auto_calc "$MEM_MB" "$LAT_MS" 100   "$MEM_LBL" "$LAT_LBL" "100Mbps" ;;
+        2) bbr_auto_calc "$MEM_MB" "$LAT_MS" 200   "$MEM_LBL" "$LAT_LBL" "200Mbps" ;;
+        3) bbr_auto_calc "$MEM_MB" "$LAT_MS" 500   "$MEM_LBL" "$LAT_LBL" "500Mbps" ;;
+        4) bbr_auto_calc "$MEM_MB" "$LAT_MS" 1024  "$MEM_LBL" "$LAT_LBL" "1Gbps" ;;
+        5) bbr_auto_calc "$MEM_MB" "$LAT_MS" 2048  "$MEM_LBL" "$LAT_LBL" "2Gbps" ;;
+        6) bbr_auto_calc "$MEM_MB" "$LAT_MS" 5120  "$MEM_LBL" "$LAT_LBL" "5Gbps" ;;
+        7) bbr_auto_calc "$MEM_MB" "$LAT_MS" 10240 "$MEM_LBL" "$LAT_LBL" "10Gbps" ;;
         0) return ;;
         00) safe_clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;
         *) warn "无效选项" ;;
@@ -1736,18 +1753,30 @@ bbr_menu_latency() {
 
 # ── 自动模式：内存子菜单 ─────────────────────────────────
 bbr_menu_auto() {
+    # 自动检测系统内存并标注推荐档位
+    local MEM_KB; MEM_KB=$(grep MemTotal /proc/meminfo 2>/dev/null | awk '{print $2}')
+    local SYS_MEM_MB=$(( ${MEM_KB:-0} / 1024 ))
+
     print_header "BBR 自动配置 — 选择内存"
+    echo -e "  系统检测内存：${BOLD}${SYS_MEM_MB}MB${NC}"
+    echo ""
     echo -e "  ${GREEN}1${NC}) 512 MB"
     echo -e "  ${GREEN}2${NC}) 1 GB"
     echo -e "  ${GREEN}3${NC}) 2 GB"
+    echo -e "  ${GREEN}4${NC}) 4 GB"
+    echo -e "  ${GREEN}5${NC}) 8 GB"
+    echo -e "  ${GREEN}6${NC}) 16 GB+"
     echo -e "  ${RED}0${NC}) 返回"
     echo -e "  ${RED}00${NC}) 退出脚本"
     echo ""
-    read -rp "  请选择 [0-3]: " CH
+    read -rp "  请选择 [0-6]: " CH
     case "$CH" in
-        1) bbr_menu_latency 512  "512MB" ;;
-        2) bbr_menu_latency 1024 "1GB" ;;
-        3) bbr_menu_latency 2048 "2GB" ;;
+        1) bbr_menu_latency 512   "512MB" ;;
+        2) bbr_menu_latency 1024  "1GB" ;;
+        3) bbr_menu_latency 2048  "2GB" ;;
+        4) bbr_menu_latency 4096  "4GB" ;;
+        5) bbr_menu_latency 8192  "8GB" ;;
+        6) bbr_menu_latency 16384 "16GB+" ;;
         0) return ;;
         00) safe_clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;
         *) warn "无效选项" ;;
@@ -1795,9 +1824,11 @@ bbr_menu_manual() {
     esac
 
     local MIN_FREE SWAP TCP_MEM
-    if   [ "$MEM_MB" -le 768  ]; then MIN_FREE=32768; SWAP=10; TCP_MEM="32768 49152 98304"
-    elif [ "$MEM_MB" -le 1536 ]; then MIN_FREE=65536; SWAP=10; TCP_MEM="49152 65536 131072"
-    else                               MIN_FREE=65536; SWAP=5;  TCP_MEM="131072 196608 393216"
+    if   [ "$MEM_MB" -le 768  ]; then MIN_FREE=32768;  SWAP=10; TCP_MEM="32768 49152 98304"
+    elif [ "$MEM_MB" -le 1536 ]; then MIN_FREE=65536;  SWAP=10; TCP_MEM="49152 65536 131072"
+    elif [ "$MEM_MB" -le 4096 ]; then MIN_FREE=65536;  SWAP=5;  TCP_MEM="131072 196608 393216"
+    elif [ "$MEM_MB" -le 8192 ]; then MIN_FREE=131072; SWAP=5;  TCP_MEM="262144 393216 786432"
+    else                               MIN_FREE=262144; SWAP=5;  TCP_MEM="524288 786432 1572864"
     fi
 
     bbr_confirm_apply "$RMEM" "$WMEM" "$TCP_MEM" "$NOTSENT" "$ADV_WIN"         "$MIN_FREE" "$SWAP" "$TCP_RMEM_DEFAULT"         "手动选择（内存 ${MEM_MB}MB）" "$BUF_LBL"
@@ -1995,10 +2026,21 @@ volcano_tcp_profile() {
             TCP_RMEM_DEFAULT=524288; BUF_MB=32
             LABEL="低延迟交互 — SSH/游戏/远程桌面/小包优先" ;;
         throughput)
-            RMEM=134217728; WMEM=134217728; TCP_MEM="131072 262144 524288"
-            NOTSENT=524288; ADV_WIN=3; MIN_FREE=131072; SWAP=5
-            TCP_RMEM_DEFAULT=1048576; BUF_MB=128
-            LABEL="高吞吐传输 — 大带宽/高延迟/下载上传优先" ;;
+            # 根据内存动态选缓冲区，万兆机器自动用大缓冲
+            local _MEM_MB; _MEM_MB=$(( $(grep MemTotal /proc/meminfo 2>/dev/null | awk '{print $2}') / 1024 ))
+            if [ "${_MEM_MB:-0}" -lt 2048 ]; then
+                RMEM=67108864;   BUF_MB=64;   TCP_MEM="131072 196608 393216"; MIN_FREE=65536
+            elif [ "${_MEM_MB:-0}" -lt 4096 ]; then
+                RMEM=134217728;  BUF_MB=128;  TCP_MEM="131072 262144 524288"; MIN_FREE=131072
+            elif [ "${_MEM_MB:-0}" -lt 8192 ]; then
+                RMEM=268435456;  BUF_MB=256;  TCP_MEM="262144 393216 786432"; MIN_FREE=131072
+            else
+                RMEM=536870912;  BUF_MB=512;  TCP_MEM="524288 786432 1572864"; MIN_FREE=262144
+            fi
+            WMEM=$RMEM
+            NOTSENT=2097152; ADV_WIN=3; SWAP=5
+            TCP_RMEM_DEFAULT=4194304
+            LABEL="高吞吐传输 — 大带宽/万兆/下载上传优先" ;;
         *) error "未知预设：$PROFILE"; return 1 ;;
     esac
 
@@ -4738,7 +4780,7 @@ self_check_first_run() {
     clear
     echo ""
     box_top
-    box_title "VPS 开荒脚本 V3.2.4"
+    box_title "VPS 开荒脚本 V3.2.5"
     box_line "  ··银趴火山帮··" "  ${DIM}··银趴火山帮··${NC}"
     box_sep
     box_title "首次运行检测"
@@ -5461,7 +5503,7 @@ main_menu() {
         volcano_art_banner
         echo ""
         box_top
-        box_title "VPS 开荒脚本 V3.2.4"
+        box_title "VPS 开荒脚本 V3.2.5"
         box_line "  ··银趴火山帮··" "  ${DIM}··银趴火山帮··${NC}"
         box_sep
         # 收集状态数据
