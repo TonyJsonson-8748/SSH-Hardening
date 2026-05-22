@@ -1,8 +1,8 @@
-# VPS 开荒脚本 V3.0.0
+# VPS 开荒脚本 V3.4.0
 
-> **银趴火山帮** 出品 · SSH · BBR · DDNS · Caddy · Firewall
+> **银趴火山帮** 出品 · SSH · BBR · DDNS · Caddy · Firewall · NFT 转发
 
-一键式 VPS 初始化与管理工具，覆盖安全加固、网络调优、服务部署全流程。支持 Debian / Ubuntu / CentOS / Alpine / OpenWrt 等主流系统。
+一键式 VPS 初始化与管理工具，覆盖安全加固、网络调优、服务部署、端口转发全流程。支持 Debian / Ubuntu / CentOS / Alpine / OpenWrt 等主流系统。
 
 ---
 
@@ -12,11 +12,11 @@
 bash <(curl -fsSL https://raw.githubusercontent.com/chnnic/SSH-Hardening/refs/heads/main/SSH-Hardening.sh)
 ```
 
-**安装到本地后用快捷键 `v` 呼出：**
+**安装到本地后用快捷键 `v` / `V` 呼出：**
 
 进入脚本 → `m) 脚本管理` → `1) 安装脚本 + 设置快捷键`
 
-之后任意终端输入 `v` 即可启动。
+之后任意终端输入 `v` 即可启动。快捷键基于 `/usr/local/bin/` 软链接，不会污染 alias，与其他脚本（如 `volss`）完全隔离。
 
 ---
 
@@ -28,7 +28,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/chnnic/SSH-Hardening/refs/he
    ...
 
 ════════════════════════════════════════
-       VPS 开荒脚本 V3.0.0
+       VPS 开荒脚本 V3.4.0
   ··银趴火山帮··
 ────────────────────────────────────────
   端口 22  |  公钥数 1
@@ -38,7 +38,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/chnnic/SSH-Hardening/refs/he
   防火墙: ufw active
   Caddy: running
   DDNS: 运行中
-  时间: 2026-05-09 16:30:00  Asia/Shanghai
+  时间: 2026-05-22 16:30:00  Asia/Jakarta
 ────────────────────────────────────────
   [安全与网络]
   1) SSH 工具集
@@ -52,15 +52,13 @@ bash <(curl -fsSL https://raw.githubusercontent.com/chnnic/SSH-Hardening/refs/he
   7) 系统换源
   8) IPv4/IPv6 配置
   9) Caddy 管理
-  p) 端口转发
+  n) NFT 转发管理（端口转发 / DDNS / 访问控制）
   t) 时间同步
   s) Swap 管理
   m) 脚本管理（安装 / 更新 / 卸载）
   0) 退出
 ════════════════════════════════════════
 ```
-
-状态栏实时显示 SSH 端口、BBR、Fail2ban、防火墙、Caddy、DDNS 运行状态，以及当前时间时区。有新版本时顶部显示 🔔 提示。
 
 ---
 
@@ -70,100 +68,102 @@ bash <(curl -fsSL https://raw.githubusercontent.com/chnnic/SSH-Hardening/refs/he
 
 | 功能 | 说明 |
 |------|------|
-| 查看已有公钥 | 列出所有已授权公钥，显示指纹和备注 |
-| 添加公钥 | 粘贴公钥内容添加到 `~/.ssh/authorized_keys` |
-| 删除公钥 | 按编号删除指定公钥 |
-| 生成密钥对 | 生成 Ed25519 或 RSA-4096 密钥对，支持直接添加到服务器 |
-| 设置登录方式 | 仅密钥 / 密码+密钥 / 仅密码（三种模式切换） |
-| 修改 SSH 端口 | 自动备份配置、语法验证、防火墙同步放行/关闭旧端口 |
+| 查看已有公钥 | 列出所有已授权公钥（支持 ed25519/rsa/ecdsa/sk-ssh/sk-ecdsa/dss） |
+| 添加公钥 | 粘贴公钥添加，自动去重 |
+| 删除公钥 | 按编号删除，匹配公钥主体不受备注/末尾空格影响 |
+| 生成密钥对 | Ed25519 或 RSA-4096，可直接加入服务器（去重） |
+| 设置登录方式 | 仅密钥 / 密码+密钥 / 仅密码 |
+| 修改 SSH 端口 | 自动备份、语法验证、防火墙同步放行 |
 
-**修改端口时会自动：**
-- 检测并放行新端口（ufw / firewalld / iptables）
-- 关闭旧端口
-- 提示保持当前连接不断开，新开终端验证
+**root 用户固定使用 `/root/.ssh/authorized_keys`**，兼容系统预装公钥。
 
 ---
 
 ### 2. Fail2ban 管理
 
-自动封禁 SSH 暴力破解 IP。
-
-**安装时自动处理：**
-- 检测 `python3-systemd` 模块，自动选择 `systemd` 或 `auto` backend
-- backend 不可用时自动安装 `rsyslog` 补充日志源
-- 等待 socket 建立（最多 8 秒），失败时备用方式启动
-- 支持 `/run/fail2ban/` 和 `/var/run/fail2ban/` 双路径探测
+自动封禁 SSH 暴力破解 IP。安装时自动检测 backend，支持 `python3-systemd` / `rsyslog` / `auto` 多种方式。
 
 | 功能 | 说明 |
 |------|------|
-| 查看封禁 IP 列表 | 列出当前所有被封禁的 IP |
-| 手动解封 IP | 输入 IP 地址立即解封 |
-| 实时日志 | 彩色显示封禁/解封/尝试记录，支持实时跟踪 |
-| 基础参数配置 | 修改封禁时长、时间窗口、最大重试次数、监控端口，含快速预设 |
-| 编辑配置文件 | 直接用 nano 编辑 `jail.local` |
-| 安装/更新 | 一键更新到最新版 |
-| 卸载 | 完整移除 |
+| 查看封禁 IP | 当前所有被封禁的 IP |
+| 手动解封 | 立即解封指定 IP |
+| 实时日志 | 彩色显示（UTF-8 兼容） |
+| 基础参数配置 | bantime / findtime / maxretry / 监控端口 |
+| 编辑配置 | 自动选择编辑器（nano → vi → vim） |
+| 安装 / 更新 / 卸载 | 一键操作 |
 
 **快速预设：**
 
 | 预设 | bantime | findtime | maxretry |
 |------|---------|----------|----------|
-| 严格模式 | 1天 | 10分钟 | 3次 |
-| 标准模式 | 1小时 | 10分钟 | 5次 |
-| 宽松模式 | 30分钟 | 5分钟 | 10次 |
-| 永久封禁 | 永久 | 10分钟 | 3次 |
+| 严格 | 1 天 | 10 分钟 | 3 |
+| 标准 | 1 小时 | 10 分钟 | 5 |
+| 宽松 | 30 分钟 | 5 分钟 | 10 |
+| 永久 | 永久 | 10 分钟 | 3 |
 
 ---
 
 ### 3. BBR TCP 调优
 
-**智能向导（推荐）**
+**智能向导（推荐）** — 自动检测内存推荐预设：
 
-根据当前内存自动推荐预设，也可手动选择三种场景：
+| 内存 | 推荐 |
+|------|------|
+| < 768 MB | `latency` 低延迟 |
+| < 4 GB | `balanced` 均衡 |
+| ≥ 4 GB | `throughput` 高吞吐 |
 
-| 预设 | 适用场景 | 缓冲区 |
-|------|---------|--------|
-| `balanced` 均衡跨境 | 网页/代理/日常综合（默认推荐） | 64MB |
-| `latency` 低延迟交互 | SSH/游戏/远程桌面/小包优先 | 32MB |
-| `throughput` 高吞吐传输 | 大带宽/高延迟/下载上传 | 128MB |
+**三种预设：**
 
-**自动配置**：根据内存、延迟（100ms内/100-200ms/200ms以上）、带宽（100M-2G）三维度自动计算 BDP 推导最优缓冲区。
+| 预设 | 缓冲区 | 适用 |
+|------|--------|------|
+| `latency` | 32 MB | SSH / 游戏 / 远程桌面 |
+| `balanced` | 16-64 MB（按内存动态） | 网页 / 代理 / 日常 |
+| `throughput` | 64-512 MB（按内存动态） | 万兆 / 跨洋 |
 
-**手动配置**：直接选择缓冲区大小（12MB 到 128MB 共 6 档）。
+**自动配置（BDP 三维计算）：**
+- 内存：512MB / 1G / 2G / 4G / 8G / 16G+
+- 延迟：100ms 以内 / 100-200ms / 200ms 以上
+- 带宽：100M / 200M / 500M / 1G / 2G / 5G / 10G
+
+**手动配置：** 12 / 16 / 20 / 40 / 64 / 128 / 256 / 512 / 1024 MB 共 9 档
+
+**安全保护：**
+- 缓冲区超过物理内存一半自动降级或警告
+- 无 sysctl 写入权限（无特权容器）自动检测并提示
+- 内核 BBR 支持检测（kernel ≥ 4.9）
+- 应用前自动备份旧 sysctl 配置
+- 逐行 `sysctl -w` 应用，跳过 Alpine 等内核不支持的参数（如 `default_qdisc`）
 
 **其他功能：**
-- 限速设置（tc）：支持 200M/500M/780M/1G/2G 及自定义，OpenVZ 容器自动提示
-- initcwnd 设置：10/50/100 及自定义，LXC 容器自动提示
-- 备份/还原 sysctl 配置
+- tc 限速（200M / 500M / 780M / 1G / 2G / 自定义）
+- initcwnd（10 / 50 / 100 / 自定义）
+- 备份 / 还原 sysctl（按时间戳）
 
-**写入位置：** `/etc/sysctl.d/99-vps-bbr.conf`（不污染 `/etc/sysctl.conf`）
+**写入位置：** `/etc/sysctl.d/99-vps-bbr.conf`（不污染主配置）
 
 ---
 
 ### 4. 防火墙管理
 
-自动检测并支持 **ufw**（Debian/Ubuntu）和 **firewalld**（CentOS/Rocky）。
+自动检测 **ufw**（Debian/Ubuntu）和 **firewalld**（CentOS/Rocky）。
 
-| 功能 | ufw | firewalld |
-|------|-----|-----------|
-| 开启/关闭 | ✓ | ✓ |
-| 查看规则 | ✓ | ✓ |
-| 添加端口 | ✓ | ✓ |
-| 删除端口 | ✓（按编号循环） | ✓ |
-| 拉黑 IP | ✓ | ✓（Rich Rule） |
-| 放行 IP | ✓ | ✓（Rich Rule） |
-| 删除 IP 规则 | ✓（循环模式） | ✓ |
-| 一键放行常用端口 | SSH+80+443 | SSH+80+443 |
-| 安装/更新 | ✓ | — |
-| 卸载（含清理 iptables） | ✓ | ✓ |
+| 功能 | 说明 |
+|------|------|
+| 开启 / 关闭 | 一键切换 |
+| 查看规则 | 列出所有规则 |
+| 添加 / 删除端口 | 支持端口段，按编号循环删除 |
+| 拉黑 / 放行 IP | ufw deny / firewalld rich rule |
+| 一键放行常用端口 | SSH + 80 + 443 |
+| 安装 / 卸载 | 完整安装 + iptables 残留清理 |
 
-未安装时引导选择安装 ufw 或 firewalld，安装后自动放行当前 SSH 端口、80、443。
+**安全保护：** 卸载防火墙前显示警告（清空规则会暴露主机，2 秒确认延迟）
 
 ---
 
 ### 5. DNS 优化
 
-启动时自动检测 IPv4/IPv6 可用性，无 IPv6 的机器只显示 IPv4 DNS 选项。
+启动时自动检测 IPv4/IPv6，无 IPv6 的机器只显示 IPv4 选项。
 
 | 选项 | IPv4 | IPv6 |
 |------|------|------|
@@ -173,39 +173,62 @@ bash <(curl -fsSL https://raw.githubusercontent.com/chnnic/SSH-Hardening/refs/he
 | 阿里云 | 223.5.5.5 / 223.6.6.6 | 2400:3200::1 |
 | 腾讯 DNSpod | 119.29.29.29 / 183.60.83.19 | — |
 | 114 DNS | 114.114.114.114 / 114.114.115.115 | — |
-| 手动编辑 | nano `/etc/resolv.conf` | — |
+| 手动编辑 | 自动选择编辑器 | — |
 
 ---
 
 ### 6. Cloudflare DDNS
 
-将动态公网 IP 自动同步到 Cloudflare DNS，适合家宽/动态 IP 场景。
+将动态公网 IP 自动同步到 Cloudflare DNS。
 
-**安装前需准备：**
-1. 域名已托管到 Cloudflare（NS 指向 Cloudflare）
-2. 创建 API Token：`Cloudflare 控制台 → My Profile → API Tokens → Create Token → Custom Token`，权限选 `Zone / DNS / Edit`
-3. 准备好子域名（如 `home.example.com` 的 `home` 部分）
+**安装前准备：**
+1. 域名托管到 Cloudflare
+2. 创建 API Token：`Zone / DNS / Edit` 权限
+3. 准备子域名
 
-**支持配置项：**
+**支持配置：**
 - 记录模式：仅 IPv4 / IPv4+IPv6 双栈
 - Cloudflare 代理（橙云）开关
 - 自定义 TTL（默认 60 秒）
 
 **运行机制：**
-- crontab 每 5 分钟执行一次
+- crontab 每 5 分钟执行
 - IP 未变化时仅记录日志，不请求 API
-- IP 获取多源备用：`ipify.org → ifconfig.me → ip.sb`
-- 日志保存在 `/var/log/ddns.log`
+- IP 多源备用：`ipify.org → ifconfig.me → ip.sb`
+- **IPv4 格式严格校验**：纯 IPv6 机器自动识别不会误发
+- **二次校验**：检测到 IP 变化时再查询一次，防止误推
+- **日志自动轮转**：超过 500 行自动只保留最近 500 条
+- 日志：`/var/log/ddns.log`
 
-**菜单功能：**
+**Telegram 通知：**
+
+IP 真实变化时推送通知，实时读取 `/root/.cf_tg`，兼容 crontab 环境（PATH 注入）。
+
+**通知格式：**
+```
+🌐 DDNS IP 已更新
+域名：home.example.com
+类型：A
+旧IP：1.2.3.4
+新IP：5.6.7.8
+时间：2026-05-22 16:30:00
+```
+
+**菜单：**
 
 | 功能 | 说明 |
 |------|------|
-| 手动立即更新 | 立即触发一次 IP 同步 |
-| 查看日志 | 最近 20 条，支持实时跟踪 |
-| 修改配置 | 更换域名/Token/模式 |
-| 暂停/恢复 | 临时停用自动更新，不删除配置 |
-| 卸载 | 移除脚本、crontab、Token 文件 |
+| 手动立即更新 | 立即触发同步 |
+| 查看日志 | 彩色显示 + 实时跟踪 + UTF-8 完整查看 |
+| 修改配置 | 更换域名 / Token / 模式 |
+| 暂停 / 恢复 | 临时停用不删除配置 |
+| 卸载 | 完整清理 |
+| Telegram 通知 | 配置 Bot + Chat ID，发测试消息 |
+
+**状态显示：**
+- `运行中` — crontab 正常
+- `已停止（cron任务未设置）` — 有 ddns.sh 但 crontab 未写入
+- `已停止（cron未安装）` — 系统无 cron，自动安装入口
 
 ---
 
@@ -213,11 +236,11 @@ bash <(curl -fsSL https://raw.githubusercontent.com/chnnic/SSH-Hardening/refs/he
 
 | 系统 | 支持的源 |
 |------|---------|
-| Ubuntu | 阿里云 / 腾讯云 / 清华 / 中科大 / 官方源 |
-| Debian | 阿里云 / 腾讯云 / 清华 / 中科大 / 官方源 |
-| CentOS/Rocky | 阿里云 / 清华 / 默认源 |
+| Ubuntu | 阿里 / 腾讯 / 清华 / 中科大 / 官方 |
+| Debian | 阿里 / 腾讯 / 清华 / 中科大 / 官方 |
+| CentOS / Rocky | 阿里 / 清华 / 默认 |
 
-换源前自动备份原始 sources.list，换源后自动执行 `apt update`。
+换源前自动备份，换源后自动 `apt update`。
 
 ---
 
@@ -225,49 +248,93 @@ bash <(curl -fsSL https://raw.githubusercontent.com/chnnic/SSH-Hardening/refs/he
 
 | 功能 | 说明 |
 |------|------|
-| 查看详细状态 | IP 地址、优先级策略、默认路由 |
-| 设置 IPv4 优先 | 写入 `/etc/gai.conf`，立即生效 |
-| 关闭 IPv6 | sysctl 持久化，立即生效 |
-| 开启 IPv6 | 恢复 sysctl，等待 SLAAC 获取地址 |
+| 查看详细状态 | IP 地址 / 优先级 / 默认路由 |
+| 设置 IPv4 优先 | 写入 `/etc/gai.conf` 立即生效 |
+| 关闭 IPv6 | sysctl 持久化 |
+| 开启 IPv6 | 恢复 sysctl + 等待 SLAAC |
 
 ---
 
 ### 9. Caddy 管理
 
-自动 HTTPS 的现代 Web 服务器，自动申请和续期 Let's Encrypt 证书。
+自动 HTTPS 的现代 Web 服务器。
 
 | 功能 | 说明 |
 |------|------|
-| 查看所有站点 | 列出 Caddyfile 中所有站点及转发规则 |
-| 添加反向代理 | 域名 → 后端地址，自动判断 SSL 策略 |
+| 查看所有站点 | 列出 Caddyfile 中所有站点 |
+| 添加反向代理 | 域名 → 后端，自动判断 SSL 策略 |
 | 添加静态网站 | 域名 → 本地目录，自动 HTTPS |
 | 删除站点 | 按编号删除，自动重载 |
-| SSL 证书状态 | 查看已申请的证书及到期时间 |
-| 查看访问日志 | 彩色解析 JSON 日志，支持实时跟踪 |
-| 编辑 Caddyfile | nano 直接编辑，保存后自动验证并重载 |
-| 重载配置 | 验证语法后热重载，不中断服务 |
-| 安装/更新 | apt 官方源 / apk / yum / 二进制回退 |
-| 卸载 | 停止服务，保留配置文件 |
-
-**带端口域名的 SSL 说明：**
-
-`example.com:8443` 这类带端口的站点，Caddy 会自动为裸域名 `example.com` 申请证书并复用，无需额外配置。
+| SSL 证书状态 | 查看证书及到期时间 |
+| 查看访问日志 | 彩色解析 JSON，实时跟踪 |
+| 编辑 Caddyfile | 自动选择编辑器，保存后验证并重载 |
+| 重载 / 安装 / 卸载 | 完整管理 |
 
 ---
 
-### p. 端口转发（iptables NAT）
+### n. NFT 转发管理（端口转发 / DDNS / 访问控制）
 
-将外部访问的端口转发到本机另一个端口，例如访问 `16365` 自动转发到 `6365`。
+**V3.4.0 新增模块**，基于 **nftables** 的现代端口转发，比旧版 iptables NAT 更强大、规则可持久化。
+
+**菜单结构：**
+```
+  nftables : 已安装    规则数: 3
+  访问控制 : 关闭
+  DDNS 定时刷新 : 运行中
+  ──────────────────────────────────────
+  当前规则：
+  [1] [ipv4] [单端口] 0.0.0.0:443 → 1.2.3.4:443
+  [2] [ipv4] [端口段1:1] 0.0.0.0:10000-10100 → 5.6.7.8:10000-10100
+  [3] [ipv6] [单端口] [::]:80 → home.example.com:8080 (2001:db8::1)
+  ──────────────────────────────────────
+  1) 添加单端口转发     2) 添加端口段转发
+  3) 查看所有规则       4) 删除规则
+  5) 清空所有规则
+  ──────────────────────────────────────
+  6) 立即刷新 DDNS
+  7) 启用 DDNS 自动刷新
+  8) 访问控制（白/黑名单）
+```
+
+**核心功能：**
 
 | 功能 | 说明 |
 |------|------|
-| 添加规则 | 指定外部端口 → 目标端口，支持 TCP/UDP/双栈 |
-| 删除规则 | 按编号删除，同步清理 OUTPUT 链 |
-| 清空所有 | 清空 PREROUTING 和 OUTPUT 链 |
+| **单端口转发** | 一个监听端口转发到一个目标端口 |
+| **端口段 1:1 映射** | `10000-10100` → 目标 `10000-10100` |
+| **端口段偏移映射** | `10000-10100` → 目标 `20000-20100` |
+| **双栈支持** | 同一菜单管理 IPv4 + IPv6 规则 |
+| **域名目标** | 支持目标填域名，自动 DNS 解析 |
 
-**持久化优先级：** `/etc/iptables/rules.v4` → `/etc/sysconfig/iptables` → `/etc/rc.local`（兜底）
+**DDNS 域名目标：**
+- 添加规则时目标可填域名（如 `home.example.com`）
+- 脚本自动解析为 IP 并记录
+- **立即刷新** — 重新解析所有域名目标，IP 变化时更新规则
+- **自动刷新** — systemd timer 定时执行（10s ~ 24h 任意间隔）
+- 解析失败保留旧 IP，避免规则丢失
 
-LXC 容器权限不足时自动提示，不会报错卡住。
+**访问控制：**
+
+| 模式 | 行为 |
+|------|------|
+| 白名单 | 仅允许名单内 IP/CIDR 访问转发端口 |
+| 黑名单 | 拒绝名单内 IP/CIDR 访问 |
+| 关闭 | 不限制 |
+
+支持 IPv4/IPv6 + CIDR 网段（如 `1.2.3.0/24`、`2001:db8::/32`）。
+
+**关键安全防护：**
+- 启用白名单时自动检测 `$SSH_CONNECTION` 当前 SSH 来源 IP
+- 不包含时主动询问是否自动加入，**防止自我封锁**
+- 仅影响 NFT 转发端口，不影响 SSH 等其他服务
+
+**持久化与跨发行版：**
+- 规则数据：`/etc/nft-port-forward/rules.db`
+- 访问控制：`/etc/nft-port-forward/access.conf`
+- nftables 配置：`/etc/nftables.conf`（脚本托管，自动校验语法）
+- 自动安装 nftables（apt / apk / yum / dnf）
+- 自动开启 IP 转发
+- 服务自启：systemd / OpenRC 双支持
 
 ---
 
@@ -275,13 +342,13 @@ LXC 容器权限不足时自动提示，不会报错卡住。
 
 | 功能 | 说明 |
 |------|------|
-| 强制同步时间 | 依次尝试 timesyncd → chrony → ntpdate → HTTP头兜底 |
-| 设置北京时区 | Asia/Shanghai UTC+8，立即生效 |
+| 强制同步时间 | timesyncd → chrony → ntpdate → HTTP 头兜底 |
+| 设置北京时区 | Asia/Shanghai UTC+8 |
 | 一键同步+北京时区 | 两步合一 |
-| 设置其他时区 | 含常用时区参考（东京/纽约/伦敦/巴黎等） |
-| 开启 NTP 自动同步 | 自动检测 timesyncd/chrony，无则安装 chrony |
+| 其他时区 | 含常用时区参考 |
+| 开启 NTP 自动同步 | timesyncd / chrony 自动选择 |
 
-**自动适配：** 检测 `CanNTP` 状态，系统无 timesyncd 时自动安装 chrony，Debian 和 CentOS 的服务名（`chrony`/`chronyd`）自动区分。
+HTTP 时间同步显示**中间人风险警告**，建议安装 chrony。
 
 ---
 
@@ -289,11 +356,11 @@ LXC 容器权限不足时自动提示，不会报错卡住。
 
 | 功能 | 说明 |
 |------|------|
-| 创建/更换 Swap | 512MB/1G/2G/4G/自定义，自动写入 fstab |
-| 删除 Swap | 按编号选择，同步从 fstab 移除 |
-| 设置 Swappiness | 10（服务器推荐）/30/60（默认）/自定义 |
+| 创建 / 更换 Swap | 512MB / 1G / 2G / 4G / 自定义 |
+| 删除 Swap | 按编号删除，同步 fstab |
+| Swappiness | 10 / 30 / 60 / 自定义 |
 
-根据物理内存自动推荐合适的 Swap 大小。LXC/OpenVZ 容器自动提示可能不支持。
+LXC / OpenVZ 容器自动提示可能不支持。
 
 ---
 
@@ -301,13 +368,29 @@ LXC 容器权限不足时自动提示，不会报错卡住。
 
 | 功能 | 说明 |
 |------|------|
-| 安装脚本 | 复制到 `/usr/local/bin/vps-tools`，创建 `v`/`V` 快捷命令 |
-| 从 GitHub 更新 | 下载最新版，验证语法后覆盖安装，自动重启 |
-| 删除本地脚本 | 移除脚本文件、快捷命令、shell 配置中的 alias |
+| 安装 + 设置快捷键 | `/usr/local/bin/vps-tools` + `v` / `V` 软链接 |
+| 从 GitHub 更新 | 下载、验证、覆盖、清理旧 alias、自动重启 |
+| 删除本地脚本 | 仅删除指向本脚本的软链接，不影响其他脚本 |
 
-**自动检测新版本：** 脚本启动时后台静默请求 GitHub，有新版本时主界面显示 🔔 提示，进 `m → 2` 一键更新。
+**快捷键设计（V3.0.4+）：**
+- 只用 `/usr/local/bin/v` 和 `/V` 软链接
+- **不写 alias**，避免拦截 `v` 开头的其他命令（如 `volss`）
+- 更新时自动清理历史遗留 alias
 
-**首次运行检测：** 未安装到本地时自动提示是否立即安装。
+**自动检测新版本：** 后台请求 GitHub，新版本时主界面显示 🔔 提示。
+
+---
+
+## 安全增强
+
+| 项 | 说明 |
+|----|------|
+| DDNS 脚本权限 | `chmod 700`，仅 root 可读（含 CF Token） |
+| 防火墙卸载警告 | 清空规则会暴露主机，2 秒延迟 + 警告 |
+| pf_flush 警告 | 清空所有 NAT 规则会影响其他应用 |
+| HTTP 时间同步 | 标注未经认证，可被中间人伪造 |
+| 内核支持检测 | BBR 应用前检测内核版本和模块 |
+| 容器权限检测 | 自动识别无特权容器，sysctl 操作受限时友好提示 |
 
 ---
 
@@ -318,9 +401,9 @@ LXC 容器权限不足时自动提示，不会报错卡住。
 | 发行版 | Debian / Ubuntu / CentOS / Alpine / OpenWrt |
 | 架构 | x86_64 / aarch64 / armv7 |
 | 服务管理 | systemd / OpenRC / SysV init |
-| 容器 | KVM / LXC / OpenVZ（功能有限制时自动提示） |
-| 终端 | 标准终端 / dumb 终端（OpenWrt/tmux，使用 `safe_clear` 避免报错） |
-| Shell | bash / BusyBox ash（mktemp 用 PID 替代 XXXXXX 后缀） |
+| 容器 | KVM / LXC / OpenVZ / 无特权容器 |
+| 终端 | 标准 / dumb（OpenWrt/tmux，`safe_clear` 兼容） |
+| Shell | bash / BusyBox ash（无 bash 专属语法残留） |
 
 ---
 
@@ -328,13 +411,18 @@ LXC 容器权限不足时自动提示，不会报错卡住。
 
 | 文件 | 说明 |
 |------|------|
-| `/usr/local/bin/vps-tools` | 本地脚本安装路径 |
-| `/usr/local/bin/v` | 快捷命令（软链接） |
-| `/etc/sysctl.d/99-vps-bbr.conf` | BBR TCP 调优配置 |
-| `/root/.cf_token` | Cloudflare API Token（权限 600） |
+| `/usr/local/bin/vps-tools` | 主脚本 |
+| `/usr/local/bin/v` `/V` | 快捷命令（软链接） |
+| `/etc/sysctl.d/99-vps-bbr.conf` | BBR TCP 配置 |
+| `/etc/nftables.conf` | NFT 转发配置（脚本托管） |
+| `/etc/nft-port-forward/rules.db` | NFT 转发规则数据库 |
+| `/etc/nft-port-forward/access.conf` | NFT 访问控制配置 |
+| `/etc/systemd/system/nftpf-ddns.timer` | NFT DDNS 自动刷新 timer |
+| `/root/.cf_token` | Cloudflare API Token（600） |
 | `/root/.cf_zone` | DDNS 域名/模式/TTL 配置 |
-| `/root/ddns.sh` | DDNS 执行脚本 |
-| `/var/log/ddns.log` | DDNS 运行日志 |
+| `/root/.cf_tg` | Telegram Bot 配置（600） |
+| `/root/ddns.sh` | DDNS 执行脚本（700） |
+| `/var/log/ddns.log` | DDNS 日志（自动轮转 500 行） |
 | `/etc/fail2ban/jail.local` | Fail2ban 用户配置 |
 | `/etc/caddy/Caddyfile` | Caddy 站点配置 |
 
@@ -350,3 +438,22 @@ https://github.com/chnnic/SSH-Hardening
 # 一行安装
 bash <(curl -fsSL https://raw.githubusercontent.com/chnnic/SSH-Hardening/refs/heads/main/SSH-Hardening.sh)
 ```
+
+---
+
+## 版本沿革（近期）
+
+| 版本 | 主要变更 |
+|------|---------|
+| **V3.4.0** | 新增 NFT 转发管理模块（替代 iptables NAT 端口转发 + 整合入站白名单） |
+| V3.3.5 | 清理 7 个死代码函数 + 提取重复的 iptables 清理逻辑 |
+| V3.3.4 | DDNS 二次校验，避免查询失败误推 Telegram 通知 |
+| V3.3.3 | less / 日志显示强制 UTF-8，避免中文乱码 |
+| V3.3.2 | DDNS 日志按行数限制（500 条） |
+| V3.2.5 | BBR 支持万兆 / 4G+ 内存（256/512/1024MB 缓冲区） |
+| V3.2.3 | 修复 DDNS 模块定义两遍导致所有修复失效的 Bug |
+| V3.2.1 | 无特权容器 sysctl 权限检测 |
+| V3.2.0 | BBR sysctl 逐行写入，跳过 Alpine 不支持的参数 |
+| V3.1.6 | Alpine ash 兼容（去除 bash 专属语法） |
+| V3.0.4 | 快捷键改用纯软链接，不写 alias，避免冲突其他脚本 |
+| V3.0.0 | 主菜单与 fork 同步，整合 BBR 智能向导 + DDNS 双栈 + Telegram |
