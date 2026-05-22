@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # ============================================================
-#  VPS 开荒脚本 V3.2.5 — 银趴火山帮
+#  VPS 开荒脚本 V3.2.6 — 银趴火山帮
 #  功能：SSH管理 / Fail2ban / BBR TCP 调优
 # ============================================================
 
@@ -127,7 +127,7 @@ print_header() {
     safe_clear
     echo ""
     box_top
-    box_title "VPS 开荒脚本 V3.2.5"
+    box_title "VPS 开荒脚本 V3.2.6"
     box_line "  ··银趴火山帮··" "  ${DIM}··银趴火山帮··${NC}"
     box_sep
     box_title "$1"
@@ -1181,7 +1181,7 @@ fail2ban_menu() {
         safe_clear
         echo ""
         box_top
-        box_title "VPS 开荒脚本 V3.2.5"
+        box_title "VPS 开荒脚本 V3.2.6"
         box_line "  ··银趴火山帮··" "  ${DIM}··银趴火山帮··${NC}"
         box_sep
         box_title "Fail2ban 管理"
@@ -1798,30 +1798,45 @@ bbr_menu_manual() {
     echo -e "  检测到系统内存：${BOLD}${MEM_MB}MB${NC}（内存参数将自动匹配）"
     echo ""
     echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
-    echo -e "  ${GREEN}1${NC}) 12 MB   — 低带宽 / 低延迟"
-    echo -e "  ${GREEN}2${NC}) 16 MB   — 小内存保守"
-    echo -e "  ${GREEN}3${NC}) 20 MB   — 中低带宽"
-    echo -e "  ${GREEN}4${NC}) 40 MB   — 中等带宽"
-    echo -e "  ${GREEN}5${NC}) 64 MB   — 高带宽推荐"
-    echo -e "  ${GREEN}6${NC}) 128 MB  — 超高带宽 / 高延迟"
+    echo -e "  ${GREEN}1${NC}) 12 MB    — 低带宽 / 低延迟"
+    echo -e "  ${GREEN}2${NC}) 16 MB    — 小内存保守"
+    echo -e "  ${GREEN}3${NC}) 20 MB    — 中低带宽"
+    echo -e "  ${GREEN}4${NC}) 40 MB    — 中等带宽（1G）"
+    echo -e "  ${GREEN}5${NC}) 64 MB    — 高带宽（1G+ 跨境）"
+    echo -e "  ${GREEN}6${NC}) 128 MB   — 超高带宽（2G/高延迟）"
+    echo -e "  ${GREEN}7${NC}) 256 MB   — 万兆 / 跨洋（5G/100ms）"
+    echo -e "  ${GREEN}8${NC}) 512 MB   — 万兆 / 长距离（10G/100ms）"
+    echo -e "  ${GREEN}9${NC}) 1024 MB  — 极限（10G+/200ms+，需 8G+ 内存）"
     echo -e "  ${RED}0${NC}) 返回"
     echo -e "  ${RED}00${NC}) 退出脚本"
     echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
     echo ""
-    read -rp "  请选择 [0-6]: " CH
+    read -rp "  请选择 [0-9]: " CH
 
     local RMEM WMEM ADV_WIN NOTSENT TCP_RMEM_DEFAULT BUF_LBL
     case "$CH" in
-        1) RMEM=12582912;  WMEM=12582912;  ADV_WIN=2; NOTSENT=131072; TCP_RMEM_DEFAULT=1048576; BUF_LBL=12 ;;
-        2) RMEM=16777216;  WMEM=16777216;  ADV_WIN=2; NOTSENT=131072; TCP_RMEM_DEFAULT=1048576; BUF_LBL=16 ;;
-        3) RMEM=20971520;  WMEM=20971520;  ADV_WIN=2; NOTSENT=131072; TCP_RMEM_DEFAULT=1048576; BUF_LBL=20 ;;
-        4) RMEM=41943040;  WMEM=41943040;  ADV_WIN=3; NOTSENT=262144; TCP_RMEM_DEFAULT=1048576; BUF_LBL=40 ;;
-        5) RMEM=67108864;  WMEM=67108864;  ADV_WIN=3; NOTSENT=524288; TCP_RMEM_DEFAULT=1048576; BUF_LBL=64 ;;
-        6) RMEM=134217728; WMEM=134217728; ADV_WIN=3; NOTSENT=524288; TCP_RMEM_DEFAULT=1048576; BUF_LBL=128 ;;
+        1) RMEM=12582912;   WMEM=12582912;   ADV_WIN=2; NOTSENT=131072;  TCP_RMEM_DEFAULT=1048576; BUF_LBL=12 ;;
+        2) RMEM=16777216;   WMEM=16777216;   ADV_WIN=2; NOTSENT=131072;  TCP_RMEM_DEFAULT=1048576; BUF_LBL=16 ;;
+        3) RMEM=20971520;   WMEM=20971520;   ADV_WIN=2; NOTSENT=131072;  TCP_RMEM_DEFAULT=1048576; BUF_LBL=20 ;;
+        4) RMEM=41943040;   WMEM=41943040;   ADV_WIN=3; NOTSENT=262144;  TCP_RMEM_DEFAULT=1048576; BUF_LBL=40 ;;
+        5) RMEM=67108864;   WMEM=67108864;   ADV_WIN=3; NOTSENT=524288;  TCP_RMEM_DEFAULT=1048576; BUF_LBL=64 ;;
+        6) RMEM=134217728;  WMEM=134217728;  ADV_WIN=3; NOTSENT=524288;  TCP_RMEM_DEFAULT=2097152; BUF_LBL=128 ;;
+        7) RMEM=268435456;  WMEM=268435456;  ADV_WIN=3; NOTSENT=1048576; TCP_RMEM_DEFAULT=2097152; BUF_LBL=256 ;;
+        8) RMEM=536870912;  WMEM=536870912;  ADV_WIN=3; NOTSENT=2097152; TCP_RMEM_DEFAULT=4194304; BUF_LBL=512 ;;
+        9) RMEM=1073741824; WMEM=1073741824; ADV_WIN=3; NOTSENT=2097152; TCP_RMEM_DEFAULT=4194304; BUF_LBL=1024 ;;
         0) return ;;
         00) safe_clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;
         *) warn "无效选项"; return ;;
     esac
+
+    # 安全检查：缓冲区不超过物理内存一半
+    local HALF_MEM=$(( MEM_MB * 1048576 / 2 ))
+    if [ "$RMEM" -gt "$HALF_MEM" ]; then
+        warn "缓冲区 ${BUF_LBL}MB 超过物理内存 ${MEM_MB}MB 的一半"
+        read -rp "  是否继续？(y/N，默认N): " GO
+        [ -z "$GO" ] && GO="n"
+        echo "$GO" | grep -qiE '^y(es)?$' || { warn "已取消"; return; }
+    fi
 
     local MIN_FREE SWAP TCP_MEM
     if   [ "$MEM_MB" -le 768  ]; then MIN_FREE=32768;  SWAP=10; TCP_MEM="32768 49152 98304"
@@ -4780,7 +4795,7 @@ self_check_first_run() {
     clear
     echo ""
     box_top
-    box_title "VPS 开荒脚本 V3.2.5"
+    box_title "VPS 开荒脚本 V3.2.6"
     box_line "  ··银趴火山帮··" "  ${DIM}··银趴火山帮··${NC}"
     box_sep
     box_title "首次运行检测"
@@ -5503,7 +5518,7 @@ main_menu() {
         volcano_art_banner
         echo ""
         box_top
-        box_title "VPS 开荒脚本 V3.2.5"
+        box_title "VPS 开荒脚本 V3.2.6"
         box_line "  ··银趴火山帮··" "  ${DIM}··银趴火山帮··${NC}"
         box_sep
         # 收集状态数据
