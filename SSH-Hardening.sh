@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # ============================================================
-#  VPS 开荒脚本 V3.4.1 — 银趴火山帮
+#  VPS 开荒脚本 V3.4.2 — 银趴火山帮
 #  功能：SSH管理 / Fail2ban / BBR TCP 调优
 # ============================================================
 
@@ -144,7 +144,7 @@ print_header() {
     safe_clear
     echo ""
     box_top
-    box_title "VPS 开荒脚本 V3.4.1"
+    box_title "VPS 开荒脚本 V3.4.2"
     box_line "  ··银趴火山帮··" "  ${DIM}··银趴火山帮··${NC}"
     box_sep
     box_title "$1"
@@ -1160,7 +1160,7 @@ fail2ban_menu() {
         safe_clear
         echo ""
         box_top
-        box_title "VPS 开荒脚本 V3.4.1"
+        box_title "VPS 开荒脚本 V3.4.2"
         box_line "  ··银趴火山帮··" "  ${DIM}··银趴火山帮··${NC}"
         box_sep
         box_title "Fail2ban 管理"
@@ -4484,7 +4484,7 @@ self_check_first_run() {
     clear
     echo ""
     box_top
-    box_title "VPS 开荒脚本 V3.4.1"
+    box_title "VPS 开荒脚本 V3.4.2"
     box_line "  ··银趴火山帮··" "  ${DIM}··银趴火山帮··${NC}"
     box_sep
     box_title "首次运行检测"
@@ -5226,7 +5226,12 @@ nft_access_menu() {
     while true; do
         local mode count v4 v6
         mode=$(nft_get_access_mode)
-        count=$(grep -c '^entry=' "$NFT_ACCESS_FILE" 2>/dev/null || echo 0)
+        if [ -f "$NFT_ACCESS_FILE" ]; then
+            count=$(grep -c '^entry=' "$NFT_ACCESS_FILE" 2>/dev/null)
+            count=${count:-0}
+        else
+            count=0
+        fi
         v4=$(nft_format_access_for "ipv4")
         v6=$(nft_format_access_for "ipv6")
 
@@ -5297,7 +5302,12 @@ nft_menu() {
 
     while true; do
         local rule_count
-        rule_count=$(grep -c '^[0-9]' "$NFT_RULES_FILE" 2>/dev/null || echo 0)
+        if [ -f "$NFT_RULES_FILE" ]; then
+            rule_count=$(grep -c '^[0-9]' "$NFT_RULES_FILE" 2>/dev/null)
+            rule_count=${rule_count:-0}
+        else
+            rule_count=0
+        fi
         local access_mode; access_mode=$(nft_get_access_mode)
         local timer_st; timer_st=$(nft_ddns_timer_status)
 
@@ -6050,7 +6060,7 @@ main_menu() {
         volcano_art_banner
         echo ""
         box_top
-        box_title "VPS 开荒脚本 V3.4.1"
+        box_title "VPS 开荒脚本 V3.4.2"
         box_line "  ··银趴火山帮··" "  ${DIM}··银趴火山帮··${NC}"
         box_sep
         # 收集状态数据
