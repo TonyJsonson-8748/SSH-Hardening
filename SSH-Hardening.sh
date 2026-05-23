@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # ============================================================
-#  VPS 开荒脚本 V3.4.2 — 银趴火山帮
+#  VPS 开荒脚本 V3.4.3 — 银趴火山帮
 #  功能：SSH管理 / Fail2ban / BBR TCP 调优
 # ============================================================
 
@@ -144,7 +144,7 @@ print_header() {
     safe_clear
     echo ""
     box_top
-    box_title "VPS 开荒脚本 V3.4.2"
+    box_title "VPS 开荒脚本 V3.4.3"
     box_line "  ··银趴火山帮··" "  ${DIM}··银趴火山帮··${NC}"
     box_sep
     box_title "$1"
@@ -1160,7 +1160,7 @@ fail2ban_menu() {
         safe_clear
         echo ""
         box_top
-        box_title "VPS 开荒脚本 V3.4.2"
+        box_title "VPS 开荒脚本 V3.4.3"
         box_line "  ··银趴火山帮··" "  ${DIM}··银趴火山帮··${NC}"
         box_sep
         box_title "Fail2ban 管理"
@@ -4484,7 +4484,7 @@ self_check_first_run() {
     clear
     echo ""
     box_top
-    box_title "VPS 开荒脚本 V3.4.2"
+    box_title "VPS 开荒脚本 V3.4.3"
     box_line "  ··银趴火山帮··" "  ${DIM}··银趴火山帮··${NC}"
     box_sep
     box_title "首次运行检测"
@@ -4588,6 +4588,73 @@ nft_install() {
         dnf install -y nftables 2>/dev/null
     fi
     command -v nft &>/dev/null
+}
+
+
+nft_uninstall() {
+    print_header "卸载 nftables"
+    echo -e "  ${RED}${BOLD}⚠ 警告：卸载将执行以下操作：${NC}"
+    echo -e "  ${DIM}1. 清空所有 NFT 转发规则${NC}"
+    echo -e "  ${DIM}2. 删除访问控制配置${NC}"
+    echo -e "  ${DIM}3. 关闭 DDNS 自动刷新 timer${NC}"
+    echo -e "  ${DIM}4. 停止并删除 nftables 服务${NC}"
+    echo -e "  ${DIM}5. 卸载 nftables 软件包${NC}"
+    echo ""
+    warn "如果你的防火墙依赖 nftables（如 firewalld 后端），卸载后会失去保护！"
+    read -rp "  确认卸载？(y/N，默认N): " c
+    [ -z "$c" ] && c="n"
+    echo "$c" | grep -qiE '^y(es)?$' || { warn "已取消"; return; }
+
+    # 1. 关闭 DDNS timer
+    if command -v systemctl &>/dev/null; then
+        systemctl disable --now nftpf-ddns.timer &>/dev/null || true
+        systemctl disable --now nftpf-ddns.service &>/dev/null || true
+    fi
+    rm -f "$NFT_DDNS_TIMER_FILE" "$NFT_DDNS_SERVICE_FILE"
+
+    # 2. 清空所有规则（先 flush 再停服务）
+    if command -v nft &>/dev/null; then
+        nft flush ruleset 2>/dev/null || true
+    fi
+
+    # 3. 停止服务
+    if command -v systemctl &>/dev/null && pidof systemd &>/dev/null; then
+        systemctl stop nftables &>/dev/null || true
+        systemctl disable nftables &>/dev/null || true
+    elif command -v rc-service &>/dev/null; then
+        rc-service nftables stop 2>/dev/null || true
+        rc-update del nftables default 2>/dev/null || true
+    fi
+
+    # 4. 删除状态目录
+    rm -rf "$NFT_STATE_DIR"
+
+    # 5. 清空 nftables 配置（保留文件结构）
+    if [ -f "$NFT_CONFIG_FILE" ]; then
+        cat > "$NFT_CONFIG_FILE" <<NFTEOF
+#!/usr/sbin/nft -f
+
+flush ruleset
+NFTEOF
+    fi
+
+    # 6. 卸载软件包
+    info "正在卸载 nftables 软件包..."
+    if command -v apt-get &>/dev/null; then
+        apt-get remove -y nftables 2>/dev/null
+    elif command -v apk &>/dev/null; then
+        apk del nftables 2>/dev/null
+    elif command -v yum &>/dev/null; then
+        yum remove -y nftables 2>/dev/null
+    elif command -v dnf &>/dev/null; then
+        dnf remove -y nftables 2>/dev/null
+    fi
+
+    if ! command -v systemctl &>/dev/null || ! command -v nft &>/dev/null; then
+        info "nftables 卸载完成 ✓"
+    else
+        warn "卸载命令已执行，但 nft 命令仍存在（可能是依赖保留）"
+    fi
 }
 
 nft_enable_ip_forward() {
@@ -5344,46 +5411,62 @@ nft_menu() {
         fi
 
         echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
-        echo -e "  ${GREEN}1${NC}) 添加单端口转发     ${GREEN}2${NC}) 添加端口段转发"
-        echo -e "  ${GREEN}3${NC}) 查看所有规则       ${YELLOW}4${NC}) 删除规则"
-        echo -e "  ${YELLOW}5${NC}) 清空所有规则"
-        echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
-        echo -e "  ${GREEN}6${NC}) 立即刷新 DDNS"
-        if [ "$timer_st" = "active" ]; then
-            echo -e "  ${YELLOW}7${NC}) 关闭 DDNS 自动刷新"
+        if command -v nft &>/dev/null; then
+            echo -e "  ${GREEN}1${NC}) 添加单端口转发     ${GREEN}2${NC}) 添加端口段转发"
+            echo -e "  ${GREEN}3${NC}) 查看所有规则       ${YELLOW}4${NC}) 删除规则"
+            echo -e "  ${YELLOW}5${NC}) 清空所有规则"
+            echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+            echo -e "  ${GREEN}6${NC}) 立即刷新 DDNS"
+            if [ "$timer_st" = "active" ]; then
+                echo -e "  ${YELLOW}7${NC}) 关闭 DDNS 自动刷新"
+            else
+                echo -e "  ${GREEN}7${NC}) 启用 DDNS 自动刷新"
+            fi
+            echo -e "  ${GREEN}8${NC}) 访问控制（白/黑名单）"
+            echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+            echo -e "  ${YELLOW}9${NC}) 卸载 nftables"
         else
-            echo -e "  ${GREEN}7${NC}) 启用 DDNS 自动刷新"
+            echo -e "  ${YELLOW}未检测到 nftables，请先安装：${NC}"
+            echo -e "  ${GREEN}i${NC}) 安装 nftables"
+            echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
         fi
-        echo -e "  ${GREEN}8${NC}) 访问控制（白/黑名单）"
-        echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
         echo -e "  ${RED}0${NC}) 返回   ${RED}00${NC}) 退出脚本"
         echo ""
         read -rp "  请选择: " ch
 
-        case "$ch" in
-            1|2)
-                if ! command -v nft &>/dev/null; then
-                    nft_install || { error "nftables 安装失败"; sleep 2; continue; }
-                fi
-                nft_enable_ip_forward
-                if [ "$ch" = "1" ]; then nft_add_rule single
-                else nft_add_rule range; fi
-                ;;
-            3)
-                print_header "所有 NFT 转发规则"
-                nft_list_rules || warn "暂无规则"
-                ;;
-            4) nft_delete_rule ;;
-            5) nft_clear_all_rules ;;
-            6) nft_refresh_ddns ;;
-            7)
-                [ "$timer_st" = "active" ] && nft_ddns_timer_disable || nft_ddns_timer_enable
-                ;;
-            8) nft_access_menu ;;
-            0) return ;;
-            00) safe_clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;
-            *) warn "无效选项"; sleep 1; continue ;;
-        esac
+        if ! command -v nft &>/dev/null; then
+            case "$ch" in
+                i|I)
+                    nft_install && info "nftables 安装完成 ✓" || error "nftables 安装失败"
+                    ;;
+                0) return ;;
+                00) safe_clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;
+                *) warn "请先安装 nftables（按 i）"; sleep 1; continue ;;
+            esac
+        else
+            case "$ch" in
+                1|2)
+                    nft_enable_ip_forward
+                    if [ "$ch" = "1" ]; then nft_add_rule single
+                    else nft_add_rule range; fi
+                    ;;
+                3)
+                    print_header "所有 NFT 转发规则"
+                    nft_list_rules || warn "暂无规则"
+                    ;;
+                4) nft_delete_rule ;;
+                5) nft_clear_all_rules ;;
+                6) nft_refresh_ddns ;;
+                7)
+                    [ "$timer_st" = "active" ] && nft_ddns_timer_disable || nft_ddns_timer_enable
+                    ;;
+                8) nft_access_menu ;;
+                9) nft_uninstall ;;
+                0) return ;;
+                00) safe_clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;
+                *) warn "无效选项"; sleep 1; continue ;;
+            esac
+        fi
         echo ""
         read -rp "  按 Enter 继续..." _
     done
@@ -6060,7 +6143,7 @@ main_menu() {
         volcano_art_banner
         echo ""
         box_top
-        box_title "VPS 开荒脚本 V3.4.2"
+        box_title "VPS 开荒脚本 V3.4.3"
         box_line "  ··银趴火山帮··" "  ${DIM}··银趴火山帮··${NC}"
         box_sep
         # 收集状态数据
