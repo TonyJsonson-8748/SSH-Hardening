@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # ============================================================
-#  VPS 开荒脚本 V3.4.3 — 银趴火山帮
+#  VPS 开荒脚本 V3.4.4 — 银趴火山帮
 #  功能：SSH管理 / Fail2ban / BBR TCP 调优
 # ============================================================
 
@@ -144,7 +144,7 @@ print_header() {
     safe_clear
     echo ""
     box_top
-    box_title "VPS 开荒脚本 V3.4.3"
+    box_title "VPS 开荒脚本 V3.4.4"
     box_line "  ··银趴火山帮··" "  ${DIM}··银趴火山帮··${NC}"
     box_sep
     box_title "$1"
@@ -1160,7 +1160,7 @@ fail2ban_menu() {
         safe_clear
         echo ""
         box_top
-        box_title "VPS 开荒脚本 V3.4.3"
+        box_title "VPS 开荒脚本 V3.4.4"
         box_line "  ··银趴火山帮··" "  ${DIM}··银趴火山帮··${NC}"
         box_sep
         box_title "Fail2ban 管理"
@@ -4484,7 +4484,7 @@ self_check_first_run() {
     clear
     echo ""
     box_top
-    box_title "VPS 开荒脚本 V3.4.3"
+    box_title "VPS 开荒脚本 V3.4.4"
     box_line "  ··银趴火山帮··" "  ${DIM}··银趴火山帮··${NC}"
     box_sep
     box_title "首次运行检测"
@@ -5363,6 +5363,200 @@ nft_access_menu() {
     done
 }
 
+
+# ── iptables 本地端口转发（轻量，不依赖 nftables）─────────
+IPTPF_RULES_FILE="${IPTPF_RULES_FILE:-/etc/iptables-local-fwd.conf}"
+
+iptpf_ensure_file() {
+    [ -f "$IPTPF_RULES_FILE" ] || touch "$IPTPF_RULES_FILE"
+}
+
+iptpf_check_iptables() {
+    command -v iptables &>/dev/null && return 0
+    info "正在安装 iptables..."
+    if command -v apt-get &>/dev/null; then
+        apt-get install -y iptables iptables-persistent 2>/dev/null
+    elif command -v apk &>/dev/null; then
+        apk add --no-cache iptables 2>/dev/null
+    elif command -v yum &>/dev/null; then
+        yum install -y iptables-services 2>/dev/null
+    fi
+    command -v iptables &>/dev/null
+}
+
+iptpf_persist() {
+    # 持久化保存当前 iptables 规则
+    if [ -d /etc/iptables ]; then
+        iptables-save > /etc/iptables/rules.v4 2>/dev/null
+        ip6tables-save > /etc/iptables/rules.v6 2>/dev/null
+    elif [ -f /etc/sysconfig/iptables ]; then
+        iptables-save > /etc/sysconfig/iptables 2>/dev/null
+    fi
+    # rc.local 兜底（无 systemd 时）
+    if [ -f /etc/rc.local ] && ! grep -q "iptables-local-fwd" /etc/rc.local; then
+        # 不重复写入
+        :
+    fi
+}
+
+iptpf_apply_rule() {
+    local src_port="$1" dst_port="$2" proto="$3"
+    # PREROUTING：来自外部的流量
+    iptables -t nat -A PREROUTING -p "$proto" --dport "$src_port" -j REDIRECT --to-port "$dst_port" 2>/dev/null
+    # OUTPUT：本机自己访问也走转发
+    iptables -t nat -A OUTPUT -p "$proto" -o lo --dport "$src_port" -j REDIRECT --to-port "$dst_port" 2>/dev/null
+}
+
+iptpf_remove_rule() {
+    local src_port="$1" dst_port="$2" proto="$3"
+    iptables -t nat -D PREROUTING -p "$proto" --dport "$src_port" -j REDIRECT --to-port "$dst_port" 2>/dev/null
+    iptables -t nat -D OUTPUT -p "$proto" -o lo --dport "$src_port" -j REDIRECT --to-port "$dst_port" 2>/dev/null
+}
+
+iptpf_list() {
+    iptpf_ensure_file
+    if [ ! -s "$IPTPF_RULES_FILE" ]; then
+        warn "暂无本地端口转发规则"
+        return 1
+    fi
+    echo -e "  ${DIM}格式: [编号] 源端口 → 目标端口 (协议)${NC}"
+    local i=1
+    while IFS='|' read -r src dst proto; do
+        [ -z "$src" ] && continue
+        echo -e "  ${GREEN}[$i]${NC} ${BOLD}${src}${NC} → ${BOLD}${dst}${NC}  (${proto})"
+        i=$((i + 1))
+    done < "$IPTPF_RULES_FILE"
+}
+
+iptpf_add() {
+    print_header "添加本地端口转发"
+    echo -e "  ${DIM}将访问本机 A 端口的流量转发到本机 B 端口${NC}"
+    echo -e "  ${DIM}用途：端口跳转、绕过端口限制、本机端口聚合${NC}"
+    echo ""
+
+    iptpf_check_iptables || { error "iptables 不可用"; return; }
+
+    read -rp "  源端口（外部访问的端口）: " src
+    nft_check_port "$src" || { error "端口无效"; return; }
+
+    read -rp "  目标端口（本机实际服务端口）: " dst
+    nft_check_port "$dst" || { error "端口无效"; return; }
+
+    [ "$src" = "$dst" ] && { error "源端口和目标端口不能相同"; return; }
+
+    echo ""
+    echo -e "  ${GREEN}1${NC}) TCP"
+    echo -e "  ${GREEN}2${NC}) UDP"
+    echo -e "  ${GREEN}3${NC}) TCP + UDP"
+    read -rp "  协议 [1/2/3]，默认 3: " pc
+    [ -z "$pc" ] && pc=3
+
+    case "$pc" in
+        1) protos="tcp" ;;
+        2) protos="udp" ;;
+        3) protos="tcp udp" ;;
+        *) error "无效选项"; return ;;
+    esac
+
+    # 检查重复
+    for p in $protos; do
+        if grep -qE "^${src}\|${dst}\|${p}$" "$IPTPF_RULES_FILE" 2>/dev/null; then
+            warn "规则已存在: ${src} → ${dst} (${p})"
+            continue
+        fi
+        iptpf_apply_rule "$src" "$dst" "$p"
+        echo "${src}|${dst}|${p}" >> "$IPTPF_RULES_FILE"
+        info "已添加: ${src} → ${dst} (${p}) ✓"
+    done
+
+    iptpf_persist
+}
+
+iptpf_delete() {
+    print_header "删除本地端口转发"
+    if ! iptpf_list; then
+        return
+    fi
+    echo ""
+    read -rp "  请输入要删除的规则编号（0 取消）: " id
+    [ "$id" = "0" ] || [ -z "$id" ] && { warn "已取消"; return; }
+    if ! echo "$id" | grep -qE '^[0-9]+$'; then
+        error "无效编号"
+        return
+    fi
+
+    local target_line; target_line=$(sed -n "${id}p" "$IPTPF_RULES_FILE")
+    [ -z "$target_line" ] && { error "未找到该规则"; return; }
+
+    IFS='|' read -r src dst proto <<< "$target_line"
+
+    echo ""
+    info "即将删除: ${src} → ${dst} (${proto})"
+    read -rp "  确认删除？(Y/n，默认Y): " c
+    [ -z "$c" ] && c="y"
+    echo "$c" | grep -qiE '^y(es)?$' || { warn "已取消"; return; }
+
+    iptpf_remove_rule "$src" "$dst" "$proto"
+    sed -i "${id}d" "$IPTPF_RULES_FILE"
+    iptpf_persist
+    info "已删除 ✓"
+}
+
+iptpf_clear_all() {
+    warn "将清空所有本地端口转发规则"
+    read -rp "  确认？(y/N，默认N): " c
+    [ -z "$c" ] && c="n"
+    echo "$c" | grep -qiE '^y(es)?$' || { warn "已取消"; return; }
+
+    iptpf_ensure_file
+    while IFS='|' read -r src dst proto; do
+        [ -z "$src" ] && continue
+        iptpf_remove_rule "$src" "$dst" "$proto"
+    done < "$IPTPF_RULES_FILE"
+    : > "$IPTPF_RULES_FILE"
+    iptpf_persist
+    info "已清空所有本地端口转发规则 ✓"
+}
+
+iptpf_menu() {
+    iptpf_ensure_file
+    while true; do
+        local count
+        count=$(grep -c '^' "$IPTPF_RULES_FILE" 2>/dev/null)
+        count=${count:-0}
+
+        print_header "iptables 本地端口转发"
+        echo -e "  ${DIM}本机 A 端口 → 本机 B 端口（不涉及外网目标）${NC}"
+        echo -e "  ${DIM}用途：端口跳转、绕过端口限制、端口别名${NC}"
+        echo ""
+        echo -e "  当前规则数：${BOLD}${count}${NC}"
+
+        if [ "$count" -gt 0 ]; then
+            echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+            iptpf_list
+        fi
+
+        echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+        echo -e "  ${GREEN}1${NC}) 添加本地端口转发"
+        echo -e "  ${YELLOW}2${NC}) 删除指定规则"
+        echo -e "  ${YELLOW}3${NC}) 清空所有规则"
+        echo -e "  ${RED}0${NC}) 返回   ${RED}00${NC}) 退出脚本"
+        echo ""
+        read -rp "  请选择: " ch
+
+        case "$ch" in
+            1) iptpf_add ;;
+            2) iptpf_delete ;;
+            3) iptpf_clear_all ;;
+            0) return ;;
+            00) safe_clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;
+            *) warn "无效选项"; sleep 1; continue ;;
+        esac
+        echo ""
+        read -rp "  按 Enter 继续..." _
+    done
+}
+
 # ── NFT 主菜单 ────────────────────────────────────────────
 nft_menu() {
     nft_ensure_state_dir
@@ -5423,11 +5617,13 @@ nft_menu() {
                 echo -e "  ${GREEN}7${NC}) 启用 DDNS 自动刷新"
             fi
             echo -e "  ${GREEN}8${NC}) 访问控制（白/黑名单）"
+            echo -e "  ${GREEN}l${NC}) iptables 本地端口转发"
             echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
             echo -e "  ${YELLOW}9${NC}) 卸载 nftables"
         else
             echo -e "  ${YELLOW}未检测到 nftables，请先安装：${NC}"
             echo -e "  ${GREEN}i${NC}) 安装 nftables"
+            echo -e "  ${GREEN}l${NC}) iptables 本地端口转发（无需 nftables）"
             echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
         fi
         echo -e "  ${RED}0${NC}) 返回   ${RED}00${NC}) 退出脚本"
@@ -5439,6 +5635,7 @@ nft_menu() {
                 i|I)
                     nft_install && info "nftables 安装完成 ✓" || error "nftables 安装失败"
                     ;;
+                l|L) iptpf_menu ;;
                 0) return ;;
                 00) safe_clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;
                 *) warn "请先安装 nftables（按 i）"; sleep 1; continue ;;
@@ -5462,6 +5659,7 @@ nft_menu() {
                     ;;
                 8) nft_access_menu ;;
                 9) nft_uninstall ;;
+                l|L) iptpf_menu ;;
                 0) return ;;
                 00) safe_clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;
                 *) warn "无效选项"; sleep 1; continue ;;
@@ -6143,7 +6341,7 @@ main_menu() {
         volcano_art_banner
         echo ""
         box_top
-        box_title "VPS 开荒脚本 V3.4.3"
+        box_title "VPS 开荒脚本 V3.4.4"
         box_line "  ··银趴火山帮··" "  ${DIM}··银趴火山帮··${NC}"
         box_sep
         # 收集状态数据
