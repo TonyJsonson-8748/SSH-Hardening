@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # ============================================================
-#  VPS 开荒脚本 V3.4.4 — 银趴火山帮
+#  VPS 开荒脚本 V3.4.5 — 银趴火山帮
 #  功能：SSH管理 / Fail2ban / BBR TCP 调优
 # ============================================================
 
@@ -144,7 +144,7 @@ print_header() {
     safe_clear
     echo ""
     box_top
-    box_title "VPS 开荒脚本 V3.4.4"
+    box_title "VPS 开荒脚本 V3.4.5"
     box_line "  ··银趴火山帮··" "  ${DIM}··银趴火山帮··${NC}"
     box_sep
     box_title "$1"
@@ -1160,7 +1160,7 @@ fail2ban_menu() {
         safe_clear
         echo ""
         box_top
-        box_title "VPS 开荒脚本 V3.4.4"
+        box_title "VPS 开荒脚本 V3.4.5"
         box_line "  ··银趴火山帮··" "  ${DIM}··银趴火山帮··${NC}"
         box_sep
         box_title "Fail2ban 管理"
@@ -4484,7 +4484,7 @@ self_check_first_run() {
     clear
     echo ""
     box_top
-    box_title "VPS 开荒脚本 V3.4.4"
+    box_title "VPS 开荒脚本 V3.4.5"
     box_line "  ··银趴火山帮··" "  ${DIM}··银趴火山帮··${NC}"
     box_sep
     box_title "首次运行检测"
@@ -6146,33 +6146,46 @@ ddns_uninstall() {
 
 # ── 查看日志 ──────────────────────────────────────────────
 ddns_view_logs() {
-    print_header "DDNS 日志"
-    local LOG; LOG=$(ddns_log_path)
-    if [ ! -f "$LOG" ]; then warn "日志文件不存在"; return; fi
-    echo -e "  ${DIM}${LOG}${NC}"
-    echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
-    tail -20 "$LOG" | while IFS= read -r line; do
-        if echo "$line" | grep -q "ERROR"; then
-            echo -e "  ${RED}$line${NC}"
-        elif echo "$line" | grep -q "OK:.*更新成功"; then
-            echo -e "  ${GREEN}$line${NC}"
-        else
-            echo -e "  ${DIM}$line${NC}"
-        fi
+    while true; do
+        print_header "DDNS 日志"
+        local LOG; LOG=$(ddns_log_path)
+        if [ ! -f "$LOG" ]; then warn "日志文件不存在"; return; fi
+        echo -e "  ${DIM}${LOG}${NC}"
+        echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+        tail -20 "$LOG" | while IFS= read -r line; do
+            if echo "$line" | grep -q "ERROR"; then
+                echo -e "  ${RED}$line${NC}"
+            elif echo "$line" | grep -q "OK:.*更新成功"; then
+                echo -e "  ${GREEN}$line${NC}"
+            else
+                echo -e "  ${DIM}$line${NC}"
+            fi
+        done
+        echo ""
+        echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+        echo -e "  ${GREEN}1${NC}) 实时跟踪（Ctrl+C 返回）"
+        echo -e "  ${GREEN}2${NC}) 查看完整日志（UTF-8）"
+        echo -e "  ${RED}0${NC}) 返回"
+        echo ""
+        read -rp "  请选择: " CH
+        case "$CH" in
+            1)
+                # 设置 trap 后再 tail -f；trap 仅在 tail 进程内生效
+                trap "echo ''; info '已退出实时跟踪'" INT
+                tail -f "$LOG"
+                trap - INT
+                ;;
+            2)
+                LANG=C.UTF-8 LESSCHARSET=utf-8 less -R "$LOG"
+                ;;
+            0|"")
+                return
+                ;;
+            *)
+                warn "无效选项"; sleep 1
+                ;;
+        esac
     done
-    echo ""
-    echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
-    echo -e "  ${GREEN}1${NC}) 实时跟踪（Ctrl+C 返回）  ${GREEN}2${NC}) 查看完整日志  ${RED}0${NC}) 返回"
-    echo ""
-    read -rp "  请选择: " CH
-    if [ "$CH" = "1" ]; then
-        trap 'echo ""; info "已退出实时跟踪"; trap - INT' INT
-        tail -f "$LOG"
-        trap - INT
-    elif [ "$CH" = "2" ]; then
-        # 强制 UTF-8 显示，避免中文乱码
-        LANG=C.UTF-8 LESSCHARSET=utf-8 less -R "$LOG"
-    fi
 }
 
 # ── 手动立即更新 ──────────────────────────────────────────
@@ -6296,7 +6309,10 @@ ddns_menu() {
             esac
         fi
 
-        [ "$CH" != "0" ] && { echo ""; read -rp "  按 Enter 返回..." _; }
+        # 日志查看后不需要再 Enter 一次（内部已有循环）
+        if [ "$CH" != "0" ] && [ "$CH" != "2" ]; then
+            echo ""; read -rp "  按 Enter 返回..." _
+        fi
     done
 }
 
@@ -6341,7 +6357,7 @@ main_menu() {
         volcano_art_banner
         echo ""
         box_top
-        box_title "VPS 开荒脚本 V3.4.4"
+        box_title "VPS 开荒脚本 V3.4.5"
         box_line "  ··银趴火山帮··" "  ${DIM}··银趴火山帮··${NC}"
         box_sep
         # 收集状态数据
