@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # ============================================================
-#  VPS 开荒脚本 V3.4.5 — 银趴火山帮
+#  VPS 开荒脚本 V3.5.1 — 银趴火山帮
 #  功能：SSH管理 / Fail2ban / BBR TCP 调优
 # ============================================================
 
@@ -109,6 +109,12 @@ open_editor() {
 }
 
 # ── 确保 sysctl 可用（Alpine 需要 procps 或 sysctl 包）────
+# 加载 nf_conntrack 模块（中转/落地机需要）
+ensure_conntrack_module() {
+    lsmod 2>/dev/null | grep -q "^nf_conntrack" && return 0
+    modprobe nf_conntrack 2>/dev/null
+}
+
 ensure_sysctl() {
     command -v sysctl &>/dev/null && return 0
     warn "sysctl 未找到，正在安装..."
@@ -144,7 +150,7 @@ print_header() {
     safe_clear
     echo ""
     box_top
-    box_title "VPS 开荒脚本 V3.4.5"
+    box_title "VPS 开荒脚本 V3.5.1"
     box_line "  ··银趴火山帮··" "  ${DIM}··银趴火山帮··${NC}"
     box_sep
     box_title "$1"
@@ -1160,7 +1166,7 @@ fail2ban_menu() {
         safe_clear
         echo ""
         box_top
-        box_title "VPS 开荒脚本 V3.4.5"
+        box_title "VPS 开荒脚本 V3.5.1"
         box_line "  ··银趴火山帮··" "  ${DIM}··银趴火山帮··${NC}"
         box_sep
         box_title "Fail2ban 管理"
@@ -1541,9 +1547,10 @@ EOF
 # ── 生成 sysctl 配置内容 ──────────────────────────────────
 bbr_generate_config() {
     local RMEM=$1 WMEM=$2 TCP_MEM=$3 NOTSENT=$4 ADV_WIN=$5 \
-          MIN_FREE=$6 SWAPPINESS=$7 TCP_RMEM_DEFAULT=$8
+          MIN_FREE=$6 SWAPPINESS=$7 TCP_RMEM_DEFAULT=$8 PROFILE_NAME="${9:-default}"
     cat << EOF
 # BBR TCP 调优配置 — 生成时间：$(date)
+# 预设：${PROFILE_NAME}
 # ── 内存管理 ──
 vm.swappiness = ${SWAPPINESS}
 vm.min_free_kbytes = ${MIN_FREE}
@@ -1563,6 +1570,7 @@ net.ipv4.tcp_notsent_lowat = ${NOTSENT}
 
 # ── 连接质量 ──
 net.ipv4.tcp_fastopen = 3
+net.ipv4.tcp_fastopen_blackhole_timeout_sec = 0
 net.ipv4.tcp_mtu_probing = 1
 net.ipv4.tcp_ecn = 2
 net.ipv4.tcp_slow_start_after_idle = 0
@@ -1570,6 +1578,32 @@ net.ipv4.tcp_tw_reuse = 1
 net.ipv4.tcp_fin_timeout = 10
 net.ipv4.tcp_keepalive_time = 60
 EOF
+
+    # 中转机 / 落地机 / 线路落地机 共同需要的转发与 conntrack
+    case "$PROFILE_NAME" in
+        relay|landing|line_landing)
+            cat << EOF
+
+# ── 转发与并发（中转/落地必备）──
+net.ipv4.ip_forward = 1
+net.ipv6.conf.all.forwarding = 1
+net.core.somaxconn = 8192
+net.core.netdev_max_backlog = 16384
+net.ipv4.tcp_max_syn_backlog = 8192
+EOF
+            ;;
+    esac
+
+    # 中转机额外的 conntrack 调优（大并发场景必需）
+    if [ "$PROFILE_NAME" = "relay" ]; then
+        cat << EOF
+
+# ── conntrack（中转大并发必备）──
+net.netfilter.nf_conntrack_max = 1048576
+net.netfilter.nf_conntrack_tcp_timeout_established = 7200
+net.netfilter.nf_conntrack_tcp_timeout_time_wait = 30
+EOF
+    fi
 }
 
 # ── 确认并应用参数 ────────────────────────────────────────
@@ -2029,6 +2063,57 @@ volcano_tcp_profile() {
             NOTSENT=2097152; ADV_WIN=3; SWAP=5
             TCP_RMEM_DEFAULT=4194304
             LABEL="高吞吐传输 — 大带宽/万兆/下载上传优先" ;;
+        relay)
+            ensure_conntrack_module
+            # 中转机：两进两出，需要均衡缓冲+低延迟+大并发
+            local _MEM_MB; _MEM_MB=$(( $(grep MemTotal /proc/meminfo 2>/dev/null | awk '{print $2}') / 1024 ))
+            if [ "${_MEM_MB:-0}" -lt 1024 ]; then
+                RMEM=33554432;  BUF_MB=32;   TCP_MEM="49152 98304 196608";  MIN_FREE=65536
+            elif [ "${_MEM_MB:-0}" -lt 2048 ]; then
+                RMEM=67108864;  BUF_MB=64;   TCP_MEM="65536 131072 262144"; MIN_FREE=65536
+            elif [ "${_MEM_MB:-0}" -lt 4096 ]; then
+                RMEM=134217728; BUF_MB=128;  TCP_MEM="131072 196608 393216"; MIN_FREE=131072
+            else
+                RMEM=268435456; BUF_MB=256;  TCP_MEM="262144 393216 786432"; MIN_FREE=131072
+            fi
+            WMEM=$RMEM
+            NOTSENT=262144; ADV_WIN=2; SWAP=10
+            TCP_RMEM_DEFAULT=1048576
+            LABEL="中转机 — 双向流量/大并发/均衡延迟与吞吐" ;;
+        landing)
+            ensure_conntrack_module
+            # 落地机：流量主要是单向上行，跨境延迟高，需要大缓冲吃满带宽
+            local _MEM_MB; _MEM_MB=$(( $(grep MemTotal /proc/meminfo 2>/dev/null | awk '{print $2}') / 1024 ))
+            if [ "${_MEM_MB:-0}" -lt 1024 ]; then
+                RMEM=67108864;   BUF_MB=64;   TCP_MEM="65536 131072 262144";   MIN_FREE=65536
+            elif [ "${_MEM_MB:-0}" -lt 2048 ]; then
+                RMEM=134217728;  BUF_MB=128;  TCP_MEM="131072 262144 524288";  MIN_FREE=131072
+            elif [ "${_MEM_MB:-0}" -lt 4096 ]; then
+                RMEM=268435456;  BUF_MB=256;  TCP_MEM="262144 393216 786432";  MIN_FREE=131072
+            else
+                RMEM=536870912;  BUF_MB=512;  TCP_MEM="524288 786432 1572864"; MIN_FREE=262144
+            fi
+            WMEM=$RMEM
+            NOTSENT=2097152; ADV_WIN=3; SWAP=5
+            TCP_RMEM_DEFAULT=4194304
+            LABEL="落地机 — 跨境上行/大缓冲吃满带宽" ;;
+        line_landing)
+            ensure_conntrack_module
+            # 线路落地机：直连用户/CN2/IPLC 线路，低延迟优先+中等吞吐
+            local _MEM_MB; _MEM_MB=$(( $(grep MemTotal /proc/meminfo 2>/dev/null | awk '{print $2}') / 1024 ))
+            if [ "${_MEM_MB:-0}" -lt 1024 ]; then
+                RMEM=33554432;  BUF_MB=32;   TCP_MEM="49152 98304 196608";  MIN_FREE=65536
+            elif [ "${_MEM_MB:-0}" -lt 2048 ]; then
+                RMEM=67108864;  BUF_MB=64;   TCP_MEM="65536 131072 262144"; MIN_FREE=65536
+            elif [ "${_MEM_MB:-0}" -lt 4096 ]; then
+                RMEM=134217728; BUF_MB=128;  TCP_MEM="131072 262144 524288"; MIN_FREE=131072
+            else
+                RMEM=268435456; BUF_MB=256;  TCP_MEM="262144 393216 786432"; MIN_FREE=131072
+            fi
+            WMEM=$RMEM
+            NOTSENT=131072; ADV_WIN=1; SWAP=5
+            TCP_RMEM_DEFAULT=1048576
+            LABEL="线路落地机 — CN2/IPLC/直连用户/低延迟优先" ;;
         *) error "未知预设：$PROFILE"; return 1 ;;
     esac
 
@@ -2037,7 +2122,7 @@ volcano_tcp_profile() {
     echo ""
     bbr_backup_sysctl
     local CONFIG
-    CONFIG=$(bbr_generate_config "$RMEM" "$WMEM" "$TCP_MEM" "$NOTSENT" "$ADV_WIN" "$MIN_FREE" "$SWAP" "$TCP_RMEM_DEFAULT")
+    CONFIG=$(bbr_generate_config "$RMEM" "$WMEM" "$TCP_MEM" "$NOTSENT" "$ADV_WIN" "$MIN_FREE" "$SWAP" "$TCP_RMEM_DEFAULT" "$PROFILE")
     bbr_apply_sysctl "$CONFIG"
     info "TCP 预设「${PROFILE}」已应用 ✓"
 }
@@ -2055,22 +2140,31 @@ bbr_smart_wizard() {
     echo -e "  内存：${GREEN}${MEM_MB}MB${NC}  内核：${GREEN}${KERNEL}${NC}  拥塞控制：${GREEN}${CUR_CC}${NC}"
     echo ""
     echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
-    echo -e "  ${GREEN}1${NC}) 均衡跨境   — 默认推荐，适合大多数 VPS"
+    echo -e "  ${BOLD}[通用预设]${NC}"
+    echo -e "  ${GREEN}1${NC}) 均衡跨境    — 默认推荐，适合大多数 VPS"
     echo -e "  ${GREEN}2${NC}) 低延迟交互  — SSH/游戏/远程桌面"
     echo -e "  ${GREEN}3${NC}) 高吞吐传输  — 大带宽/下载上传优先"
-    echo -e "  ${GREEN}4${NC}) 自动推荐   — 根据当前内存智能选择"
-    echo -e "  ${RED}0${NC}) 返回"
-    echo -e "  ${RED}00${NC}) 退出脚本"
+    echo ""
+    echo -e "  ${BOLD}[场景化预设]${NC}"
+    echo -e "  ${GREEN}4${NC}) 中转机      — 双向转发/大并发（如 sing-box 中转）"
+    echo -e "  ${GREEN}5${NC}) 落地机      — 跨境上行/大缓冲（落地代理出口）"
+    echo -e "  ${GREEN}6${NC}) 线路落地机  — CN2/IPLC/直连用户/低延迟优先"
+    echo ""
+    echo -e "  ${GREEN}7${NC}) 自动推荐    — 根据当前内存智能选择"
+    echo -e "  ${RED}0${NC}) 返回         ${RED}00${NC}) 退出脚本"
     echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
     echo ""
-    read -rp "  请选择 [0-4]: " CH
+    read -rp "  请选择 [0-7]: " CH
 
     local PROFILE=""
     case "$CH" in
         1) PROFILE="balanced" ;;
         2) PROFILE="latency" ;;
         3) PROFILE="throughput" ;;
-        4)
+        4) PROFILE="relay" ;;
+        5) PROFILE="landing" ;;
+        6) PROFILE="line_landing" ;;
+        7)
             if [ "$MEM_MB" -lt 768 ]; then
                 PROFILE="latency"
                 warn "小内存机器，推荐低延迟/轻量参数"
@@ -2079,7 +2173,7 @@ bbr_smart_wizard() {
                 info "1GB 左右机器，推荐均衡模式"
             else
                 PROFILE="balanced"
-                info "2GB+ 机器，推荐均衡；大流量场景可选高吞吐"
+                info "2GB+ 机器，推荐均衡；大流量场景可选高吞吐或场景化预设"
             fi
             ;;
         0) return ;;
@@ -4484,7 +4578,7 @@ self_check_first_run() {
     clear
     echo ""
     box_top
-    box_title "VPS 开荒脚本 V3.4.5"
+    box_title "VPS 开荒脚本 V3.5.1"
     box_line "  ··银趴火山帮··" "  ${DIM}··银趴火山帮··${NC}"
     box_sep
     box_title "首次运行检测"
@@ -6357,7 +6451,7 @@ main_menu() {
         volcano_art_banner
         echo ""
         box_top
-        box_title "VPS 开荒脚本 V3.4.5"
+        box_title "VPS 开荒脚本 V3.5.1"
         box_line "  ··银趴火山帮··" "  ${DIM}··银趴火山帮··${NC}"
         box_sep
         # 收集状态数据
