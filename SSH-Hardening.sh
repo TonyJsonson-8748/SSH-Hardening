@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # ============================================================
-#  VPS 开荒脚本 V3.5.1 — 银趴火山帮
+#  VPS 开荒脚本 V3.5.2 — 银趴火山帮
 #  功能：SSH管理 / Fail2ban / BBR TCP 调优
 # ============================================================
 
@@ -150,7 +150,7 @@ print_header() {
     safe_clear
     echo ""
     box_top
-    box_title "VPS 开荒脚本 V3.5.1"
+    box_title "VPS 开荒脚本 V3.5.2"
     box_line "  ··银趴火山帮··" "  ${DIM}··银趴火山帮··${NC}"
     box_sep
     box_title "$1"
@@ -1166,7 +1166,7 @@ fail2ban_menu() {
         safe_clear
         echo ""
         box_top
-        box_title "VPS 开荒脚本 V3.5.1"
+        box_title "VPS 开荒脚本 V3.5.2"
         box_line "  ··银趴火山帮··" "  ${DIM}··银趴火山帮··${NC}"
         box_sep
         box_title "Fail2ban 管理"
@@ -1610,7 +1610,7 @@ EOF
 bbr_confirm_apply() {
     local RMEM=$1 WMEM=$2 TCP_MEM=$3 NOTSENT=$4 ADV_WIN=$5 \
           MIN_FREE=$6 SWAP=$7 TCP_RMEM_DEFAULT=$8 \
-          LABEL_MODE=$9 LABEL_BUF=${10}
+          LABEL_MODE=$9 LABEL_BUF=${10} PROFILE_NAME="${11:-default}"
 
     local BUF_MB=$(( RMEM / 1048576 ))
     echo ""
@@ -1651,7 +1651,8 @@ bbr_confirm_apply() {
     if ! echo "${CONFIRM}" | grep -qiE '^y(es)?$'; then warn "已取消"; return; fi
 
     local CONFIG
-    CONFIG=$(bbr_generate_config "$RMEM" "$WMEM" "$TCP_MEM" "$NOTSENT" "$ADV_WIN" "$MIN_FREE" "$SWAP" "$TCP_RMEM_DEFAULT")
+    CONFIG=$(bbr_generate_config "$RMEM" "$WMEM" "$TCP_MEM" "$NOTSENT" "$ADV_WIN" "$MIN_FREE" "$SWAP" "$TCP_RMEM_DEFAULT" "$PROFILE_NAME")
+    [ "$PROFILE_NAME" = "relay" ] || [ "$PROFILE_NAME" = "landing" ] || [ "$PROFILE_NAME" = "line_landing" ] && ensure_conntrack_module
     bbr_apply_sysctl "$CONFIG"
     echo ""
     info "BBR TCP 调优配置完成 ✓"
@@ -1795,14 +1796,67 @@ bbr_menu_manual() {
     # 自动检测系统内存
     local MEM_KB; MEM_KB=$(grep MemTotal /proc/meminfo | awk '{print $2}')
     local MEM_MB=$(( MEM_KB / 1024 ))
-    local MEM_LBL
-    if   [ "$MEM_MB" -le 768  ]; then MEM_LBL="512MB"
-    elif [ "$MEM_MB" -le 1536 ]; then MEM_LBL="1GB"
-    else                               MEM_LBL="2GB+"
-    fi
 
-    print_header "BBR 手动缓冲区配置"
-    echo -e "  检测到系统内存：${BOLD}${MEM_MB}MB${NC}（内存参数将自动匹配）"
+    # ── 第一层：选择用途 ──
+    print_header "BBR 手动配置 — 选择用途"
+    echo -e "  检测到系统内存：${BOLD}${MEM_MB}MB${NC}"
+    echo ""
+    echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+    echo -e "  ${BOLD}请选择 VPS 用途（决定转发/conntrack/窗口参数）${NC}"
+    echo ""
+    echo -e "  ${GREEN}1${NC}) 中转机      — 双向转发/大并发（如 sing-box 中转）"
+    echo -e "  ${GREEN}2${NC}) 落地机      — 跨境上行/大缓冲（落地代理出口）"
+    echo -e "  ${GREEN}3${NC}) 线路落地机  — CN2/IPLC/直连用户/低延迟优先"
+    echo -e "  ${GREEN}4${NC}) 通用 / 单机 — 普通 VPS（网页/SSH/服务）"
+    echo -e "  ${RED}0${NC}) 返回   ${RED}00${NC}) 退出脚本"
+    echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+    echo ""
+    read -rp "  请选择 [0-4]: " SCENE
+    local PROFILE SCENE_LABEL
+    case "$SCENE" in
+        1) PROFILE="relay";        SCENE_LABEL="中转机" ;;
+        2) PROFILE="landing";      SCENE_LABEL="落地机" ;;
+        3) PROFILE="line_landing"; SCENE_LABEL="线路落地机" ;;
+        4) PROFILE="default";      SCENE_LABEL="通用单机" ;;
+        0) return ;;
+        00) safe_clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;
+        *) warn "无效选项"; return ;;
+    esac
+
+    # ── 第二层：根据场景给出推荐档位提示 + 缓冲区选择 ──
+    local RECOMMEND
+    case "$PROFILE" in
+        relay)
+            # 中转机：中等缓冲足够，并发为主
+            if   [ "$MEM_MB" -le 1024 ]; then RECOMMEND="推荐 4 (40MB) 或 5 (64MB)"
+            elif [ "$MEM_MB" -le 2048 ]; then RECOMMEND="推荐 5 (64MB) 或 6 (128MB)"
+            elif [ "$MEM_MB" -le 4096 ]; then RECOMMEND="推荐 6 (128MB)"
+            else                              RECOMMEND="推荐 7 (256MB)"
+            fi ;;
+        landing)
+            # 落地机：大缓冲吃满带宽
+            if   [ "$MEM_MB" -le 1024 ]; then RECOMMEND="推荐 5 (64MB)"
+            elif [ "$MEM_MB" -le 2048 ]; then RECOMMEND="推荐 6 (128MB)"
+            elif [ "$MEM_MB" -le 4096 ]; then RECOMMEND="推荐 7 (256MB)"
+            elif [ "$MEM_MB" -le 8192 ]; then RECOMMEND="推荐 8 (512MB)"
+            else                              RECOMMEND="推荐 8 (512MB) 或 9 (1024MB)"
+            fi ;;
+        line_landing)
+            # 线路落地机：低延迟优先，缓冲不用大
+            if   [ "$MEM_MB" -le 1024 ]; then RECOMMEND="推荐 3 (20MB) 或 4 (40MB)"
+            elif [ "$MEM_MB" -le 2048 ]; then RECOMMEND="推荐 4 (40MB) 或 5 (64MB)"
+            else                              RECOMMEND="推荐 5 (64MB) 或 6 (128MB)"
+            fi ;;
+        default)
+            if   [ "$MEM_MB" -le 768 ];  then RECOMMEND="推荐 2 (16MB) 或 3 (20MB)"
+            elif [ "$MEM_MB" -le 2048 ]; then RECOMMEND="推荐 4 (40MB) 或 5 (64MB)"
+            else                              RECOMMEND="推荐 5 (64MB) 或 6 (128MB)"
+            fi ;;
+    esac
+
+    print_header "BBR 手动配置 — ${SCENE_LABEL} · 选择缓冲区"
+    echo -e "  场景：${BOLD}${SCENE_LABEL}${NC}    内存：${BOLD}${MEM_MB}MB${NC}"
+    echo -e "  ${YELLOW}${RECOMMEND}${NC}"
     echo ""
     echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
     echo -e "  ${GREEN}1${NC}) 12 MB    — 低带宽 / 低延迟"
@@ -1814,29 +1868,29 @@ bbr_menu_manual() {
     echo -e "  ${GREEN}7${NC}) 256 MB   — 万兆 / 跨洋（5G/100ms）"
     echo -e "  ${GREEN}8${NC}) 512 MB   — 万兆 / 长距离（10G/100ms）"
     echo -e "  ${GREEN}9${NC}) 1024 MB  — 极限（10G+/200ms+，需 8G+ 内存）"
-    echo -e "  ${RED}0${NC}) 返回"
-    echo -e "  ${RED}00${NC}) 退出脚本"
+    echo -e "  ${RED}0${NC}) 返回   ${RED}00${NC}) 退出脚本"
     echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
     echo ""
     read -rp "  请选择 [0-9]: " CH
 
-    local RMEM WMEM ADV_WIN NOTSENT TCP_RMEM_DEFAULT BUF_LBL
+    local RMEM WMEM BUF_LBL
     case "$CH" in
-        1) RMEM=12582912;   WMEM=12582912;   ADV_WIN=2; NOTSENT=131072;  TCP_RMEM_DEFAULT=1048576; BUF_LBL=12 ;;
-        2) RMEM=16777216;   WMEM=16777216;   ADV_WIN=2; NOTSENT=131072;  TCP_RMEM_DEFAULT=1048576; BUF_LBL=16 ;;
-        3) RMEM=20971520;   WMEM=20971520;   ADV_WIN=2; NOTSENT=131072;  TCP_RMEM_DEFAULT=1048576; BUF_LBL=20 ;;
-        4) RMEM=41943040;   WMEM=41943040;   ADV_WIN=3; NOTSENT=262144;  TCP_RMEM_DEFAULT=1048576; BUF_LBL=40 ;;
-        5) RMEM=67108864;   WMEM=67108864;   ADV_WIN=3; NOTSENT=524288;  TCP_RMEM_DEFAULT=1048576; BUF_LBL=64 ;;
-        6) RMEM=134217728;  WMEM=134217728;  ADV_WIN=3; NOTSENT=524288;  TCP_RMEM_DEFAULT=2097152; BUF_LBL=128 ;;
-        7) RMEM=268435456;  WMEM=268435456;  ADV_WIN=3; NOTSENT=1048576; TCP_RMEM_DEFAULT=2097152; BUF_LBL=256 ;;
-        8) RMEM=536870912;  WMEM=536870912;  ADV_WIN=3; NOTSENT=2097152; TCP_RMEM_DEFAULT=4194304; BUF_LBL=512 ;;
-        9) RMEM=1073741824; WMEM=1073741824; ADV_WIN=3; NOTSENT=2097152; TCP_RMEM_DEFAULT=4194304; BUF_LBL=1024 ;;
+        1) RMEM=12582912;   BUF_LBL=12   ;;
+        2) RMEM=16777216;   BUF_LBL=16   ;;
+        3) RMEM=20971520;   BUF_LBL=20   ;;
+        4) RMEM=41943040;   BUF_LBL=40   ;;
+        5) RMEM=67108864;   BUF_LBL=64   ;;
+        6) RMEM=134217728;  BUF_LBL=128  ;;
+        7) RMEM=268435456;  BUF_LBL=256  ;;
+        8) RMEM=536870912;  BUF_LBL=512  ;;
+        9) RMEM=1073741824; BUF_LBL=1024 ;;
         0) return ;;
         00) safe_clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;
         *) warn "无效选项"; return ;;
     esac
+    WMEM=$RMEM
 
-    # 安全检查：缓冲区不超过物理内存一半
+    # 缓冲区不超过物理内存一半
     local HALF_MEM=$(( MEM_MB * 1048576 / 2 ))
     if [ "$RMEM" -gt "$HALF_MEM" ]; then
         warn "缓冲区 ${BUF_LBL}MB 超过物理内存 ${MEM_MB}MB 的一半"
@@ -1845,6 +1899,35 @@ bbr_menu_manual() {
         echo "$GO" | grep -qiE '^y(es)?$' || { warn "已取消"; return; }
     fi
 
+    # ── 根据场景调整窗口/队列参数 ──
+    local ADV_WIN NOTSENT TCP_RMEM_DEFAULT
+    case "$PROFILE" in
+        relay)
+            # 中转机：窗口标准、NOTSENT 小（降低单连接延迟）
+            ADV_WIN=2; NOTSENT=262144
+            [ "$BUF_LBL" -le 64 ] && TCP_RMEM_DEFAULT=1048576 || TCP_RMEM_DEFAULT=2097152
+            ;;
+        landing)
+            # 落地机：窗口激进、NOTSENT 大（高吞吐）
+            ADV_WIN=3; NOTSENT=2097152
+            [ "$BUF_LBL" -le 64 ] && TCP_RMEM_DEFAULT=1048576 \
+            || { [ "$BUF_LBL" -le 256 ] && TCP_RMEM_DEFAULT=2097152 || TCP_RMEM_DEFAULT=4194304; }
+            ;;
+        line_landing)
+            # 线路落地机：窗口偏小、NOTSENT 极小（响应优先）
+            ADV_WIN=1; NOTSENT=131072
+            [ "$BUF_LBL" -le 64 ] && TCP_RMEM_DEFAULT=1048576 || TCP_RMEM_DEFAULT=2097152
+            ;;
+        default)
+            # 通用：跟着缓冲区档位走
+            if   [ "$BUF_LBL" -le 20 ];  then ADV_WIN=2; NOTSENT=131072;  TCP_RMEM_DEFAULT=1048576
+            elif [ "$BUF_LBL" -le 64 ];  then ADV_WIN=3; NOTSENT=524288;  TCP_RMEM_DEFAULT=1048576
+            elif [ "$BUF_LBL" -le 256 ]; then ADV_WIN=3; NOTSENT=1048576; TCP_RMEM_DEFAULT=2097152
+            else                              ADV_WIN=3; NOTSENT=2097152; TCP_RMEM_DEFAULT=4194304
+            fi ;;
+    esac
+
+    # ── 内存相关参数按物理内存匹配 ──
     local MIN_FREE SWAP TCP_MEM
     if   [ "$MEM_MB" -le 768  ]; then MIN_FREE=32768;  SWAP=10; TCP_MEM="32768 49152 98304"
     elif [ "$MEM_MB" -le 1536 ]; then MIN_FREE=65536;  SWAP=10; TCP_MEM="49152 65536 131072"
@@ -1852,8 +1935,12 @@ bbr_menu_manual() {
     elif [ "$MEM_MB" -le 8192 ]; then MIN_FREE=131072; SWAP=5;  TCP_MEM="262144 393216 786432"
     else                               MIN_FREE=262144; SWAP=5;  TCP_MEM="524288 786432 1572864"
     fi
+    # 中转机额外抬高 swappiness（容忍多进程）
+    [ "$PROFILE" = "relay" ] && SWAP=10
 
-    bbr_confirm_apply "$RMEM" "$WMEM" "$TCP_MEM" "$NOTSENT" "$ADV_WIN"         "$MIN_FREE" "$SWAP" "$TCP_RMEM_DEFAULT"         "手动选择（内存 ${MEM_MB}MB）" "$BUF_LBL"
+    bbr_confirm_apply "$RMEM" "$WMEM" "$TCP_MEM" "$NOTSENT" "$ADV_WIN" \
+        "$MIN_FREE" "$SWAP" "$TCP_RMEM_DEFAULT" \
+        "${SCENE_LABEL}（内存 ${MEM_MB}MB）" "$BUF_LBL" "$PROFILE"
 }
 
 # ── tc 限速菜单 ───────────────────────────────────────────
@@ -4578,7 +4665,7 @@ self_check_first_run() {
     clear
     echo ""
     box_top
-    box_title "VPS 开荒脚本 V3.5.1"
+    box_title "VPS 开荒脚本 V3.5.2"
     box_line "  ··银趴火山帮··" "  ${DIM}··银趴火山帮··${NC}"
     box_sep
     box_title "首次运行检测"
@@ -6451,7 +6538,7 @@ main_menu() {
         volcano_art_banner
         echo ""
         box_top
-        box_title "VPS 开荒脚本 V3.5.1"
+        box_title "VPS 开荒脚本 V3.5.2"
         box_line "  ··银趴火山帮··" "  ${DIM}··银趴火山帮··${NC}"
         box_sep
         # 收集状态数据
