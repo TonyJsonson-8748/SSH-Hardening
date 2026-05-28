@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # ============================================================
-#  VPS 开荒脚本 V3.5.2 — 银趴火山帮
+#  VPS 开荒脚本 V3.5.3 — 银趴火山帮
 #  功能：SSH管理 / Fail2ban / BBR TCP 调优
 # ============================================================
 
@@ -150,7 +150,7 @@ print_header() {
     safe_clear
     echo ""
     box_top
-    box_title "VPS 开荒脚本 V3.5.2"
+    box_title "VPS 开荒脚本 V3.5.3"
     box_line "  ··银趴火山帮··" "  ${DIM}··银趴火山帮··${NC}"
     box_sep
     box_title "$1"
@@ -1166,7 +1166,7 @@ fail2ban_menu() {
         safe_clear
         echo ""
         box_top
-        box_title "VPS 开荒脚本 V3.5.2"
+        box_title "VPS 开荒脚本 V3.5.3"
         box_line "  ··银趴火山帮··" "  ${DIM}··银趴火山帮··${NC}"
         box_sep
         box_title "Fail2ban 管理"
@@ -4665,7 +4665,7 @@ self_check_first_run() {
     clear
     echo ""
     box_top
-    box_title "VPS 开荒脚本 V3.5.2"
+    box_title "VPS 开荒脚本 V3.5.3"
     box_line "  ··银趴火山帮··" "  ${DIM}··银趴火山帮··${NC}"
     box_sep
     box_title "首次运行检测"
@@ -5286,6 +5286,136 @@ nft_add_rule() {
 }
 
 # ── 删除规则 ──────────────────────────────────────────────
+nft_edit_rule() {
+    print_header "修改转发规则"
+    if ! nft_list_rules; then
+        warn "暂无规则"
+        return
+    fi
+    echo ""
+    read -rp "  请输入要修改的规则 ID（0 取消）: " id
+    [ "$id" = "0" ] || [ -z "$id" ] && { warn "已取消"; return; }
+    nft_find_rule "$id" || { error "未找到该规则"; return; }
+
+    # 解析当前字段
+    IFS='|' read -r OLD_ID OLD_F OLD_LIP OLD_LS OLD_LE OLD_TTYPE OLD_THOST OLD_TIP OLD_TS OLD_TE OLD_MODE <<< "$NFT_FOUND_RULE"
+
+    echo ""
+    info "当前规则："
+    nft_rule_summary "$OLD_ID" "$OLD_F" "$OLD_LIP" "$OLD_LS" "$OLD_LE" "$OLD_TTYPE" "$OLD_THOST" "$OLD_TIP" "$OLD_TS" "$OLD_TE" "$OLD_MODE"
+    echo ""
+    echo -e "  ${DIM}直接回车 = 保留原值${NC}"
+    echo ""
+
+    # ── 监听 IP ──
+    local lip_display="${OLD_LIP:-所有}"
+    read -rp "  监听 IP [${lip_display}]: " new_lip
+    [ -z "$new_lip" ] && new_lip="$OLD_LIP"
+    [ "$new_lip" = "0.0.0.0" ] || [ "$new_lip" = "::" ] && new_lip=""
+
+    # ── 监听端口 ──
+    local new_ls new_le
+    if [ "$OLD_MODE" = "single" ]; then
+        read -rp "  监听端口 [${OLD_LS}]: " new_ls
+        [ -z "$new_ls" ] && new_ls="$OLD_LS"
+        nft_check_port "$new_ls" || { error "端口无效"; return; }
+        new_le="$new_ls"
+    else
+        read -rp "  监听起始端口 [${OLD_LS}]: " new_ls
+        [ -z "$new_ls" ] && new_ls="$OLD_LS"
+        read -rp "  监听结束端口 [${OLD_LE}]: " new_le
+        [ -z "$new_le" ] && new_le="$OLD_LE"
+        nft_check_port "$new_ls" || { error "起始端口无效"; return; }
+        nft_check_port "$new_le" || { error "结束端口无效"; return; }
+        [ "$new_ls" -le "$new_le" ] || { error "起始端口不能大于结束端口"; return; }
+    fi
+
+    # ── 目标主机 ──
+    read -rp "  目标 IP/域名 [${OLD_THOST}]: " new_thost
+    [ -z "$new_thost" ] && new_thost="$OLD_THOST"
+    [ "$(nft_classify "$new_thost")" != "invalid" ] || { error "目标地址格式无效"; return; }
+
+    # ── 目标端口 ──
+    local new_ts new_te new_mode
+    if [ "$OLD_MODE" = "single" ]; then
+        read -rp "  目标端口 [${OLD_TS}]: " new_ts
+        [ -z "$new_ts" ] && new_ts="$OLD_TS"
+        nft_check_port "$new_ts" || { error "目标端口无效"; return; }
+        new_te="$new_ts"
+        new_mode="single"
+    else
+        # 端口段：保留原模式或允许切换
+        echo ""
+        local cur_mode_label
+        case "$OLD_MODE" in
+            range_1_to_1) cur_mode_label="1:1 映射" ;;
+            range_offset) cur_mode_label="端口段偏移" ;;
+        esac
+        echo -e "  当前映射模式：${BOLD}${cur_mode_label}${NC}"
+        echo -e "  ${GREEN}1${NC}) 1:1 映射（目标段=监听段）"
+        echo -e "  ${GREEN}2${NC}) 端口段偏移"
+        local default_mc=1
+        [ "$OLD_MODE" = "range_offset" ] && default_mc=2
+        read -rp "  选择映射模式 [1/2]，默认 ${default_mc}: " mc
+        [ -z "$mc" ] && mc=$default_mc
+
+        local count=$((new_le - new_ls + 1))
+        if [ "$mc" = "2" ]; then
+            read -rp "  目标起始端口 [${OLD_TS}]: " new_ts
+            [ -z "$new_ts" ] && new_ts="$OLD_TS"
+            nft_check_port "$new_ts" || { error "目标端口无效"; return; }
+            new_te=$((new_ts + count - 1))
+            [ "$new_te" -le 65535 ] || { error "目标结束端口超过 65535"; return; }
+            new_mode="range_offset"
+        else
+            new_ts="$new_ls"; new_te="$new_le"
+            new_mode="range_1_to_1"
+        fi
+    fi
+
+    # ── 协议族判定（监听 IP 变化可能改变 family）──
+    local new_family
+    new_family=$(nft_choose_family "$new_lip" "$new_thost" "$OLD_F")
+    [ "$new_family" = "invalid" ] && { error "无法确定协议族"; return; }
+
+    # ── 目标解析 ──
+    local new_ttype new_tip
+    if [ "$(nft_classify "$new_thost")" = "domain" ]; then
+        new_ttype="domain"
+        new_tip=$(nft_resolve_domain "$new_thost" "$new_family") || { error "域名解析失败"; return; }
+    else
+        new_ttype="ip"
+        new_tip="$new_thost"
+    fi
+
+    local new_record="${OLD_ID}|${new_family}|${new_lip}|${new_ls}|${new_le}|${new_ttype}|${new_thost}|${new_tip}|${new_ts}|${new_te}|${new_mode}"
+
+    echo ""
+    info "修改后："
+    nft_rule_summary "$OLD_ID" "$new_family" "$new_lip" "$new_ls" "$new_le" "$new_ttype" "$new_thost" "$new_tip" "$new_ts" "$new_te" "$new_mode"
+    echo ""
+    read -rp "  确认应用？(Y/n，默认Y): " c
+    [ -z "$c" ] && c="y"
+    echo "$c" | grep -qiE '^y(es)?$' || { warn "已取消"; return; }
+
+    # 备份原规则用于回滚
+    local backup_line="$NFT_FOUND_RULE"
+    # 删除旧规则
+    sed -i "/^${OLD_ID}|/d" "$NFT_RULES_FILE"
+    # 写入新规则
+    echo "$new_record" >> "$NFT_RULES_FILE"
+
+    if ! nft_write_and_apply; then
+        # 回滚
+        sed -i "/^${OLD_ID}|/d" "$NFT_RULES_FILE"
+        echo "$backup_line" >> "$NFT_RULES_FILE"
+        nft_write_and_apply
+        error "应用失败，已回滚到原规则"
+        return 1
+    fi
+    info "规则已修改 ✓"
+}
+
 nft_delete_rule() {
     print_header "删除端口转发规则"
     if ! nft_list_rules; then
@@ -5788,8 +5918,8 @@ nft_menu() {
         echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
         if command -v nft &>/dev/null; then
             echo -e "  ${GREEN}1${NC}) 添加单端口转发     ${GREEN}2${NC}) 添加端口段转发"
-            echo -e "  ${GREEN}3${NC}) 查看所有规则       ${YELLOW}4${NC}) 删除规则"
-            echo -e "  ${YELLOW}5${NC}) 清空所有规则"
+            echo -e "  ${GREEN}3${NC}) 查看所有规则       ${GREEN}e${NC}) 修改规则"
+            echo -e "  ${YELLOW}4${NC}) 删除规则           ${YELLOW}5${NC}) 清空所有规则"
             echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
             echo -e "  ${GREEN}6${NC}) 立即刷新 DDNS"
             if [ "$timer_st" = "active" ]; then
@@ -5832,6 +5962,7 @@ nft_menu() {
                     print_header "所有 NFT 转发规则"
                     nft_list_rules || warn "暂无规则"
                     ;;
+                e|E) nft_edit_rule ;;
                 4) nft_delete_rule ;;
                 5) nft_clear_all_rules ;;
                 6) nft_refresh_ddns ;;
@@ -6538,7 +6669,7 @@ main_menu() {
         volcano_art_banner
         echo ""
         box_top
-        box_title "VPS 开荒脚本 V3.5.2"
+        box_title "VPS 开荒脚本 V3.5.3"
         box_line "  ··银趴火山帮··" "  ${DIM}··银趴火山帮··${NC}"
         box_sep
         # 收集状态数据
