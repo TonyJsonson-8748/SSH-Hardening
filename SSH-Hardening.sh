@@ -6146,7 +6146,9 @@ ddns_install() {
     RECORD_COUNT=$(echo "$RECORD_RESP" | python3 -c         "import sys,json; print(len(json.load(sys.stdin)['result']))" 2>/dev/null)
     if [ "$RECORD_COUNT" = "0" ]; then
         warn "未找到 A 记录，正在自动创建..."
-        CREATE_RESP=$(curl -s -X POST --max-time 10             "https://api.cloudflare.com/client/v4/zones/${ZONE_ID}/dns_records"             -H "Authorization: Bearer ${DDNS_TOKEN}"             -H "Content-Type: application/json"             --data "{"type":"A","name":"${DDNS_DOMAIN}","content":"1.1.1.1","ttl":${DDNS_TTL},"proxied":${DDNS_PROXIED}}")
+        CREATE_BODY=$(printf '{"type":"A","name":"%s","content":"%s","ttl":%s,"proxied":%s}' \
+            "$DDNS_DOMAIN" "1.1.1.1" "$DDNS_TTL" "$DDNS_PROXIED")
+        CREATE_RESP=$(curl -s -X POST --max-time 10             "https://api.cloudflare.com/client/v4/zones/${ZONE_ID}/dns_records"             -H "Authorization: Bearer ${DDNS_TOKEN}"             -H "Content-Type: application/json"             --data "$CREATE_BODY")
         CREATE_OK=$(echo "$CREATE_RESP" | python3 -c             "import sys,json; print(json.load(sys.stdin).get('success',''))" 2>/dev/null)
         [ "$CREATE_OK" = "True" ] && info "A 记录已创建 ✓" || { error "创建 A 记录失败"; return; }
     else
@@ -6159,7 +6161,9 @@ ddns_install() {
         RECORD_COUNT=$(echo "$RECORD_RESP" | python3 -c             "import sys,json; print(len(json.load(sys.stdin)['result']))" 2>/dev/null)
         if [ "$RECORD_COUNT" = "0" ]; then
             warn "未找到 AAAA 记录，正在自动创建..."
-            CREATE_RESP=$(curl -s -X POST --max-time 10                 "https://api.cloudflare.com/client/v4/zones/${ZONE_ID}/dns_records"                 -H "Authorization: Bearer ${DDNS_TOKEN}"                 -H "Content-Type: application/json"                 --data "{"type":"AAAA","name":"${DDNS_DOMAIN}","content":"::1","ttl":${DDNS_TTL},"proxied":${DDNS_PROXIED}}")
+            CREATE_BODY=$(printf '{"type":"AAAA","name":"%s","content":"%s","ttl":%s,"proxied":%s}' \
+                "$DDNS_DOMAIN" "::1" "$DDNS_TTL" "$DDNS_PROXIED")
+            CREATE_RESP=$(curl -s -X POST --max-time 10                 "https://api.cloudflare.com/client/v4/zones/${ZONE_ID}/dns_records"                 -H "Authorization: Bearer ${DDNS_TOKEN}"                 -H "Content-Type: application/json"                 --data "$CREATE_BODY")
             CREATE_OK=$(echo "$CREATE_RESP" | python3 -c                 "import sys,json; print(json.load(sys.stdin).get('success',''))" 2>/dev/null)
             if [ "$CREATE_OK" = "True" ]; then
                 info "AAAA 记录已创建 ✓"
