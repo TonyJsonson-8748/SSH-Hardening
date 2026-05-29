@@ -1,297 +1,412 @@
-# BBR TCP 调优工具
+# VPS 开荒脚本 V3.5.5
 
-> **银趴火山帮** 出品 · 从 [VPS 开荒脚本](https://github.com/chnnic/SSH-Hardening) 同步至 V3.5.5 独立提取
+> **银趴火山帮** 出品 · SSH · BBR · DDNS · Caddy · Firewall · NFT 转发
 
-专注 TCP 性能调优的交互式工具，支持智能向导、场景化预设（中转/落地/线路落地）、自动 BDP 计算、手动配置、tc 限速（htb 整形 + fq pacing）、initcwnd 调整。
+一键式 VPS 初始化与管理工具，覆盖安全加固、网络调优、服务部署、端口转发全流程。支持 Debian / Ubuntu / CentOS / Alpine / OpenWrt 等主流系统。
 
-> **运行依赖：** 需 **bash**（使用了数组 / `[[ ]]` / here-string 等）。Alpine 需 `apk add bash`，OpenWrt 需 `opkg install bash`。脚本头部带解释器守卫，非 bash 环境会自动切换或 fail-fast 提示。
+> **运行依赖：** 脚本需 **bash** 运行（使用了数组 / `[[ ]]` / here-string 等特性）。Debian/Ubuntu/CentOS 默认自带；**Alpine 需 `apk add bash`，OpenWrt 需 `opkg install bash`**。脚本头部带解释器守卫：非 bash 环境会自动尝试切到 bash，缺失时给出清晰安装提示而非报一堆语法错。
 
 ---
 
 ## 快速开始
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/chnnic/BBR-tune/refs/heads/main/bbr-tune.sh)
+bash <(curl -fsSL https://raw.githubusercontent.com/chnnic/SSH-Hardening/refs/heads/main/SSH-Hardening.sh)
 ```
 
-或本地：
+**安装到本地后用快捷键 `v` / `V` 呼出：**
 
-```bash
-wget -O bbr-tune.sh https://raw.githubusercontent.com/chnnic/BBR-tune/refs/heads/main/bbr-tune.sh
-chmod +x bbr-tune.sh
-sudo ./bbr-tune.sh
-```
+进入脚本 → `m) 脚本管理` → `1) 安装脚本 + 设置快捷键`
+
+之后任意终端输入 `v` 即可启动。快捷键基于 `/usr/local/bin/` 软链接，不会污染 alias，与其他脚本（如 `volss`）完全隔离。
 
 ---
 
-## 主菜单
+## 主界面
 
 ```
+    ______  _______  ___    ____  ______   ____  ____  _____
+   /  _/  |/  / __ \/   |  / __ \/_  __/  / __ \/ __ \/ ___/
+   ...
+
 ════════════════════════════════════════
-       BBR TCP 调优工具
+       VPS 开荒脚本 V3.5.5
   ··银趴火山帮··
 ────────────────────────────────────────
-            BBR TCP 调优
+  端口 22  |  公钥数 1
+  密码登录 no  |  公钥认证 yes
+  BBR: bbr  |  限速: 无限速
+  Fail2ban: running
+  防火墙: ufw active
+  Caddy: running
+  DDNS: 运行中
+  时间: 2026-05-22 16:30:00  Asia/Jakarta
+────────────────────────────────────────
+  [安全与网络]
+  1) SSH 工具集
+  2) Fail2ban 管理
+  3) BBR TCP 调优
+  4) 防火墙管理
+  5) DNS 优化
+  6) Cloudflare DDNS
+
+  [系统与服务]
+  7) 系统换源
+  8) IPv4/IPv6 配置
+  9) Caddy 管理
+  n) NFT 转发管理（端口转发 / DDNS / 访问控制）
+  t) 时间同步
+  s) Swap 管理
+  m) 脚本管理（安装 / 更新 / 卸载）
+  0) 退出
 ════════════════════════════════════════
-  网卡 eth0  CC bbr  cwnd 10（默认）  限速 未设置
-  缓冲 rmem 64MB  wmem 64MB  物理内存 2048MB
-  ──────────────────────────────────────
-  1) 智能向导（推荐）
-  2) 自动配置（内存/延迟/带宽）
-  3) 手动选择缓冲区大小
-  ──────────────────────────────────────
-  4) 限速设置（tc）   5) initcwnd 设置
-  6) 备份 TCP 配置    7) 还原 TCP 配置
-  0) 返回主菜单        00) 退出脚本
 ```
-
----
-
-## 三类预设体系
-
-### 通用预设（普通 VPS）
-
-| 预设 | 缓冲区（按内存动态） | 适用 |
-|------|---------------------|------|
-| `balanced` 均衡跨境 | 16-64 MB | 网页 / 代理 / 日常综合 |
-| `latency` 低延迟交互 | 32 MB | SSH / 游戏 / 远程桌面 |
-| `throughput` 高吞吐 | 64-512 MB | 大带宽 / 万兆 / 下载上传 |
-
-只写入 15 个核心 BBR 参数，不污染系统。
-
-### 场景化预设（代理架构专用）
-
-| 预设 | 缓冲区（2GB 档） | NOTSENT | ADV_WIN | swap | 额外参数 |
-|------|-----------------|---------|---------|------|---------|
-| **中转机** `relay` | 64 MB | 256K（小） | 2 | 10 | 转发 + conntrack |
-| **落地机** `landing` | 128 MB | 2M（大） | 3 | 5 | 转发 |
-| **线路落地机** `line_landing` | 64 MB | 128K（极小） | 2 | 5 | 转发 |
-
-**三种架构的流量模型：**
-
-```
-中转机：     客户端 ←→ [中转] ←→ 落地        双向、并发多
-落地机：           中转 → [落地] → 目标网站    单向上行、大带宽
-线路落地机： 客户端 → [IPLC落地] → 目标网站    低延迟优先、直连用户
-```
-
-**设计差异：**
-
-| 维度 | 中转机 | 落地机 | 线路落地机 |
-|------|--------|--------|-----------|
-| 缓冲区策略 | 中等（兼顾并发） | 大（吃满跨境带宽） | 中等（低延迟优先） |
-| NOTSENT | 小（降单连接延迟） | 大（高吞吐） | 极小（即时响应） |
-| ADV_WIN | 2（标准） | 3（接收激进） | 2（保高 BDP 接收） |
-| swappiness | 10（容忍多进程） | 5 | 5 |
 
 ---
 
 ## 功能详解
 
-### 1. 智能向导（推荐）
+### 1. SSH 工具集
 
-```
-  [通用预设]
-  1) 均衡跨境    — 默认推荐，适合大多数 VPS
-  2) 低延迟交互  — SSH/游戏/远程桌面
-  3) 高吞吐传输  — 大带宽/下载上传优先
+| 功能 | 说明 |
+|------|------|
+| 查看已有公钥 | 列出所有已授权公钥（支持 ed25519/rsa/ecdsa/sk-ssh/sk-ecdsa/dss） |
+| 添加公钥 | 粘贴公钥添加，自动去重 |
+| 删除公钥 | 按编号删除，匹配公钥主体不受备注/末尾空格影响 |
+| 生成密钥对 | Ed25519 或 RSA-4096，可直接加入服务器（去重） |
+| 设置登录方式 | 仅密钥 / 密码+密钥 / 仅密码 |
+| 修改 SSH 端口 | 自动备份、语法验证、防火墙同步放行 |
 
-  [场景化预设]
-  4) 中转机      — 双向转发/大并发（如 sing-box 中转）
-  5) 落地机      — 跨境上行/大缓冲（落地代理出口）
-  6) 线路落地机  — CN2/IPLC/直连用户/低延迟优先
-
-  7) 自动推荐    — 根据当前内存智能选择
-```
-
-应用前自动提示备份旧配置，备份后再确认应用。
+**root 用户固定使用 `/root/.ssh/authorized_keys`**，兼容系统预装公钥。
 
 ---
 
-### 2. 自动配置（BDP 三维计算）
+### 2. Fail2ban 管理
 
-根据 **内存 × 延迟 × 带宽** 三维自动计算 BDP，推导最优缓冲区。
+自动封禁 SSH 暴力破解 IP。安装时自动检测 backend，支持 `python3-systemd` / `rsyslog` / `auto` 多种方式。
 
-- **内存：** 512MB / 1GB / 2GB / 4GB / 8GB / 16GB+
-- **延迟：** 100ms 以内 / 100-200ms / 200ms 以上
-- **带宽：** 100M / 200M / 500M / 1G / 2G / 5G / 10G
+| 功能 | 说明 |
+|------|------|
+| 查看封禁 IP | 当前所有被封禁的 IP |
+| 手动解封 | 立即解封指定 IP |
+| 实时日志 | 彩色显示（UTF-8 兼容） |
+| 基础参数配置 | bantime / findtime / maxretry / 监控端口 |
+| 编辑配置 | 自动选择编辑器（nano → vi → vim） |
+| 安装 / 更新 / 卸载 | 一键操作 |
 
-**BDP 估算：** `BDP = 带宽(MB/s) × 延迟(s) × 1.5`，结果超过物理内存一半自动降级。
+**快速预设：**
+
+| 预设 | bantime | findtime | maxretry |
+|------|---------|----------|----------|
+| 严格 | 1 天 | 10 分钟 | 3 |
+| 标准 | 1 小时 | 10 分钟 | 5 |
+| 宽松 | 30 分钟 | 5 分钟 | 10 |
+| 永久 | 永久 | 10 分钟 | 3 |
 
 ---
 
-### 3. 手动选择缓冲区（两步式）
+### 3. BBR TCP 调优
 
-**第一步：选用途**
-```
-  1) 中转机      — 双向转发/大并发（如 sing-box 中转）
-  2) 落地机      — 跨境上行/大缓冲（落地代理出口）
-  3) 线路落地机  — CN2/IPLC/直连用户/低延迟优先
-  4) 通用 / 单机 — 普通 VPS（网页/SSH/服务）
-```
+**智能向导（推荐）** — 自动检测内存推荐预设：
 
-**第二步：选缓冲区（带场景化智能推荐）**
+| 内存 | 推荐 |
+|------|------|
+| < 768 MB | `latency` 低延迟 |
+| < 4 GB | `balanced` 均衡 |
+| ≥ 4 GB | `throughput` 高吞吐 |
 
-工具会根据所选场景 + 当前内存，给出推荐档位提示，例如中转机 2GB 内存会提示「推荐 6 (64MB) 或 7 (128MB)」。
+**三种预设：**
 
-| 档位 | 缓冲区 | 适用 |
+| 预设 | 缓冲区 | 适用 |
 |------|--------|------|
-| 1 | 12 MB | 低带宽 / 低延迟 |
-| 2 | 16 MB | 小内存保守 |
-| 3 | 20 MB | 中低带宽 |
-| 4 | 32 MB | 1G 跨境甜点区（~150ms BDP，推荐） |
-| 5 | 40 MB | 中等带宽（1G） |
-| 6 | 64 MB | 高带宽（1G+ 跨境） |
-| 7 | 128 MB | 超高带宽（2G/高延迟） |
-| 8 | 256 MB | 万兆 / 跨洋（5G/100ms） |
-| 9 | 512 MB | 万兆 / 长距离（10G/100ms） |
-| 10 | 1024 MB | 极限（10G+/200ms+，需 8G+ 内存） |
+| `latency` | 32 MB | SSH / 游戏 / 远程桌面 |
+| `balanced` | 16-64 MB（按内存动态） | 网页 / 代理 / 日常 |
+| `throughput` | 64-512 MB（按内存动态） | 万兆 / 跨洋 |
 
-选定后窗口/队列参数按场景独立计算，并自动注入对应的转发/conntrack 参数。
+**自动配置（BDP 三维计算）：**
+- 内存：512MB / 1G / 2G / 4G / 8G / 16G+
+- 延迟：100ms 以内 / 100-200ms / 200ms 以上
+- 带宽：100M / 200M / 500M / 1G / 2G / 5G / 10G
+
+**手动配置（两步式：选用途 → 选缓冲）：** 12 / 16 / 20 / **32** / 40 / 64 / 128 / 256 / 512 / 1024 MB 共 10 档（新增 32MB 为 1G 跨境甜点区）
+
+**安全保护：**
+- 缓冲区超过物理内存一半自动降级或警告
+- 无 sysctl 写入权限（无特权容器）自动检测并提示
+- 内核 BBR 支持检测（kernel ≥ 4.9）
+- 应用前自动备份旧 sysctl 配置
+- 切换预设时检测并复位上一场景遗留的转发/conntrack 残留键（ip_forward 单独警告）
+- 逐行 `sysctl -w` 应用，跳过 Alpine 等内核不支持的参数（如 `default_qdisc`）
+
+**其他功能：**
+- tc 限速（200M / 500M / 780M / 1G / 2G / 自定义）：`htb` 聚合整形 + `fq` 叶子保留 BBR pacing，burst 随速率缩放（避免高速率跑不满线）
+- initcwnd（10 / 50 / 100 / 自定义）
+- 备份 / 还原 sysctl（按时间戳）
+
+**写入位置：** `/etc/sysctl.d/99-vps-bbr.conf`（不污染主配置）
 
 ---
 
-### 4. 限速设置（tc）
+### 4. 防火墙管理
 
-防止 BBR 大缓冲区导致重传爆炸。
+自动检测 **ufw**（Debian/Ubuntu）和 **firewalld**（CentOS/Rocky）。
 
-| 档位 | 速率 |
+| 功能 | 说明 |
 |------|------|
-| 1-5 | 200M / 500M / 780M / 1G / 2G |
-| 6 | 自定义（Mbps） |
-| 7 | 取消限速 |
+| 开启 / 关闭 | 一键切换 |
+| 查看规则 | 列出所有规则 |
+| 添加 / 删除端口 | 支持端口段，按编号循环删除 |
+| 拉黑 / 放行 IP | ufw deny / firewalld rich rule |
+| 一键放行常用端口 | SSH + 80 + 443 |
+| 安装 / 卸载 | 完整安装 + iptables 残留清理 |
 
-**队列结构（保留 BBR pacing）：** 统一用 `htb` 做聚合整形（真正的硬上限）、叶子挂 `fq` 保留 BBR 的 pacing。旧版多队列网卡用 root `tbf` 会顶掉 `fq`、废掉 BBR pacing，反而伤害跨境高 BDP 吞吐；而单纯 `fq maxrate` 只能限「每流」、限不住聚合。`htb`(整形) + `fq`(pacing) 同时满足两者。
-
-**burst 随速率缩放：** `burst/cburst` 按速率自动缩放（约 8ms 量级，≈ RATE KB，下限 32KB），避免固定 burst 在高速率下令牌饥饿导致跑不满设定速率。持久化到 `/etc/systemd/system/tc-fq.service`（`After/Wants=network-online.target`，确保网卡就绪后再应用）。
-
-> **依赖：** 需内核 `sch_htb` + `sch_fq` 模块（主流发行版默认含）；缺失时自动报错并清理 root qdisc，不会留半套规则。
-> **OpenVZ：** 自动检测并提示，tc 通常被宿主机限制。
+**安全保护：** 卸载防火墙前显示警告（清空规则会暴露主机，2 秒确认延迟）
 
 ---
 
-### 5. initcwnd 设置
+### 5. DNS 优化
 
-| 档位 | 值 | 说明 |
-|------|-----|------|
-| 1 | 10 | 默认保守 |
-| 2 | 50 | 跨国高延迟推荐 |
-| 3 | 100 | 激进 |
-| 4 | 自定义 | 1-1000 |
+启动时自动检测 IPv4/IPv6，无 IPv6 的机器只显示 IPv4 选项。
 
-持久化到 `/etc/systemd/system/initcwnd.service`。
-
-> **LXC：** 自动检测，无独立网络命名空间权限时给出宿主机命令。
-
----
-
-### 6 / 7. 备份与还原
-
-应用新配置前自动备份带时间戳的旧配置，可一键还原或清除全部备份。
+| 选项 | IPv4 | IPv6 |
+|------|------|------|
+| Cloudflare | 1.1.1.1 / 1.0.0.1 | 2606:4700:4700::1111 |
+| Google | 8.8.8.8 / 8.8.4.4 | 2001:4860:4860::8888 |
+| 混合推荐 | CF + Google | 双栈 |
+| 阿里云 | 223.5.5.5 / 223.6.6.6 | 2400:3200::1 |
+| 腾讯 DNSpod | 119.29.29.29 / 183.60.83.19 | — |
+| 114 DNS | 114.114.114.114 / 114.114.115.115 | — |
+| 手动编辑 | 自动选择编辑器 | — |
 
 ---
 
-## 写入的 sysctl 参数
+### 6. Cloudflare DDNS
 
-### 通用预设（15 个核心参数）
+将动态公网 IP 自动同步到 Cloudflare DNS。
 
-```ini
-# ── 内存管理 ──
-vm.swappiness
-vm.min_free_kbytes
+**安装前准备：**
+1. 域名托管到 Cloudflare
+2. 创建 API Token：`Zone / DNS / Edit` 权限
+3. 准备子域名
 
-# ── BBR 核心 ──
-net.core.default_qdisc = fq
-net.ipv4.tcp_congestion_control = bbr
+**支持配置：**
+- 记录模式：仅 IPv4 / IPv4+IPv6 双栈
+- Cloudflare 代理（橙云）开关
+- 自定义 TTL（默认 60 秒）
 
-# ── 缓冲区 ──
-net.core.rmem_max / wmem_max
-net.ipv4.tcp_rmem / tcp_wmem
-net.ipv4.tcp_mem
-net.ipv4.tcp_adv_win_scale
-net.ipv4.tcp_notsent_lowat
+**运行机制：**
+- crontab 每 5 分钟执行
+- IP 未变化时仅记录日志，不请求 API
+- IP 多源备用：`ipify.org → ifconfig.me → ip.sb`
+- **IPv4 格式严格校验**：纯 IPv6 机器自动识别不会误发
+- **二次校验**：检测到 IP 变化时再查询一次，防止误推
+- **日志自动轮转**：超过 500 行自动只保留最近 500 条
+- 日志：`/var/log/ddns.log`
 
-# ── 连接质量 ──
-net.ipv4.tcp_fastopen = 3
-net.ipv4.tcp_fastopen_blackhole_timeout_sec = 0
-net.ipv4.tcp_mtu_probing = 1
-net.ipv4.tcp_ecn = 2
-net.ipv4.tcp_slow_start_after_idle = 0
-net.ipv4.tcp_tw_reuse = 1
-net.ipv4.tcp_fin_timeout = 10
-net.ipv4.tcp_keepalive_time = 60
+**Telegram 通知：**
+
+IP 真实变化时推送通知，实时读取 `/root/.cf_tg`，兼容 crontab 环境（PATH 注入）。
+
+**通知格式：**
+```
+🌐 DDNS IP 已更新
+域名：home.example.com
+类型：A
+旧IP：1.2.3.4
+新IP：5.6.7.8
+时间：2026-05-22 16:30:00
 ```
 
-### 场景化预设额外参数
+**菜单：**
 
-**中转机 / 落地机 / 线路落地机 共有（5 项转发参数）：**
-
-```ini
-net.ipv4.ip_forward = 1
-net.ipv6.conf.all.forwarding = 1
-net.core.somaxconn = 8192
-net.core.netdev_max_backlog = 16384
-net.ipv4.tcp_max_syn_backlog = 8192
-```
-
-**仅中转机额外（3 项 conntrack）：**
-
-```ini
-net.netfilter.nf_conntrack_max = 1048576
-net.netfilter.nf_conntrack_tcp_timeout_established = 7200
-net.netfilter.nf_conntrack_tcp_timeout_time_wait = 30
-```
-
-应用场景预设前自动 `modprobe nf_conntrack` 加载内核模块。
-
----
-
-## 安全机制
-
-| 机制 | 说明 |
+| 功能 | 说明 |
 |------|------|
-| 内核支持检测 | 应用前检测内核 ≥ 4.9、`tcp_bbr` 模块 |
-| sysctl 权限检测 | 自动识别无特权容器并拦截 |
-| 物理内存校验 | 缓冲区超过物理内存一半自动降级 |
-| 逐行应用 | `sysctl -w` 逐行写入，跳过内核不支持的参数 |
-| conntrack 模块 | 场景预设前自动 modprobe |
-| 自动备份 | 应用前备份，可一键还原 |
+| 手动立即更新 | 立即触发同步 |
+| 查看日志 | 彩色显示 + 实时跟踪 + UTF-8 完整查看 |
+| 修改配置 | 更换域名 / Token / 模式 |
+| 暂停 / 恢复 | 临时停用不删除配置 |
+| 卸载 | 完整清理 |
+| Telegram 通知 | 配置 Bot + Chat ID，发测试消息 |
+
+**状态显示：**
+- `运行中` — crontab 正常
+- `已停止（cron任务未设置）` — 有 ddns.sh 但 crontab 未写入
+- `已停止（cron未安装）` — 系统无 cron，自动安装入口
+
+---
+
+### 7. 系统换源
+
+| 系统 | 支持的源 |
+|------|---------|
+| Ubuntu | 阿里 / 腾讯 / 清华 / 中科大 / 官方 |
+| Debian | 阿里 / 腾讯 / 清华 / 中科大 / 官方 |
+| CentOS / Rocky | 阿里 / 清华 / 默认 |
+
+换源前自动备份，换源后自动 `apt update`。
+
+---
+
+### 8. IPv4/IPv6 配置
+
+| 功能 | 说明 |
+|------|------|
+| 查看详细状态 | IP 地址 / 优先级 / 默认路由 |
+| 设置 IPv4 优先 | 写入 `/etc/gai.conf` 立即生效 |
+| 关闭 IPv6 | sysctl 持久化 |
+| 开启 IPv6 | 恢复 sysctl + 等待 SLAAC |
+
+---
+
+### 9. Caddy 管理
+
+自动 HTTPS 的现代 Web 服务器。
+
+| 功能 | 说明 |
+|------|------|
+| 查看所有站点 | 列出 Caddyfile 中所有站点 |
+| 添加反向代理 | 域名 → 后端，自动判断 SSL 策略 |
+| 添加静态网站 | 域名 → 本地目录，自动 HTTPS |
+| 删除站点 | 按编号删除，自动重载 |
+| SSL 证书状态 | 查看证书及到期时间 |
+| 查看访问日志 | 彩色解析 JSON，实时跟踪 |
+| 编辑 Caddyfile | 自动选择编辑器，保存后验证并重载 |
+| 重载 / 安装 / 卸载 | 完整管理 |
+
+---
+
+### n. NFT 转发管理（端口转发 / DDNS / 访问控制）
+
+**V3.4.0 新增模块**，基于 **nftables** 的现代端口转发，比旧版 iptables NAT 更强大、规则可持久化。
+
+**菜单结构：**
+```
+  nftables : 已安装    规则数: 3
+  访问控制 : 关闭
+  DDNS 定时刷新 : 运行中
+  ──────────────────────────────────────
+  当前规则：
+  [1] [ipv4] [单端口] 0.0.0.0:443 → 1.2.3.4:443
+  [2] [ipv4] [端口段1:1] 0.0.0.0:10000-10100 → 5.6.7.8:10000-10100
+  [3] [ipv6] [单端口] [::]:80 → home.example.com:8080 (2001:db8::1)
+  ──────────────────────────────────────
+  1) 添加单端口转发     2) 添加端口段转发
+  3) 查看所有规则       4) 删除规则
+  5) 清空所有规则
+  ──────────────────────────────────────
+  6) 立即刷新 DDNS
+  7) 启用 DDNS 自动刷新
+  8) 访问控制（白/黑名单）
+```
+
+**核心功能：**
+
+| 功能 | 说明 |
+|------|------|
+| **单端口转发** | 一个监听端口转发到一个目标端口 |
+| **端口段 1:1 映射** | `10000-10100` → 目标 `10000-10100` |
+| **端口段偏移映射** | `10000-10100` → 目标 `20000-20100` |
+| **双栈支持** | 同一菜单管理 IPv4 + IPv6 规则 |
+| **域名目标** | 支持目标填域名，自动 DNS 解析 |
+
+**DDNS 域名目标：**
+- 添加规则时目标可填域名（如 `home.example.com`）
+- 脚本自动解析为 IP 并记录
+- **立即刷新** — 重新解析所有域名目标，IP 变化时更新规则
+- **自动刷新** — systemd timer 定时执行（10s ~ 24h 任意间隔）
+- 解析失败保留旧 IP，避免规则丢失
+
+**访问控制：**
+
+| 模式 | 行为 |
+|------|------|
+| 白名单 | 仅允许名单内 IP/CIDR 访问转发端口 |
+| 黑名单 | 拒绝名单内 IP/CIDR 访问 |
+| 关闭 | 不限制 |
+
+支持 IPv4/IPv6 + CIDR 网段（如 `1.2.3.0/24`、`2001:db8::/32`）。
+
+**关键安全防护：**
+- 启用白名单时自动检测 `$SSH_CONNECTION` 当前 SSH 来源 IP
+- 不包含时主动询问是否自动加入，**防止自我封锁**
+- 仅影响 NFT 转发端口，不影响 SSH 等其他服务
+
+**持久化与跨发行版：**
+- 规则数据：`/etc/nft-port-forward/rules.db`
+- 访问控制：`/etc/nft-port-forward/access.conf`
+- nftables 配置：`/etc/nftables.conf`（脚本托管，自动校验语法）
+- 自动安装 nftables（apt / apk / yum / dnf）
+- 自动开启 IP 转发
+- 服务自启：systemd / OpenRC 双支持
+
+---
+
+### t. 时间同步
+
+| 功能 | 说明 |
+|------|------|
+| 强制同步时间 | timesyncd → chrony → ntpdate → HTTP 头兜底 |
+| 设置北京时区 | Asia/Shanghai UTC+8 |
+| 一键同步+北京时区 | 两步合一 |
+| 其他时区 | 含常用时区参考 |
+| 开启 NTP 自动同步 | timesyncd / chrony 自动选择 |
+
+HTTP 时间同步显示**中间人风险警告**，建议安装 chrony。
+
+---
+
+### s. Swap 管理
+
+| 功能 | 说明 |
+|------|------|
+| 创建 / 更换 Swap | 512MB / 1G / 2G / 4G / 自定义 |
+| 删除 Swap | 按编号删除，同步 fstab |
+| Swappiness | 10 / 30 / 60 / 自定义 |
+
+LXC / OpenVZ 容器自动提示可能不支持。
+
+---
+
+### m. 脚本管理
+
+| 功能 | 说明 |
+|------|------|
+| 安装 + 设置快捷键 | `/usr/local/bin/vps-tools` + `v` / `V` 软链接 |
+| 从 GitHub 更新 | 下载、验证、覆盖、清理旧 alias、自动重启 |
+| 删除本地脚本 | 仅删除指向本脚本的软链接，不影响其他脚本 |
+
+**快捷键设计（V3.0.4+）：**
+- 只用 `/usr/local/bin/v` 和 `/V` 软链接
+- **不写 alias**，避免拦截 `v` 开头的其他命令（如 `volss`）
+- 更新时自动清理历史遗留 alias
+
+**自动检测新版本：** 后台请求 GitHub，新版本时主界面显示 🔔 提示。
+
+---
+
+## 安全增强
+
+| 项 | 说明 |
+|----|------|
+| DDNS 脚本权限 | `chmod 700`，仅 root 可读（含 CF Token） |
+| 防火墙卸载警告 | 清空规则会暴露主机，2 秒延迟 + 警告 |
+| pf_flush 警告 | 清空所有 NAT 规则会影响其他应用 |
+| HTTP 时间同步 | 标注未经认证，可被中间人伪造 |
+| 内核支持检测 | BBR 应用前检测内核版本和模块 |
+| 容器权限检测 | 自动识别无特权容器，sysctl 操作受限时友好提示 |
 
 ---
 
 ## 兼容性
 
-| 环境 | 支持 |
+| 特性 | 说明 |
 |------|------|
-| Debian / Ubuntu / CentOS / Rocky | ✓ 完整 |
-| Alpine Linux | ✓ 需 `apk add bash`（非 bash 自动切换 / fail-fast 提示） |
-| OpenWrt | ✓ dumb 终端兼容 |
-| LXC 容器 | ⚠ sysctl/initcwnd 受限，自动提示 |
-| OpenVZ 容器 | ⚠ tc 限速受限，自动提示 |
-| 无特权容器 | ⚠ sysctl 写入被拒，自动检测 |
-
----
-
-## 实战示例
-
-**sing-box 中转机（2GB 内存）：**
-```
-智能向导 → 4) 中转机
-→ 自动写入 64MB 缓冲 + 转发 + conntrack（1048576 连接）
-```
-
-**跨境落地机（8GB 内存 + 10Gbps）：**
-```
-手动配置 → 2) 落地机 → 8 (512MB)
-→ 512MB 大缓冲吃满带宽 + 转发参数
-```
-
-**CN2 GIA 线路落地（1GB 内存）：**
-```
-智能向导 → 6) 线路落地机
-→ 32MB 缓冲 + ADV_WIN=2（保高 BDP 接收）+ NOTSENT 极小（低延迟）+ 转发参数
-配合 initcwnd 50
-```
+| 发行版 | Debian / Ubuntu / CentOS / Alpine / OpenWrt |
+| 架构 | x86_64 / aarch64 / armv7 |
+| 服务管理 | systemd / OpenRC / SysV init |
+| 容器 | KVM / LXC / OpenVZ / 无特权容器 |
+| 终端 | 标准 / dumb（OpenWrt/tmux，`safe_clear` 兼容） |
+| Shell | **bash 必需**（Alpine: `apk add bash`，OpenWrt: `opkg install bash`；非 bash 环境自动切换 / fail-fast 提示） |
 
 ---
 
@@ -299,62 +414,60 @@ net.netfilter.nf_conntrack_tcp_timeout_time_wait = 30
 
 | 文件 | 说明 |
 |------|------|
-| `/etc/sysctl.d/99-vps-bbr.conf` | sysctl 调优配置 |
-| `/etc/sysctl.d/99-vps-bbr.conf.bak.*` | 历史备份 |
-| `/etc/systemd/system/tc-fq.service` | tc 限速自启 |
-| `/etc/systemd/system/initcwnd.service` | initcwnd 自启 |
-
----
-
-## 常用查看命令
-
-```bash
-sysctl net.ipv4.tcp_congestion_control          # 当前算法
-sysctl net.ipv4.tcp_available_congestion_control # 可用算法
-sysctl net.core.rmem_max net.core.wmem_max       # 缓冲区
-lsmod | grep tcp_bbr                              # 模块
-cat /etc/sysctl.d/99-vps-bbr.conf                 # 当前配置
-
-# 中转机查看 conntrack
-sysctl net.netfilter.nf_conntrack_max
-cat /proc/sys/net/netfilter/nf_conntrack_count    # 当前连接数
-```
-
-如果 `tcp_available_congestion_control` 没有 `bbr`，需换内核：
-
-```bash
-# Debian/Ubuntu
-apt install linux-image-amd64 && reboot
-# Alpine
-apk add linux-lts && reboot
-```
+| `/usr/local/bin/vps-tools` | 主脚本 |
+| `/usr/local/bin/v` `/V` | 快捷命令（软链接） |
+| `/etc/sysctl.d/99-vps-bbr.conf` | BBR TCP 配置 |
+| `/etc/nftables.conf` | NFT 转发配置（脚本托管） |
+| `/etc/nft-port-forward/rules.db` | NFT 转发规则数据库 |
+| `/etc/nft-port-forward/access.conf` | NFT 访问控制配置 |
+| `/etc/systemd/system/nftpf-ddns.timer` | NFT DDNS 自动刷新 timer |
+| `/root/.cf_token` | Cloudflare API Token（600） |
+| `/root/.cf_zone` | DDNS 域名/模式/TTL 配置 |
+| `/root/.cf_tg` | Telegram Bot 配置（600） |
+| `/root/ddns.sh` | DDNS 执行脚本（700） |
+| `/var/log/ddns.log` | DDNS 日志（自动轮转 500 行） |
+| `/etc/fail2ban/jail.local` | Fail2ban 用户配置 |
+| `/etc/caddy/Caddyfile` | Caddy 站点配置 |
 
 ---
 
 ## 开源地址
 
 ```
-https://github.com/chnnic/BBR-tune
-```
-
-完整 VPS 开荒脚本（含本工具及更多功能）：
-
-```
 https://github.com/chnnic/SSH-Hardening
+```
+
+```bash
+# 一行安装
+bash <(curl -fsSL https://raw.githubusercontent.com/chnnic/SSH-Hardening/refs/heads/main/SSH-Hardening.sh)
 ```
 
 ---
 
-## 版本沿革
+## 版本沿革（近期）
 
 | 版本 | 主要变更 |
 |------|---------|
-| **同步 V3.5.5** | 限速改 htb 整形 + fq pacing（多队列网卡保留 BBR pacing）；burst 随速率缩放；切换预设复位残留场景键；新增 32MB 缓冲档；修 BDP 双截断；line_landing ADV_WIN 1→2；加 bash 解释器守卫 |
-| V3.5.2 | 手动配置加场景选择前置层（中转/落地/线路落地各自调优） |
-| V3.5.1 | 场景预设注入转发 + conntrack 参数，自动 modprobe |
-| V3.5.0 | 新增 3 个场景化预设（中转/落地/线路落地） |
-| V3.4.1 | sysctl 参数精简到 15 个核心，按功能分组 |
-| V3.2.5 | 支持万兆 / 4G+ 内存（256/512/1024MB 缓冲） |
-| V3.2.0 | sysctl 逐行写入，跳过 Alpine 不支持的参数 |
-| V3.1.6 | Alpine ash 兼容 |
-| V3.0.0 | 整合 BBR 智能向导 + 三通用预设 |
+| **V3.5.5** | BBR 限速改 htb 整形 + fq pacing（多队列网卡保留 BBR pacing，旧 tbf 会废 pacing）；burst 随速率缩放；切换预设复位残留场景键；新增 32MB 缓冲档；修 BDP 双截断；line_landing ADV_WIN 1→2；UI 全面美化对齐（统一 menu_div/menu_group/menu_item，分隔线对齐 40 宽） |
+| **V3.5.4** | bash-first：脚本头部加解释器守卫（非 bash 自动切换 / fail-fast 提示）；修复 DDNS 自动创建 A/AAAA 记录时内联 JSON 引号拼接错误（改用 printf 构建，原写法发出非法 JSON 导致建记录失败） |
+| V3.5.3 | NFT 新增规则修改功能（逐项交互修改，应用失败自动回滚） |
+| V3.5.2 | BBR 手动配置加场景选择前置层（中转/落地/线路落地/通用） |
+| V3.5.1 | 场景预设注入转发参数（5 项）+ 仅中转追加 conntrack（3 项），自动 modprobe nf_conntrack |
+| V3.5.0 | 智能向导菜单分组，新增 3 个场景化预设（relay/landing/line_landing） |
+| V3.4.5 | DDNS 日志查看内部循环，按 0 立即返回 |
+| V3.4.4 | 新增 iptables 本地端口转发子菜单 |
+| V3.4.3 | NFT 菜单加安装/卸载，未安装时只显安装入口 |
+| V3.4.2 | 修复 grep -c 返回 `0\n0` 导致 integer expression 报错 |
+| V3.4.1 | BBR sysctl 精简到 15 个核心参数，按 4 组分类 |
+| **V3.4.0** | 新增 NFT 转发管理模块（替代 iptables NAT 端口转发 + 整合入站白名单） |
+| V3.3.5 | 清理 7 个死代码函数 + 提取重复的 iptables 清理逻辑 |
+| V3.3.4 | DDNS 二次校验，避免查询失败误推 Telegram 通知 |
+| V3.3.3 | less / 日志显示强制 UTF-8，避免中文乱码 |
+| V3.3.2 | DDNS 日志按行数限制（500 条） |
+| V3.2.5 | BBR 支持万兆 / 4G+ 内存（256/512/1024MB 缓冲区） |
+| V3.2.3 | 修复 DDNS 模块定义两遍导致所有修复失效的 Bug |
+| V3.2.1 | 无特权容器 sysctl 权限检测 |
+| V3.2.0 | BBR sysctl 逐行写入，跳过 Alpine 不支持的参数 |
+| V3.1.6 | Alpine ash 兼容（去除 bash 专属语法） |
+| V3.0.4 | 快捷键改用纯软链接，不写 alias，避免冲突其他脚本 |
+| V3.0.0 | 主菜单与 fork 同步，整合 BBR 智能向导 + DDNS 双栈 + Telegram |
