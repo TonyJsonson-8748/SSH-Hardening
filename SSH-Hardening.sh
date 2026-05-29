@@ -5,6 +5,21 @@
 #  功能：SSH管理 / Fail2ban / BBR TCP 调优
 # ============================================================
 
+# ── 解释器守卫：本脚本依赖 bash（数组 / [[ ]] / here-string 等）──
+# 仅用 POSIX 语法编写，确保在 ash/dash 下也能解析并 fail-fast。
+if [ -z "$BASH_VERSION" ]; then
+    if command -v bash >/dev/null 2>&1; then
+        exec bash "$0" "$@"
+    fi
+    echo "本脚本需要 bash 运行，当前 shell 不是 bash 且系统未安装 bash。"
+    echo "请先安装 bash 后重试："
+    echo "  Alpine:   apk add bash"
+    echo "  OpenWrt:  opkg update && opkg install bash"
+    echo "  Debian:   apt-get install -y bash"
+    echo "  CentOS:   yum install -y bash"
+    exit 1
+fi
+
 SSHD_CONFIG="/etc/ssh/sshd_config"
 # 优先使用 /root/.ssh/authorized_keys，兼容系统预装公钥路径
 AUTH_KEYS="${HOME}/.ssh/authorized_keys"
