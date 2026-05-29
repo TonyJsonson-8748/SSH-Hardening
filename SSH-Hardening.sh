@@ -71,9 +71,9 @@ print(sum(2 if unicodedata.east_asian_width(c) in ('W','F') else 1 for c in s))
 BOX_W=42   # 总宽含两侧 ║
 
 # 顶/底/分隔线
-box_top() { printf "${CYAN}"; printf '═%.0s' $(seq 1 $((BOX_W-2))); printf "${NC}\n"; }
-box_bot() { printf "${CYAN}"; printf '═%.0s' $(seq 1 $((BOX_W-2))); printf "${NC}\n"; }
-box_sep() { printf "${CYAN}"; printf '─%.0s' $(seq 1 $((BOX_W-2))); printf "${NC}\n"; }
+box_top() { printf "${BOLD}${CYAN}"; printf '═%.0s' $(seq 1 $((BOX_W-2))); printf "${NC}\n"; }
+box_bot() { printf "${BOLD}${CYAN}"; printf '═%.0s' $(seq 1 $((BOX_W-2))); printf "${NC}\n"; }
+box_sep() { printf "${DIM}${CYAN}"; printf '─%.0s' $(seq 1 $((BOX_W-2))); printf "${NC}\n"; }
 
 # 居中标题行（只传纯文本，自动居中）
 box_title() {
@@ -100,6 +100,18 @@ box_line() {
 # 空行
 box_empty() {
     echo ""
+}
+
+# ── 内层分隔线（与主框线同宽对齐，dim 青，统一替代各处 seq 1 38）──
+menu_div() { printf "${DIM}${CYAN}"; printf '─%.0s' $(seq 1 $((BOX_W-2))); printf "${NC}\n"; }
+
+# ── 段标题（❯ 前缀，统一替代 [xxx] 方括号风格）──
+menu_group() { echo -e "  ${CYAN}${BOLD}❯ ${1}${NC}"; }
+
+# ── 菜单项（统一缩进与配色）。用法: menu_item "1" "SSH 工具集" [颜色]──
+menu_item() {
+    local KEY="$1" LABEL="$2" COL="${3:-$GREEN}"
+    echo -e "    ${COL}${BOLD}${KEY}${NC}) ${LABEL}"
 }
 
 
@@ -166,7 +178,7 @@ print_header() {
     echo ""
     box_top
     box_title "VPS 开荒脚本 V3.5.4"
-    box_line "  ··银趴火山帮··" "  ${DIM}··银趴火山帮··${NC}"
+    box_title "· · 银趴火山帮 · ·"
     box_sep
     box_title "$1"
     box_bot
@@ -448,10 +460,10 @@ add_key() {
     echo -e "  请粘贴公钥内容（以 ssh-ed25519 / ssh-rsa 等开头）"
     echo -e "  粘贴完成后按 ${BOLD}Enter${NC}，再按 ${BOLD}Ctrl+D${NC} 结束输入："
     echo ""
-    echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+    menu_div
     local PUBKEY_INPUT
     PUBKEY_INPUT=$(cat)
-    echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+    menu_div
     echo ""
 
     if [ -z "$PUBKEY_INPUT" ]; then
@@ -489,7 +501,7 @@ delete_key() {
         return
     fi
 
-    echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+    menu_div
     read -rp "  请输入要删除的编号（直接回车取消）: " DEL_NUM
     [ -z "$DEL_NUM" ] && { warn "已取消。"; return; }
 
@@ -579,9 +591,9 @@ generate_key() {
     echo ""
     echo -e "  ${BOLD}${GREEN}└────────────────────────────────────────┘${NC}"
     echo ""
-    echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+    menu_div
     warn "私钥请立即复制到本地保存，关闭后无法找回！"
-    echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+    menu_div
     echo ""
 
     read -rp "  是否将公钥添加到本服务器？(Y/n，默认Y): " ADD_CONFIRM
@@ -619,12 +631,12 @@ set_login_mode() {
     echo -e "  PubkeyAuthentication   : ${BOLD}${CURRENT_PUBKEY:-未设置}${NC}"
     echo -e "  PermitRootLogin        : ${BOLD}${CURRENT_ROOT:-未设置}${NC}"
     echo ""
-    echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+    menu_div
     echo -e "  ${GREEN}1${NC}) 仅密钥登录（禁用密码）    ${YELLOW}[推荐]${NC}"
     echo -e "  ${GREEN}2${NC}) 密码 + 密钥均可登录"
     echo -e "  ${GREEN}3${NC}) 仅密码登录（禁用密钥）    ${RED}[不推荐]${NC}"
     echo -e "  ${GREEN}0${NC}) 返回"
-    echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+    menu_div
     echo ""
     read -rp "  请选择 [0-3]: " MODE
     echo ""
@@ -676,9 +688,9 @@ change_port() {
     CURRENT_PORT=$(get_config "Port")
     echo -e "  当前端口：${BOLD}${CURRENT_PORT:-22}${NC}"
     echo ""
-    echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+    menu_div
     read -rp "  请输入新端口号（直接回车取消）: " INPUT_PORT
-    echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+    menu_div
     echo ""
 
     [ -z "$INPUT_PORT" ] && { warn "已取消。"; return; }
@@ -716,13 +728,13 @@ change_port() {
     apply_and_restart || return
 
     echo ""
-    echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+    menu_div
     warn "请【保持当前连接不断开】，新开终端测试新端口："
     echo ""
     echo -e "     ${BOLD}ssh -p $INPUT_PORT 用户名@服务器IP${NC}"
     echo ""
     warn "确认登录成功后再关闭当前会话！"
-    echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+    menu_div
 }
 
 
@@ -930,7 +942,7 @@ f2b_config_params() {
     echo -e "  时间窗口  (findtime) : ${BOLD}${CUR_FIND}${NC}  （$(f2b_seconds_to_human "$_FIND_S")）"
     echo -e "  最大重试  (maxretry) : ${BOLD}${CUR_MAX}${NC} 次"
     echo ""
-    echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+    menu_div
     echo -e "  ${GREEN}1${NC}) 修改封禁时长   (bantime)"
     echo -e "  ${GREEN}2${NC}) 修改时间窗口   (findtime)"
     echo -e "  ${GREEN}3${NC}) 修改最大重试次数 (maxretry)"
@@ -938,7 +950,7 @@ f2b_config_params() {
     echo -e "  ${GREEN}5${NC}) 快速预设"
     echo -e "  ${RED}0${NC}) 返回"
     echo -e "  ${RED}00${NC}) 退出脚本"
-    echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+    menu_div
     echo ""
     read -rp "  请选择 [0-5]: " CH
 
@@ -1146,11 +1158,11 @@ fail2ban_menu() {
             echo ""
             echo -e "  ${DIM}Fail2ban 是一个防暴力破解工具，可自动封禁恶意 IP${NC}"
             echo ""
-            echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+            menu_div
             echo -e "  ${GREEN}1${NC}) 立即安装 Fail2ban"
             echo -e "  ${RED}0${NC}) 返回主菜单"
             echo -e "  ${RED}00${NC}) 退出脚本"
-            echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+            menu_div
             echo ""
             read -rp "  请选择 [0-1]: " CHOICE
             case "$CHOICE" in
@@ -1182,7 +1194,7 @@ fail2ban_menu() {
         echo ""
         box_top
         box_title "VPS 开荒脚本 V3.5.4"
-        box_line "  ··银趴火山帮··" "  ${DIM}··银趴火山帮··${NC}"
+        box_title "· · 银趴火山帮 · ·"
         box_sep
         box_title "Fail2ban 管理"
         box_sep
@@ -1304,7 +1316,7 @@ f2b_unban() {
             i=$((i+1))
         done
         echo ""
-        echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+        menu_div
         echo -e "  ${DIM}输入 IP 地址解封，直接回车返回上级${NC}"
         read -rp "  请输入 IP: " UNBAN_IP
         [ -z "$UNBAN_IP" ] && return
@@ -1323,7 +1335,7 @@ f2b_unban() {
 f2b_logs() {
     print_header "Fail2ban 实时日志"
     echo -e "  ${DIM}显示最近 30 条，按 Ctrl+C 退出实时模式${NC}"
-    echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+    menu_div
     echo ""
 
     local LOG_FILE="/var/log/fail2ban.log"
@@ -1344,7 +1356,7 @@ f2b_logs() {
                 fi
             done
         echo ""
-        echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+        menu_div
         echo -e "  ${DIM}按 Enter 开启实时跟踪（Ctrl+C 退出）...${NC}"
         read -r _
         journalctl -u fail2ban -f 2>/dev/null
@@ -1361,7 +1373,7 @@ f2b_logs() {
                 fi
             done
         echo ""
-        echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+        menu_div
         echo -e "  ${DIM}按 Enter 开启实时跟踪（Ctrl+C 退出）...${NC}"
         read -r _
         tail -f "$LOG_FILE"             | while IFS= read -r line; do
@@ -1816,7 +1828,7 @@ bbr_menu_manual() {
     print_header "BBR 手动配置 — 选择用途"
     echo -e "  检测到系统内存：${BOLD}${MEM_MB}MB${NC}"
     echo ""
-    echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+    menu_div
     echo -e "  ${BOLD}请选择 VPS 用途（决定转发/conntrack/窗口参数）${NC}"
     echo ""
     echo -e "  ${GREEN}1${NC}) 中转机      — 双向转发/大并发（如 sing-box 中转）"
@@ -1824,7 +1836,7 @@ bbr_menu_manual() {
     echo -e "  ${GREEN}3${NC}) 线路落地机  — CN2/IPLC/直连用户/低延迟优先"
     echo -e "  ${GREEN}4${NC}) 通用 / 单机 — 普通 VPS（网页/SSH/服务）"
     echo -e "  ${RED}0${NC}) 返回   ${RED}00${NC}) 退出脚本"
-    echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+    menu_div
     echo ""
     read -rp "  请选择 [0-4]: " SCENE
     local PROFILE SCENE_LABEL
@@ -1873,7 +1885,7 @@ bbr_menu_manual() {
     echo -e "  场景：${BOLD}${SCENE_LABEL}${NC}    内存：${BOLD}${MEM_MB}MB${NC}"
     echo -e "  ${YELLOW}${RECOMMEND}${NC}"
     echo ""
-    echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+    menu_div
     echo -e "  ${GREEN}1${NC}) 12 MB    — 低带宽 / 低延迟"
     echo -e "  ${GREEN}2${NC}) 16 MB    — 小内存保守"
     echo -e "  ${GREEN}3${NC}) 20 MB    — 中低带宽"
@@ -1884,7 +1896,7 @@ bbr_menu_manual() {
     echo -e "  ${GREEN}8${NC}) 512 MB   — 万兆 / 长距离（10G/100ms）"
     echo -e "  ${GREEN}9${NC}) 1024 MB  — 极限（10G+/200ms+，需 8G+ 内存）"
     echo -e "  ${RED}0${NC}) 返回   ${RED}00${NC}) 退出脚本"
-    echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+    menu_div
     echo ""
     read -rp "  请选择 [0-9]: " CH
 
@@ -1982,7 +1994,7 @@ bbr_menu_tc() {
 
     echo -e "  网卡：${BOLD}${DEV}${NC}  类型：${BOLD}$([ "$IS_MQ" -eq 1 ] && echo "mq多队列" || echo "单队列")${NC}  当前限速：${BOLD}${CUR}${NC}"
     echo ""
-    echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+    menu_div
     echo -e "  ${GREEN}1${NC}) 200 Mbps"
     echo -e "  ${GREEN}2${NC}) 500 Mbps"
     echo -e "  ${GREEN}3${NC}) 780 Mbps"
@@ -1992,7 +2004,7 @@ bbr_menu_tc() {
     echo -e "  ${YELLOW}7${NC}) 取消限速"
     echo -e "  ${RED}0${NC}) 返回"
     echo -e "  ${RED}00${NC}) 退出脚本"
-    echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+    menu_div
     echo ""
     read -rp "  请选择 [0-7]: " CH
 
@@ -2071,14 +2083,14 @@ bbr_menu_initcwnd() {
 
     echo -e "  网卡：${BOLD}${DEV}${NC}  网关：${BOLD}${GW}${NC}  当前 initcwnd：${BOLD}${CUR}${NC}"
     echo ""
-    echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+    menu_div
     echo -e "  ${GREEN}1${NC}) 10   — 默认保守"
     echo -e "  ${GREEN}2${NC}) 50   — 跨国高延迟推荐"
     echo -e "  ${GREEN}3${NC}) 100  — 激进（可能丢包）"
     echo -e "  ${GREEN}4${NC}) 自定义输入"
     echo -e "  ${RED}0${NC}) 返回"
     echo -e "  ${RED}00${NC}) 退出脚本"
-    echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+    menu_div
     echo ""
     read -rp "  请选择 [0-4]: " CH
 
@@ -2238,23 +2250,23 @@ bbr_smart_wizard() {
     KERNEL=$(uname -r 2>/dev/null || echo "未知")
     CUR_CC=$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null || echo "未知")
 
-    echo -e "  ${BOLD}当前环境${NC}"
+    menu_group "当前环境"
     echo -e "  内存：${GREEN}${MEM_MB}MB${NC}  内核：${GREEN}${KERNEL}${NC}  拥塞控制：${GREEN}${CUR_CC}${NC}"
     echo ""
-    echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
-    echo -e "  ${BOLD}[通用预设]${NC}"
+    menu_div
+    menu_group "通用预设"
     echo -e "  ${GREEN}1${NC}) 均衡跨境    — 默认推荐，适合大多数 VPS"
     echo -e "  ${GREEN}2${NC}) 低延迟交互  — SSH/游戏/远程桌面"
     echo -e "  ${GREEN}3${NC}) 高吞吐传输  — 大带宽/下载上传优先"
     echo ""
-    echo -e "  ${BOLD}[场景化预设]${NC}"
+    menu_group "场景化预设"
     echo -e "  ${GREEN}4${NC}) 中转机      — 双向转发/大并发（如 sing-box 中转）"
     echo -e "  ${GREEN}5${NC}) 落地机      — 跨境上行/大缓冲（落地代理出口）"
     echo -e "  ${GREEN}6${NC}) 线路落地机  — CN2/IPLC/直连用户/低延迟优先"
     echo ""
     echo -e "  ${GREEN}7${NC}) 自动推荐    — 根据当前内存智能选择"
     echo -e "  ${RED}0${NC}) 返回         ${RED}00${NC}) 退出脚本"
-    echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+    menu_div
     echo ""
     read -rp "  请选择 [0-7]: " CH
 
@@ -2359,16 +2371,16 @@ bbr_menu() {
             echo -e "  ${DIM}请联系 VPS 提供商开启 sysctl 权限，或使用 KVM/独立VPS${NC}"
         fi
         echo ""
-        echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
-        echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+        menu_div
+        menu_div
         echo -e "  ${GREEN}1${NC}) 智能向导（推荐）"
         echo -e "  ${GREEN}2${NC}) 自动配置（内存/延迟/带宽）"
         echo -e "  ${GREEN}3${NC}) 手动选择缓冲区大小"
-        echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+        menu_div
         echo -e "  ${GREEN}4${NC}) 限速设置（tc）   ${GREEN}5${NC}) initcwnd 设置"
         echo -e "  ${GREEN}6${NC}) 备份 TCP 配置    ${GREEN}7${NC}) 还原 TCP 配置"
         echo -e "  ${RED}0${NC}) 返回主菜单        ${RED}00${NC}) 退出脚本"
-        echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+        menu_div
         echo ""
         read -rp "  请选择 [0-7]: " CH
 
@@ -2471,7 +2483,7 @@ fw_install() {
 
 ufw_show_rules() {
     print_header "防火墙规则 — ufw"
-    echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+    menu_div
     ufw status numbered 2>/dev/null | while IFS= read -r line; do
         if echo "$line" | grep -qE '^\['; then
             echo -e "  ${GREEN}${line}${NC}"
@@ -2479,7 +2491,7 @@ ufw_show_rules() {
             echo -e "  ${line}"
         fi
     done
-    echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+    menu_div
 }
 
 ufw_add_port() {
@@ -2505,7 +2517,7 @@ ufw_del_port() {
             echo -e "  ${YELLOW}${line}${NC}"
         done
         echo ""
-        echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+        menu_div
         echo -e "  ${DIM}输入编号删除，直接回车返回上级${NC}"
         read -rp "  请输入规则编号: " NUM
         [ -z "$NUM" ] && return
@@ -2538,7 +2550,7 @@ ufw_del_ip() {
             echo -e "  ${YELLOW}${line}${NC}"
         done
         echo ""
-        echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+        menu_div
         echo -e "  ${DIM}输入编号删除，直接回车返回上级${NC}"
         read -rp "  请输入规则编号: " NUM
         [ -z "$NUM" ] && return
@@ -2572,7 +2584,7 @@ ufw_menu() {
         print_header "防火墙管理 — ufw"
         echo -e "  服务状态: ${ST_COLOR}${BOLD}${STATUS}${NC}"
         echo ""
-        echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+        menu_div
         if [ "$STATUS" = "active" ]; then
             echo -e "  ${YELLOW}1${NC}) 关闭防火墙"
         else
@@ -2584,7 +2596,7 @@ ufw_menu() {
         echo -e "  ${GREEN}8${NC}) 一键放行常用端口"
         echo -e "  ${CYAN}u${NC}) 安装/更新        ${YELLOW}9${NC}) 卸载 ufw"
         echo -e "  ${RED}0${NC}) 返回              ${RED}00${NC}) 退出脚本"
-        echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+        menu_div
         echo ""
         read -rp "  请选择 [0-9/u]: " CH
 
@@ -2649,7 +2661,7 @@ fwd_show_rules() {
     print_header "防火墙规则 — firewalld"
     local ZONE; ZONE=$(firewall-cmd --get-default-zone 2>/dev/null)
     echo -e "  默认 Zone：${BOLD}${ZONE}${NC}"
-    echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+    menu_div
     echo -e "  ${BOLD}已开放端口：${NC}"
     firewall-cmd --list-ports 2>/dev/null | tr ' ' '\n' | while read -r p; do
         [ -n "$p" ] && echo -e "    ${GREEN}▸${NC} $p"
@@ -2664,7 +2676,7 @@ fwd_show_rules() {
     firewall-cmd --list-rich-rules 2>/dev/null | grep "reject\|drop" | while IFS= read -r r; do
         echo -e "    ${RED}▸${NC} $r"
     done
-    echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+    menu_div
 }
 
 fwd_add_port() {
@@ -2727,7 +2739,7 @@ fwd_del_ip() {
             i=$((i+1))
         done <<< "$RULES"
         echo ""
-        echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+        menu_div
         echo -e "  ${DIM}输入 IP 地址删除，直接回车返回上级${NC}"
         read -rp "  请输入 IP: " IP
         [ -z "$IP" ] && return
@@ -2764,7 +2776,7 @@ fwd_menu() {
         print_header "防火墙管理 — firewalld"
         echo -e "  服务状态: ${ST_COLOR}${BOLD}${STATUS}${NC}"
         echo ""
-        echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+        menu_div
         if [ "$STATUS" = "active" ]; then
             echo -e "  ${YELLOW}1${NC}) 关闭防火墙"
         else
@@ -2780,7 +2792,7 @@ fwd_menu() {
         echo -e "  ${YELLOW}9${NC}) 卸载 firewalld"
         echo -e "  ${RED}0${NC}) 返回"
         echo -e "  ${RED}00${NC}) 退出脚本"
-        echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+        menu_div
         echo ""
         read -rp "  请选择 [0-9]: " CH
 
@@ -2837,13 +2849,13 @@ firewall_menu() {
             print_header "防火墙管理"
             warn "未检测到已安装的防火墙！"
             echo ""
-            echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+            menu_div
             echo -e "  请选择要安装的防火墙："
             echo -e "  ${GREEN}1${NC}) ufw       （推荐，Ubuntu/Debian 常用）"
             echo -e "  ${GREEN}2${NC}) firewalld （CentOS/Rocky/Fedora 常用）"
             echo -e "  ${RED}0${NC}) 返回主菜单"
             echo -e "  ${RED}00${NC}) 退出脚本"
-            echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+            menu_div
             echo ""
             read -rp "  请选择 [0-2]: " CH
             case "$CH" in
@@ -2881,12 +2893,12 @@ ssh_tools_menu() {
         box_line "  密码登录 ${CUR_PWD:-未设置}  |  公钥认证 ${CUR_PUBKEY:-未设置}" \
                  "  密码登录 ${BOLD}${CUR_PWD:-未设置}${NC}  |  公钥认证 ${BOLD}${CUR_PUBKEY:-未设置}${NC}"
         echo ""
-        echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+        menu_div
         echo -e "  ${GREEN}1${NC}) 查看已有公钥     ${GREEN}2${NC}) 添加公钥"
         echo -e "  ${GREEN}3${NC}) 删除公钥         ${GREEN}4${NC}) 生成密钥对"
         echo -e "  ${GREEN}5${NC}) 设置登录方式     ${GREEN}6${NC}) 修改 SSH 端口"
         echo -e "  ${RED}0${NC}) 返回主菜单        ${RED}00${NC}) 退出脚本"
-        echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+        menu_div
         echo ""
         read -rp "  请选择 [0-6]: " CHOICE
 
@@ -2987,7 +2999,7 @@ dns_menu() {
         [ "$HAS_V6" = "true" ] || echo -e "  ${DIM}（未检测到 IPv6，仅显示 IPv4 DNS 选项）${NC}"
         echo ""
 
-        echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+        menu_div
         echo -e "  ${BOLD}国外 DNS：${NC}"
         if [ "$HAS_V6" = "true" ]; then
             echo -e "  ${GREEN}1${NC}) Cloudflare  v4: 1.1.1.1 / 1.0.0.1"
@@ -3000,7 +3012,7 @@ dns_menu() {
             echo -e "  ${GREEN}2${NC}) Google      8.8.8.8 / 8.8.4.4"
             echo -e "  ${GREEN}3${NC}) 混合推荐    1.1.1.1 + 8.8.8.8"
         fi
-        echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+        menu_div
         echo -e "  ${BOLD}国内 DNS：${NC}"
         if [ "$HAS_V6" = "true" ]; then
             echo -e "  ${GREEN}4${NC}) 阿里云      v4: 223.5.5.5 / 223.6.6.6"
@@ -3012,11 +3024,11 @@ dns_menu() {
             echo -e "  ${GREEN}5${NC}) 腾讯 DNSpod 119.29.29.29 / 183.60.83.19"
             echo -e "  ${GREEN}6${NC}) 114 DNS     114.114.114.114 / 114.114.115.115"
         fi
-        echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+        menu_div
         echo -e "  ${GREEN}7${NC}) 手动编辑 DNS 配置"
         echo -e "  ${RED}0${NC}) 返回"
         echo -e "  ${RED}00${NC}) 退出脚本"
-        echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+        menu_div
         echo ""
         read -rp "  请选择 [0-7]: " CH
 
@@ -3113,7 +3125,7 @@ mirror_menu() {
         print_header "系统换源"
         echo -e "  检测到系统：${BOLD}${OS_ID} ${OS_VER}${NC}"
         echo ""
-        echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+        menu_div
 
         case "$OS_ID" in
             ubuntu)
@@ -3122,10 +3134,10 @@ mirror_menu() {
                 echo -e "  ${GREEN}3${NC}) 中国大陆【清华】      mirrors.tuna.tsinghua.edu.cn"
                 echo -e "  ${GREEN}4${NC}) 中国大陆【中科大】    mirrors.ustc.edu.cn"
                 echo -e "  ${GREEN}5${NC}) 海外地区【官方源】    archive.ubuntu.com"
-                echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+                menu_div
                 echo -e "  ${RED}0${NC}) 返回"
                 echo -e "  ${RED}00${NC}) 退出脚本"
-                echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+                menu_div
                 echo ""
                 read -rp "  请选择 [0-5]: " CH
                 case "$CH" in
@@ -3145,10 +3157,10 @@ mirror_menu() {
                 echo -e "  ${GREEN}3${NC}) 中国大陆【清华】      mirrors.tuna.tsinghua.edu.cn"
                 echo -e "  ${GREEN}4${NC}) 中国大陆【中科大】    mirrors.ustc.edu.cn"
                 echo -e "  ${GREEN}5${NC}) 海外地区【官方源】    deb.debian.org"
-                echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+                menu_div
                 echo -e "  ${RED}0${NC}) 返回"
                 echo -e "  ${RED}00${NC}) 退出脚本"
-                echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+                menu_div
                 echo ""
                 read -rp "  请选择 [0-5]: " CH
                 case "$CH" in
@@ -3166,10 +3178,10 @@ mirror_menu() {
                 echo -e "  ${GREEN}1${NC}) 中国大陆【阿里云】"
                 echo -e "  ${GREEN}2${NC}) 中国大陆【清华】"
                 echo -e "  ${GREEN}3${NC}) 海外地区【默认】"
-                echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+                menu_div
                 echo -e "  ${RED}0${NC}) 返回"
                 echo -e "  ${RED}00${NC}) 退出脚本"
-                echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+                menu_div
                 echo ""
                 read -rp "  请选择 [0-3]: " CH
                 case "$CH" in
@@ -3361,12 +3373,12 @@ ip_config_menu() {
         echo -e "  IPv6 状态：$V6_STATUS"
         echo -e "  优先级：$V4_PREF"
         echo ""
-        echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+        menu_div
         echo -e "  ${GREEN}1${NC}) 查看IPv4/IPv6状态"
         echo -e "  ${GREEN}2${NC}) 设置IPv4优先      ${GREEN}3${NC}) 关闭 IPv6"
         echo -e "  ${GREEN}4${NC}) 开启 IPv6"
         echo -e "  ${RED}0${NC}) 返回              ${RED}00${NC}) 退出脚本"
-        echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+        menu_div
         echo ""
         read -rp "  请选择 [0-4]: " CH
 
@@ -3554,7 +3566,7 @@ caddy_list_sites() {
     print_header "当前 Caddy 站点"
     if [ ! -f "$CADDYFILE" ]; then warn "Caddyfile 不存在"; return; fi
 
-    echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+    menu_div
     local i=0
     while IFS= read -r line; do
         echo "$line" | grep -qE '^\s*#|^\s*$' && continue
@@ -3571,7 +3583,7 @@ caddy_list_sites() {
         fi
     done < "$CADDYFILE"
     [ "$i" -eq 0 ] && echo -e "  ${YELLOW}暂无站点配置${NC}\n"
-    echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+    menu_div
 }
 
 # ── 添加反向代理站点 ──────────────────────────────────────
@@ -3631,11 +3643,11 @@ http://%s {
     fi
 
     echo ""
-    echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+    menu_div
     echo -e "  域名 : ${BOLD}${DOMAIN}${NC}"
     echo -e "  后端 : ${BOLD}${BACKEND}${NC}"
     echo -e "  SSL  : ${SSL_LABEL}"
-    echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+    menu_div
     echo ""
     read -rp "  确认添加？(Y/n，默认Y): " CONFIRM
     [ -z "${CONFIRM}" ] && CONFIRM="y"
@@ -3695,11 +3707,11 @@ http://%s {
     fi
 
     echo ""
-    echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+    menu_div
     echo -e "  域名 : ${BOLD}${DOMAIN}${NC}"
     echo -e "  目录 : ${BOLD}${WEBROOT}${NC}"
     echo -e "  SSL  : ${SSL_LABEL}"
-    echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+    menu_div
     echo ""
     read -rp "  确认添加？(Y/n，默认Y): " CONFIRM
     [ -z "${CONFIRM}" ] && CONFIRM="y"
@@ -3734,7 +3746,7 @@ caddy_del_site() {
         i=$((i+1))
     done
     echo ""
-    echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+    menu_div
     read -rp "  请输入编号删除（直接回车取消）: " NUM
     [ -z "$NUM" ] && { warn "已取消"; return; }
     if ! echo "$NUM" | grep -qE '^[0-9]+$' || [ "$NUM" -lt 1 ] || [ "$NUM" -gt ${#SITES[@]} ]; then
@@ -3795,14 +3807,14 @@ caddy_ssl_status() {
     fi
 
     echo -e "  证书目录：${DIM}${CERT_DIR}${NC}"
-    echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+    menu_div
     find "$CERT_DIR" -name "*.crt" 2>/dev/null | while read -r cert; do
         local DN; DN=$(basename "$(dirname "$cert")")
         local EXP; EXP=$(openssl x509 -enddate -noout -in "$cert" 2>/dev/null | cut -d= -f2)
         echo -e "  ${GREEN}▸${NC} ${BOLD}${DN}${NC}"
         [ -n "$EXP" ] && echo -e "    ${DIM}到期：${NC}${EXP}"
     done
-    echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+    menu_div
 }
 
 # ── 查看访问日志 ──────────────────────────────────────────
@@ -3835,7 +3847,7 @@ caddy_view_logs() {
     fi
 
     echo -e "  ${DIM}${LOG_FILE}${NC}"
-    echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+    menu_div
     echo ""
     tail -n 30 "$LOG_FILE" 2>/dev/null | while IFS= read -r line; do
         local STATUS; STATUS=$(echo "$line" | python3 -c \
@@ -3873,7 +3885,7 @@ except: print('')" 2>/dev/null)
         fi
     done
     echo ""
-    echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+    menu_div
     echo -e "  ${GREEN}1${NC}) 开启实时跟踪（Ctrl+C 停止返回菜单）"
     echo -e "  ${RED}0${NC}) 返回"
     echo ""
@@ -3917,11 +3929,11 @@ caddy_menu() {
             echo ""
             echo -e "  ${DIM}Caddy 是一个自动 HTTPS 的现代 Web 服务器，支持反向代理和静态托管${NC}"
             echo ""
-            echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+            menu_div
             echo -e "  ${GREEN}1${NC}) 立即安装 Caddy"
             echo -e "  ${RED}0${NC}) 返回"
             echo -e "  ${RED}00${NC}) 退出脚本"
-            echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+            menu_div
             echo ""
             read -rp "  请选择 [0-1]: " CH
             case "$CH" in
@@ -3938,8 +3950,8 @@ caddy_menu() {
 
         echo -e "  服务: ${C_COLOR}${BOLD}${C_ST}${NC}  版本: ${BOLD}${C_VER:-未知}${NC}  站点数: ${BOLD}${SITE_COUNT}${NC}"
         echo ""
-        echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
-        echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+        menu_div
+        menu_div
         echo -e "  ${GREEN}1${NC}) 查看站点         ${GREEN}2${NC}) 添加反向代理"
         echo -e "  ${GREEN}3${NC}) 添加静态网站     ${GREEN}4${NC}) 删除站点"
         echo -e "  ${GREEN}5${NC}) SSL证书状态      ${GREEN}6${NC}) 查看日志"
@@ -3951,7 +3963,7 @@ caddy_menu() {
         fi
         echo -e "  ${CYAN}u${NC}) 安装/更新        ${YELLOW}d${NC}) 卸载 Caddy"
         echo -e "  ${RED}0${NC}) 返回              ${RED}00${NC}) 退出脚本"
-        echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+        menu_div
         echo ""
         read -rp "  请选择: " CH
 
@@ -4022,12 +4034,12 @@ timesync_menu() {
         echo -e "  当前时间：${BOLD}${CUR_TIME}${NC}  ${DIM}${CUR_DATE}${NC}"
         echo -e "  NTP状态 ：${NTP_STATUS}"
         echo ""
-        echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+        menu_div
         echo -e "  ${GREEN}1${NC}) 强制同步时间"
         echo -e "  ${GREEN}2${NC}) 设置北京时区      ${GREEN}3${NC}) 一键同步+北京时区"
         echo -e "  ${GREEN}4${NC}) 设置其他时区      ${GREEN}5${NC}) 开启NTP自动同步"
         echo -e "  ${RED}0${NC}) 返回              ${RED}00${NC}) 退出脚本"
-        echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+        menu_div
         echo ""
         read -rp "  请选择 [0-5]: " CH
 
@@ -4306,7 +4318,7 @@ swap_create() {
 
     echo -e "  推荐大小：${GREEN}${REC_SIZE}MB${NC}（基于当前内存 ${MEM_MB}MB）"
     echo ""
-    echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+    menu_div
     echo -e "  ${GREEN}1${NC}) 512MB"
     echo -e "  ${GREEN}2${NC}) 1GB   (1024MB)"
     echo -e "  ${GREEN}3${NC}) 2GB   (2048MB)  ${YELLOW}[推荐]${NC}"
@@ -4314,7 +4326,7 @@ swap_create() {
     echo -e "  ${GREEN}5${NC}) 自定义大小（MB）"
     echo -e "  ${RED}0${NC}) 返回"
     echo -e "  ${RED}00${NC}) 退出脚本"
-    echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+    menu_div
     echo ""
     read -rp "  请选择 [0-5]: " CH
 
@@ -4408,7 +4420,7 @@ swap_delete() {
     done <<< "$SWAPS"
 
     echo ""
-    echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+    menu_div
     echo -e "  ${DIM}输入编号删除，直接回车取消${NC}"
     read -rp "  请输入编号: " NUM
     [ -z "$NUM" ] && { warn "已取消"; return; }
@@ -4490,11 +4502,11 @@ swap_menu() {
     while true; do
         print_header "Swap 管理"
         swap_show_status
-        echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+        menu_div
         echo -e "  ${GREEN}1${NC}) 创建/更换 Swap   ${GREEN}2${NC}) 删除 Swap"
         echo -e "  ${GREEN}3${NC}) 设置 Swappiness"
         echo -e "  ${RED}0${NC}) 返回              ${RED}00${NC}) 退出脚本"
-        echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+        menu_div
         echo ""
         read -rp "  请选择 [0-3]: " CH
 
@@ -4561,10 +4573,10 @@ self_install() {
     local WROTE_ALIAS=false
 
     echo ""
-    echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+    menu_div
     info "安装完成！新终端直接输入 ${BOLD}v${NC} 即可启动"
     echo -e "  ${DIM}软链接已创建，无需 source，新终端直接可用${NC}"
-    echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+    menu_div
 }
 
 # ── 强制从 GitHub 更新脚本 ────────────────────────────────
@@ -4681,7 +4693,7 @@ self_check_first_run() {
     echo ""
     box_top
     box_title "VPS 开荒脚本 V3.5.4"
-    box_line "  ··银趴火山帮··" "  ${DIM}··银趴火山帮··${NC}"
+    box_title "· · 银趴火山帮 · ·"
     box_sep
     box_title "首次运行检测"
     box_bot
@@ -4689,10 +4701,10 @@ self_check_first_run() {
     echo -e "  ${YELLOW}检测到脚本未安装到本地${NC}"
     echo -e "  安装后可随时输入 ${BOLD}v${NC} 快速启动"
     echo ""
-    echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+    menu_div
     echo -e "  ${GREEN}1${NC}) 立即安装（推荐）"
     echo -e "  ${GREEN}0${NC}) 跳过，直接进入"
-    echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+    menu_div
     echo ""
     read -rp "  请选择 [0-1]: " CH
     case "$CH" in
@@ -4726,12 +4738,12 @@ self_manage_menu() {
         fi
         echo -e "  快捷键 v：${BOLD}$([ "$HAS_CMD" = true ] && echo "${GREEN}已设置${NC}" || echo "${YELLOW}未设置${NC}")${NC}"
         echo ""
-        echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+        menu_div
         echo -e "  ${GREEN}1${NC}) 安装脚本 + 设置快捷键 v"
         echo -e "  ${GREEN}2${NC}) 从 GitHub 更新最新版"
         echo -e "  ${YELLOW}3${NC}) 删除本地脚本和快捷键"
         echo -e "  ${RED}0${NC}) 返回              ${RED}00${NC}) 退出脚本"
-        echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+        menu_div
         echo ""
         read -rp "  请选择 [0-3]: " CH
 
@@ -5639,11 +5651,11 @@ nft_access_menu() {
         echo -e "  当前模式: ${mode_color}${BOLD}${mode_label}${NC}    名单数: ${BOLD}${count}${NC}"
         [ -n "$v4" ] && echo -e "  IPv4: ${BOLD}${v4}${NC}"
         [ -n "$v6" ] && echo -e "  IPv6: ${BOLD}${v6}${NC}"
-        echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+        menu_div
         echo -e "  ${DIM}白名单：只允许名单内 IP 访问转发端口${NC}"
         echo -e "  ${DIM}黑名单：拒绝名单内 IP 访问转发端口${NC}"
         echo -e "  ${DIM}仅影响 NFT 转发端口，不影响 SSH 等其他服务${NC}"
-        echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+        menu_div
         echo -e "  ${GREEN}1${NC}) 启用白名单    ${GREEN}2${NC}) 启用黑名单"
         echo -e "  ${YELLOW}3${NC}) 关闭访问控制"
         echo -e "  ${RED}0${NC}) 返回   ${RED}00${NC}) 退出脚本"
@@ -5858,11 +5870,11 @@ iptpf_menu() {
         echo -e "  当前规则数：${BOLD}${count}${NC}"
 
         if [ "$count" -gt 0 ]; then
-            echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+            menu_div
             iptpf_list
         fi
 
-        echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+        menu_div
         echo -e "  ${GREEN}1${NC}) 添加本地端口转发"
         echo -e "  ${YELLOW}2${NC}) 删除指定规则"
         echo -e "  ${YELLOW}3${NC}) 清空所有规则"
@@ -5919,7 +5931,7 @@ nft_menu() {
 
         # 显示规则列表（不超过 10 条）
         if [ "$rule_count" -gt 0 ]; then
-            echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+            menu_div
             echo -e "  ${DIM}当前规则：${NC}"
             local shown=0
             while IFS='|' read -r id f lip ls le ttype thost tip ts te mode; do
@@ -5930,12 +5942,12 @@ nft_menu() {
             done < "$NFT_RULES_FILE"
         fi
 
-        echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+        menu_div
         if command -v nft &>/dev/null; then
             echo -e "  ${GREEN}1${NC}) 添加单端口转发     ${GREEN}2${NC}) 添加端口段转发"
             echo -e "  ${GREEN}3${NC}) 查看所有规则       ${GREEN}e${NC}) 修改规则"
             echo -e "  ${YELLOW}4${NC}) 删除规则           ${YELLOW}5${NC}) 清空所有规则"
-            echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+            menu_div
             echo -e "  ${GREEN}6${NC}) 立即刷新 DDNS"
             if [ "$timer_st" = "active" ]; then
                 echo -e "  ${YELLOW}7${NC}) 关闭 DDNS 自动刷新"
@@ -5944,13 +5956,13 @@ nft_menu() {
             fi
             echo -e "  ${GREEN}8${NC}) 访问控制（白/黑名单）"
             echo -e "  ${GREEN}l${NC}) iptables 本地端口转发"
-            echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+            menu_div
             echo -e "  ${YELLOW}9${NC}) 卸载 nftables"
         else
             echo -e "  ${YELLOW}未检测到 nftables，请先安装：${NC}"
             echo -e "  ${GREEN}i${NC}) 安装 nftables"
             echo -e "  ${GREEN}l${NC}) iptables 本地端口转发（无需 nftables）"
-            echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+            menu_div
         fi
         echo -e "  ${RED}0${NC}) 返回   ${RED}00${NC}) 退出脚本"
         echo ""
@@ -6098,7 +6110,7 @@ ddns_install() {
     fi
     ddns_start_cron_service >/dev/null 2>&1 || warn "cron 服务未能自动启动，请稍后手动检查"
 
-    echo -e "  ${CYAN}$(printf \'─%.0s\' $(seq 1 38))${NC}"
+    menu_div
     read -rp "  子域名（如 home）: " DDNS_SUB
     [ -z "$DDNS_SUB" ] && { warn "已取消"; return; }
 
@@ -6126,13 +6138,13 @@ ddns_install() {
     [ -n "$DDNS_TTL_IN" ] && echo "$DDNS_TTL_IN" | grep -qE '^[0-9]+$' && DDNS_TTL="$DDNS_TTL_IN"
 
     echo ""
-    echo -e "  ${CYAN}$(printf \'─%.0s\' $(seq 1 38))${NC}"
+    menu_div
     echo -e "  域名   : ${BOLD}${DDNS_DOMAIN}${NC}"
     echo -e "  模式   : ${BOLD}$([ "$DDNS_MODE" = "dual" ] && echo 'IPv4 + IPv6' || echo '仅 IPv4')${NC}"
     echo -e "  代理   : ${BOLD}$([ "$DDNS_PROXIED" = "true" ] && echo '开启' || echo '关闭')${NC}"
     echo -e "  TTL    : ${BOLD}${DDNS_TTL}${NC}"
     echo -e "  Token  : ${BOLD}${DDNS_TOKEN:0:8}…${NC}"
-    echo -e "  ${CYAN}$(printf \'─%.0s\' $(seq 1 38))${NC}"
+    menu_div
     echo ""
     read -rp "  确认安装？(Y/n，默认Y): " CONFIRM
     [ -z "$CONFIRM" ] && CONFIRM="y"
@@ -6401,14 +6413,14 @@ ddns_tg_config() {
     fi
 
     echo ""
-    echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+    menu_div
     echo -e "  ${DIM}如何获取：${NC}"
     echo -e "  ${DIM}① Telegram 搜索 @BotFather → /newbot 创建机器人${NC}"
     echo -e "  ${DIM}② 获取 Bot Token（格式：123456:ABC-xxx）${NC}"
     echo -e "  ${DIM}③ 与机器人发一条消息，再访问：${NC}"
     echo -e "  ${DIM}   https://api.telegram.org/bot<TOKEN>/getUpdates${NC}"
     echo -e "  ${DIM}④ 从返回的 chat.id 字段获取 Chat ID${NC}"
-    echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+    menu_div
     echo ""
     echo -e "  ${GREEN}1${NC}) 配置 Telegram 通知"
     echo -e "  ${GREEN}2${NC}) 发送测试消息"
@@ -6482,7 +6494,7 @@ ddns_view_logs() {
         local LOG; LOG=$(ddns_log_path)
         if [ ! -f "$LOG" ]; then warn "日志文件不存在"; return; fi
         echo -e "  ${DIM}${LOG}${NC}"
-        echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+        menu_div
         tail -20 "$LOG" | while IFS= read -r line; do
             if echo "$line" | grep -q "ERROR"; then
                 echo -e "  ${RED}$line${NC}"
@@ -6493,7 +6505,7 @@ ddns_view_logs() {
             fi
         done
         echo ""
-        echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+        menu_div
         echo -e "  ${GREEN}1${NC}) 实时跟踪（Ctrl+C 返回）"
         echo -e "  ${GREEN}2${NC}) 查看完整日志（UTF-8）"
         echo -e "  ${RED}0${NC}) 返回"
@@ -6578,7 +6590,7 @@ ddns_menu() {
             echo -e "  ${DIM}将动态 DNS 解析到本机 IP，适合家宽/动态 IP 场景${NC}"
             echo ""
             echo -e "  ${BOLD}安装前准备：${NC}"
-            echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+            menu_div
             echo -e "  ${GREEN}①${NC} 域名已托管到 Cloudflare"
             echo -e "     将域名 NS 记录指向 Cloudflare 提供的 nameserver"
             echo ""
@@ -6592,11 +6604,11 @@ ddns_menu() {
             echo -e "     ${DIM}→ 复制 Token（只显示一次！）${NC}"
             echo ""
             echo -e "  ${GREEN}③${NC} 准备子域名（如 home.example.com 的 home 部分）"
-            echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+            menu_div
         fi
 
         echo ""
-        echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+        menu_div
         if [ "$D_ST" = "not_installed" ]; then
             echo -e "  ${GREEN}1${NC}) 开始安装配置 DDNS"
             echo -e "  ${RED}0${NC}) 返回  ${RED}00${NC}) 退出脚本"
@@ -6612,7 +6624,7 @@ ddns_menu() {
             fi
             echo -e "  ${RED}0${NC}) 返回  ${RED}00${NC}) 退出脚本"
         fi
-        echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+        menu_div
         echo ""
         read -rp "  请选择: " CH
 
@@ -6689,7 +6701,7 @@ main_menu() {
         echo ""
         box_top
         box_title "VPS 开荒脚本 V3.5.4"
-        box_line "  ··银趴火山帮··" "  ${DIM}··银趴火山帮··${NC}"
+        box_title "· · 银趴火山帮 · ·"
         box_sep
         # 收集状态数据
         local FW_TYPE FW_STAT FW_COLOR
@@ -6742,23 +6754,24 @@ main_menu() {
             [ -n "$NEW_VER" ] && box_line "  🔔 新版本 ${NEW_VER} 可用！"                 "  ${YELLOW}${BOLD}🔔 新版本 ${NEW_VER} 可用！${NC}  ${DIM}m→2 一键更新${NC}"
         fi
         box_sep
-        box_line "  [安全与网络]"        "  ${CYAN}${BOLD}[安全与网络]${NC}"
-        box_line "  1) SSH 工具集"       "  ${GREEN}1${NC}) SSH 工具集"
-        box_line "  2) Fail2ban 管理"    "  ${GREEN}2${NC}) Fail2ban 管理"
-        box_line "  3) BBR TCP 调优"     "  ${GREEN}3${NC}) BBR TCP 调优"
-        box_line "  4) 防火墙管理"       "  ${GREEN}4${NC}) 防火墙管理"
-        box_line "  5) DNS 优化"         "  ${GREEN}5${NC}) DNS 优化"
-        box_line "  6) Cloudflare DDNS"  "  ${GREEN}6${NC}) Cloudflare DDNS"
-        box_line "" ""
-        box_line "  [系统与服务]"        "  ${CYAN}${BOLD}[系统与服务]${NC}"
-        box_line "  7) 系统换源"         "  ${GREEN}7${NC}) 系统换源"
-        box_line "  8) IPv4/IPv6 配置"   "  ${GREEN}8${NC}) IPv4/IPv6 配置"
-        box_line "  9) Caddy 管理"       "  ${GREEN}9${NC}) Caddy 管理"
-        box_line "  n) NFT 转发管理"     "  ${GREEN}n${NC}) NFT 转发管理（端口转发 / DDNS / 访问控制）"
-        box_line "  t) 时间同步"         "  ${GREEN}t${NC}) 时间同步"
-        box_line "  s) Swap 管理"        "  ${GREEN}s${NC}) Swap 管理"
-        box_line "  m) 脚本管理"         "  ${GREEN}m${NC}) 脚本管理（安装 / 更新 / 卸载）"
-        box_line "  0) 退出"             "  ${RED}0${NC}) 退出"
+        menu_group "安全与网络"
+        menu_item "1" "SSH 工具集"
+        menu_item "2" "Fail2ban 管理"
+        menu_item "3" "BBR TCP 调优"
+        menu_item "4" "防火墙管理"
+        menu_item "5" "DNS 优化"
+        menu_item "6" "Cloudflare DDNS"
+        echo ""
+        menu_group "系统与服务"
+        menu_item "7" "系统换源"
+        menu_item "8" "IPv4/IPv6 配置"
+        menu_item "9" "Caddy 管理"
+        menu_item "n" "NFT 转发管理 ${DIM}（端口转发 / DDNS / 访问控制）${NC}"
+        menu_item "t" "时间同步"
+        menu_item "s" "Swap 管理"
+        menu_item "m" "脚本管理 ${DIM}（安装 / 更新 / 卸载）${NC}"
+        echo ""
+        menu_item "0" "退出" "$RED"
         box_bot
         echo ""
         read -rp "  请选择功能 [0-9/n/t/s/m]: " CHOICE
