@@ -1,8 +1,10 @@
-# VPS 开荒脚本 V3.4.0
+# VPS 开荒脚本 V3.5.4
 
 > **银趴火山帮** 出品 · SSH · BBR · DDNS · Caddy · Firewall · NFT 转发
 
 一键式 VPS 初始化与管理工具，覆盖安全加固、网络调优、服务部署、端口转发全流程。支持 Debian / Ubuntu / CentOS / Alpine / OpenWrt 等主流系统。
+
+> **运行依赖：** 脚本需 **bash** 运行（使用了数组 / `[[ ]]` / here-string 等特性）。Debian/Ubuntu/CentOS 默认自带；**Alpine 需 `apk add bash`，OpenWrt 需 `opkg install bash`**。脚本头部带解释器守卫：非 bash 环境会自动尝试切到 bash，缺失时给出清晰安装提示而非报一堆语法错。
 
 ---
 
@@ -28,7 +30,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/chnnic/SSH-Hardening/refs/he
    ...
 
 ════════════════════════════════════════
-       VPS 开荒脚本 V3.4.0
+       VPS 开荒脚本 V3.5.4
   ··银趴火山帮··
 ────────────────────────────────────────
   端口 22  |  公钥数 1
@@ -403,7 +405,7 @@ LXC / OpenVZ 容器自动提示可能不支持。
 | 服务管理 | systemd / OpenRC / SysV init |
 | 容器 | KVM / LXC / OpenVZ / 无特权容器 |
 | 终端 | 标准 / dumb（OpenWrt/tmux，`safe_clear` 兼容） |
-| Shell | bash / BusyBox ash（无 bash 专属语法残留） |
+| Shell | **bash 必需**（Alpine: `apk add bash`，OpenWrt: `opkg install bash`；非 bash 环境自动切换 / fail-fast 提示） |
 
 ---
 
@@ -445,6 +447,16 @@ bash <(curl -fsSL https://raw.githubusercontent.com/chnnic/SSH-Hardening/refs/he
 
 | 版本 | 主要变更 |
 |------|---------|
+| **V3.5.4** | bash-first：脚本头部加解释器守卫（非 bash 自动切换 / fail-fast 提示）；修复 DDNS 自动创建 A/AAAA 记录时内联 JSON 引号拼接错误（改用 printf 构建，原写法发出非法 JSON 导致建记录失败） |
+| V3.5.3 | NFT 新增规则修改功能（逐项交互修改，应用失败自动回滚） |
+| V3.5.2 | BBR 手动配置加场景选择前置层（中转/落地/线路落地/通用） |
+| V3.5.1 | 场景预设注入转发参数（5 项）+ 仅中转追加 conntrack（3 项），自动 modprobe nf_conntrack |
+| V3.5.0 | 智能向导菜单分组，新增 3 个场景化预设（relay/landing/line_landing） |
+| V3.4.5 | DDNS 日志查看内部循环，按 0 立即返回 |
+| V3.4.4 | 新增 iptables 本地端口转发子菜单 |
+| V3.4.3 | NFT 菜单加安装/卸载，未安装时只显安装入口 |
+| V3.4.2 | 修复 grep -c 返回 `0\n0` 导致 integer expression 报错 |
+| V3.4.1 | BBR sysctl 精简到 15 个核心参数，按 4 组分类 |
 | **V3.4.0** | 新增 NFT 转发管理模块（替代 iptables NAT 端口转发 + 整合入站白名单） |
 | V3.3.5 | 清理 7 个死代码函数 + 提取重复的 iptables 清理逻辑 |
 | V3.3.4 | DDNS 二次校验，避免查询失败误推 Telegram 通知 |
