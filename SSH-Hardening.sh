@@ -1,8 +1,10 @@
 #!/bin/bash
 
 # ============================================================
-#  VPS 开荒脚本 V3.5.5 — 银趴火山帮
+#  VPS 开荒脚本 V3.5.6 — 银趴火山帮
 #  功能：SSH管理 / Fail2ban / BBR TCP 调优
+#  V3.5.6: 新增 UDP 缓冲(QUIC/Hysteria2)、场景预设加端口范围/tw_buckets/file-max
+#          防高并发端口耗尽、应用场景预设后检测代理 service LimitNOFILE
 #  V3.5.5: BBR 限速改 htb 整形+fq pacing(保 BBR)、burst 随速率缩放、
 #          切换预设复位残留场景键、新增 32MB 缓冲档、修 BDP 双截断
 # ============================================================
@@ -179,7 +181,7 @@ print_header() {
     safe_clear
     echo ""
     box_top
-    box_title "VPS 开荒脚本 V3.5.5"
+    box_title "VPS 开荒脚本 V3.5.6"
     box_title "· · 银趴火山帮 · ·"
     box_sep
     box_title "$1"
@@ -1195,7 +1197,7 @@ fail2ban_menu() {
         safe_clear
         echo ""
         box_top
-        box_title "VPS 开荒脚本 V3.5.5"
+        box_title "VPS 开荒脚本 V3.5.6"
         box_title "· · 银趴火山帮 · ·"
         box_sep
         box_title "Fail2ban 管理"
@@ -1515,7 +1517,7 @@ bbr_apply_sysctl() {
     # 否则从中转/落地降级回普通预设后，ip_forward / conntrack 等会一直残留在内核里。
     # 仅复位本脚本场景预设管理的键，且新配置确实不含该键时才动；ip_forward 谨慎处理。
     if [ -f "$SYSCTL_FILE" ]; then
-        local SCENE_KEYS="net.ipv4.ip_forward net.ipv6.conf.all.forwarding net.core.somaxconn net.core.netdev_max_backlog net.ipv4.tcp_max_syn_backlog net.netfilter.nf_conntrack_max net.netfilter.nf_conntrack_tcp_timeout_established net.netfilter.nf_conntrack_tcp_timeout_time_wait"
+        local SCENE_KEYS="net.ipv4.ip_forward net.ipv6.conf.all.forwarding net.core.somaxconn net.core.netdev_max_backlog net.ipv4.tcp_max_syn_backlog net.netfilter.nf_conntrack_max net.netfilter.nf_conntrack_tcp_timeout_established net.netfilter.nf_conntrack_tcp_timeout_time_wait net.ipv4.ip_local_port_range net.ipv4.tcp_max_tw_buckets fs.file-max"
         local k STALE=""
         for k in $SCENE_KEYS; do
             # 旧文件里有该键，但新配置里没有 → 视为需要清理的残留
@@ -1534,8 +1536,12 @@ bbr_apply_sysctl() {
             [ -z "$DORST" ] && DORST="n"
             if echo "$DORST" | grep -qiE '^y(es)?$'; then
                 for k in $STALE; do
+                    # 端口范围 / tw_buckets / file-max 复位成 0 非法或有害，给内核安全默认
                     case "$k" in
                         net.ipv4.ip_forward|net.ipv6.conf.all.forwarding) sysctl -w "${k}=0" >/dev/null 2>&1 ;;
+                        net.ipv4.ip_local_port_range) sysctl -w "${k}=32768 60999" >/dev/null 2>&1 || true ;;
+                        net.ipv4.tcp_max_tw_buckets)  sysctl -w "${k}=131072" >/dev/null 2>&1 || true ;;
+                        fs.file-max)                  : ;;  # file-max 抬高无害，不复位（避免误伤其他服务）
                         *) sysctl -w "${k}=0" >/dev/null 2>&1 || true ;;
                     esac
                 done
@@ -1643,6 +1649,10 @@ net.ipv4.tcp_slow_start_after_idle = 0
 net.ipv4.tcp_tw_reuse = 1
 net.ipv4.tcp_fin_timeout = 10
 net.ipv4.tcp_keepalive_time = 60
+
+# ── UDP 缓冲（QUIC / Hysteria2 / TUIC 代理）──
+net.ipv4.udp_rmem_min = 16384
+net.ipv4.udp_wmem_min = 16384
 EOF
 
     # 中转机 / 落地机 / 线路落地机 共同需要的转发与 conntrack
@@ -1656,6 +1666,9 @@ net.ipv6.conf.all.forwarding = 1
 net.core.somaxconn = 8192
 net.core.netdev_max_backlog = 16384
 net.ipv4.tcp_max_syn_backlog = 8192
+net.ipv4.ip_local_port_range = 10000 65535
+net.ipv4.tcp_max_tw_buckets = 500000
+fs.file-max = 1048576
 EOF
             ;;
     esac
@@ -1673,6 +1686,36 @@ EOF
 }
 
 # ── 确认并应用参数 ────────────────────────────────────────
+# ── 检测常见代理 service 的 LimitNOFILE，偏低则提示写 drop-in ──
+# fs.file-max 只是系统总上限，单进程 fd 上限由 systemd 的 LimitNOFILE 决定。
+bbr_check_limitnofile() {
+    command -v systemctl >/dev/null 2>&1 || return 0   # 非 systemd 跳过
+    local SVCS="xray sing-box hysteria hysteria-server tuic v2ray trojan trojan-go mihomo clash"
+    local svc found=0
+    for svc in $SVCS; do
+        systemctl list-unit-files 2>/dev/null | grep -q "^${svc}\.service" || continue
+        found=1
+        local CUR
+        CUR=$(systemctl show -p LimitNOFILE --value "${svc}.service" 2>/dev/null)
+        # 默认值通常为 1024 / 524288；低于 1048576 视为偏低
+        if [ -n "$CUR" ] && [ "$CUR" -lt 1048576 ] 2>/dev/null; then
+            echo ""
+            warn "检测到代理服务 ${svc}.service 的 LimitNOFILE=${CUR} 偏低"
+            echo -e "  ${DIM}fs.file-max 已抬高，但单进程 fd 上限受 systemd LimitNOFILE 限制${NC}"
+            read -rp "  是否为 ${svc} 写入 LimitNOFILE=1048576 的 drop-in？(y/N，默认N): " DOLN
+            [ -z "$DOLN" ] && DOLN="n"
+            if echo "$DOLN" | grep -qiE '^y(es)?$'; then
+                local DROPDIR="/etc/systemd/system/${svc}.service.d"
+                mkdir -p "$DROPDIR" 2>/dev/null
+                printf '[Service]\nLimitNOFILE=1048576\n' > "${DROPDIR}/99-nofile.conf"
+                systemctl daemon-reload 2>/dev/null
+                info "已写入 ${DROPDIR}/99-nofile.conf，重启 ${svc} 后生效：systemctl restart ${svc}"
+            fi
+        fi
+    done
+    [ "$found" -eq 0 ] && return 0
+}
+
 bbr_confirm_apply() {
     local RMEM=$1 WMEM=$2 TCP_MEM=$3 NOTSENT=$4 ADV_WIN=$5 \
           MIN_FREE=$6 SWAP=$7 TCP_RMEM_DEFAULT=$8 \
@@ -1720,6 +1763,10 @@ bbr_confirm_apply() {
     CONFIG=$(bbr_generate_config "$RMEM" "$WMEM" "$TCP_MEM" "$NOTSENT" "$ADV_WIN" "$MIN_FREE" "$SWAP" "$TCP_RMEM_DEFAULT" "$PROFILE_NAME")
     [ "$PROFILE_NAME" = "relay" ] || [ "$PROFILE_NAME" = "landing" ] || [ "$PROFILE_NAME" = "line_landing" ] && ensure_conntrack_module
     bbr_apply_sysctl "$CONFIG"
+    # 场景预设（转发机）额外检测代理 service 的 fd 上限
+    case "$PROFILE_NAME" in
+        relay|landing|line_landing) bbr_check_limitnofile ;;
+    esac
     echo ""
     info "BBR TCP 调优配置完成 ✓"
     warn "建议配合限速设置使用，避免 Retr 爆炸"
@@ -2278,6 +2325,9 @@ volcano_tcp_profile() {
     local CONFIG
     CONFIG=$(bbr_generate_config "$RMEM" "$WMEM" "$TCP_MEM" "$NOTSENT" "$ADV_WIN" "$MIN_FREE" "$SWAP" "$TCP_RMEM_DEFAULT" "$PROFILE")
     bbr_apply_sysctl "$CONFIG"
+    case "$PROFILE" in
+        relay|landing|line_landing) bbr_check_limitnofile ;;
+    esac
     info "TCP 预设「${PROFILE}」已应用 ✓"
 }
 
@@ -4732,7 +4782,7 @@ self_check_first_run() {
     clear
     echo ""
     box_top
-    box_title "VPS 开荒脚本 V3.5.5"
+    box_title "VPS 开荒脚本 V3.5.6"
     box_title "· · 银趴火山帮 · ·"
     box_sep
     box_title "首次运行检测"
@@ -6740,7 +6790,7 @@ main_menu() {
         volcano_art_banner
         echo ""
         box_top
-        box_title "VPS 开荒脚本 V3.5.5"
+        box_title "VPS 开荒脚本 V3.5.6"
         box_title "· · 银趴火山帮 · ·"
         box_sep
         # 收集状态数据
