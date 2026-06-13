@@ -1,4 +1,4 @@
-# VPS 开荒脚本 V3.5.6
+# VPS 开荒脚本 V3.5.7
 
 > **银趴火山帮** 出品 · SSH · BBR · DDNS · Caddy · Firewall · NFT 转发
 
@@ -30,7 +30,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/chnnic/SSH-Hardening/refs/he
    ...
 
 ════════════════════════════════════════
-       VPS 开荒脚本 V3.5.6
+       VPS 开荒脚本 V3.5.7
   ··银趴火山帮··
 ────────────────────────────────────────
   端口 22  |  公钥数 1
@@ -453,6 +453,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/chnnic/SSH-Hardening/refs/he
 
 | 版本 | 主要变更 |
 |------|---------|
+| **V3.5.7** | DDNS 状态区增加「最后一次 IP 变更时间 + 新旧 IP」显示（记录于 `/root/.cf_last_change`，PUT 成功时写入，卸载时清理） |
 | **V3.5.6** | 新增 UDP 缓冲（`udp_rmem_min/wmem_min`，优化 QUIC/Hysteria2/TUIC）；场景预设加扩大出站端口范围 + `tcp_max_tw_buckets` + `fs.file-max`，防高并发端口/fd 耗尽；应用场景预设后自动检测代理 service 的 `LimitNOFILE`，偏低时询问写入 drop-in |
 | **V3.5.5** | BBR 限速改 htb 整形 + fq pacing（多队列网卡保留 BBR pacing，旧 tbf 会废 pacing）；burst 随速率缩放；切换预设复位残留场景键；新增 32MB 缓冲档；修 BDP 双截断；line_landing ADV_WIN 1→2；UI 全面美化对齐（统一 menu_div/menu_group/menu_item，分隔线对齐 40 宽） |
 | **V3.5.4** | bash-first：脚本头部加解释器守卫（非 bash 自动切换 / fail-fast 提示）；修复 DDNS 自动创建 A/AAAA 记录时内联 JSON 引号拼接错误（改用 printf 构建，原写法发出非法 JSON 导致建记录失败） |
