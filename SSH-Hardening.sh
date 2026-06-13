@@ -1,8 +1,9 @@
 #!/bin/bash
 
 # ============================================================
-#  VPS 开荒脚本 V3.5.6 — 银趴火山帮
+#  VPS 开荒脚本 V3.5.7 — 银趴火山帮
 #  功能：SSH管理 / Fail2ban / BBR TCP 调优
+#  V3.5.7: DDNS 状态区增加「最后一次 IP 变更时间 + 新旧 IP」显示
 #  V3.5.6: 新增 UDP 缓冲(QUIC/Hysteria2)、场景预设加端口范围/tw_buckets/file-max
 #          防高并发端口耗尽、应用场景预设后检测代理 service LimitNOFILE
 #  V3.5.5: BBR 限速改 htb 整形+fq pacing(保 BBR)、burst 随速率缩放、
@@ -181,7 +182,7 @@ print_header() {
     safe_clear
     echo ""
     box_top
-    box_title "VPS 开荒脚本 V3.5.6"
+    box_title "VPS 开荒脚本 V3.5.7"
     box_title "· · 银趴火山帮 · ·"
     box_sep
     box_title "$1"
@@ -1197,7 +1198,7 @@ fail2ban_menu() {
         safe_clear
         echo ""
         box_top
-        box_title "VPS 开荒脚本 V3.5.6"
+        box_title "VPS 开荒脚本 V3.5.7"
         box_title "· · 银趴火山帮 · ·"
         box_sep
         box_title "Fail2ban 管理"
@@ -4782,7 +4783,7 @@ self_check_first_run() {
     clear
     echo ""
     box_top
-    box_title "VPS 开荒脚本 V3.5.6"
+    box_title "VPS 开荒脚本 V3.5.7"
     box_title "· · 银趴火山帮 · ·"
     box_sep
     box_title "首次运行检测"
@@ -6414,6 +6415,9 @@ update_record() {
     SUCCESS=$(echo "$RESULT" | python3 -c         "import sys,json; print(json.load(sys.stdin).get('success'))" 2>/dev/null)
     if [ "$SUCCESS" = "True" ]; then
         echo "[$(date '+%Y-%m-%d %H:%M:%S')] OK: ${TYPE} 更新成功 ${OLD_IP} → ${NEW_IP}" >> "$LOG_FILE"
+        # 记录最后一次 IP 变更（时间|类型|旧IP|新IP），供菜单显示
+        echo "$(date '+%Y-%m-%d %H:%M:%S')|${TYPE}|${OLD_IP}|${NEW_IP}" > /root/.cf_last_change 2>/dev/null
+        chmod 600 /root/.cf_last_change 2>/dev/null
         tg_notify "🌐 <b>DDNS IP 已更新</b>
 域名：<code>${DOMAIN}</code>
 类型：${TYPE}
@@ -6574,6 +6578,7 @@ ddns_uninstall() {
     rm -f "$DDNS_SCRIPT" && info "DDNS 脚本已删除 ✓"
     rm -f "$DDNS_TOKEN_FILE" && info "Token 文件已删除 ✓"
     rm -f "$DDNS_ZONE_FILE"
+    rm -f /root/.cf_last_change
     warn "日志文件保留：${DDNS_LOG}"
 }
 
@@ -6663,6 +6668,21 @@ ddns_menu() {
             echo -e "  定时 : ${DIM}每5分钟自动更新${NC}"
             local LAST_LOG; LAST_LOG=$(tail -1 "$D_LOG" 2>/dev/null)
             [ -n "$LAST_LOG" ] && echo -e "  最新 : ${DIM}${LAST_LOG}${NC}"
+            # 最后一次 IP 变更（时间 + 新旧 IP）
+            if [ -f /root/.cf_last_change ]; then
+                local LC_TIME LC_TYPE LC_OLD LC_NEW LC_LINE
+                LC_LINE=$(cat /root/.cf_last_change 2>/dev/null)
+                LC_TIME=$(echo "$LC_LINE" | cut -d'|' -f1)
+                LC_TYPE=$(echo "$LC_LINE" | cut -d'|' -f2)
+                LC_OLD=$(echo "$LC_LINE" | cut -d'|' -f3)
+                LC_NEW=$(echo "$LC_LINE" | cut -d'|' -f4)
+                if [ -n "$LC_TIME" ]; then
+                    echo -e "  变更 : ${BOLD}${LC_TIME}${NC} ${DIM}(${LC_TYPE})${NC}"
+                    echo -e "  IP   : ${DIM}${LC_OLD:-?}${NC} ${YELLOW}→${NC} ${GREEN}${BOLD}${LC_NEW}${NC}"
+                fi
+            else
+                echo -e "  变更 : ${DIM}暂无 IP 变更记录${NC}"
+            fi
         elif [ -f "$DDNS_ZONE_FILE" ]; then
             local D_DOMAIN D_MODE D_TOKEN_HINT
             D_DOMAIN=$(ddns_cfg_get DOMAIN)
@@ -6790,7 +6810,7 @@ main_menu() {
         volcano_art_banner
         echo ""
         box_top
-        box_title "VPS 开荒脚本 V3.5.6"
+        box_title "VPS 开荒脚本 V3.5.7"
         box_title "· · 银趴火山帮 · ·"
         box_sep
         # 收集状态数据
