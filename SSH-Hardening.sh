@@ -1,8 +1,11 @@
 #!/bin/bash
 
 # ============================================================
-#  VPS 开荒脚本 V3.5.8 — 银趴火山帮
+#  VPS 开荒脚本 V3.5.9 — 银趴火山帮
 #  功能：SSH管理 / Fail2ban / BBR TCP 调优
+#  V3.5.9: SSH改端口/配置失败自动回滚、改端口延后删旧(防锁死)、防火墙卸载不再
+#          flush全表(只删自身规则)、DDNS IPv4严格校验、服务操作统一svc_*封装、
+#          默认网卡用 ip route get、Caddy 配置临时验证通过才写入
 #  V3.5.8: 修复 bbr-tune.sh 独立版缺失 4 个辅助函数(ensure_conntrack_module/
 #          svc_daemon_reload/svc_enable/svc_disable)，独立运行限速/场景预设不再中断
 #  V3.5.7: DDNS 状态区增加「最后一次 IP 变更时间 + 新旧 IP」显示
@@ -165,18 +168,20 @@ ensure_sysctl() {
 
 # iptables/ip6tables 残留规则清理（卸载防火墙时使用）
 clear_iptables_residue() {
+    # 安全清理：只删除本脚本可能残留的规则，绝不 flush 全表、绝不改默认策略。
+    # 旧版会 iptables -F + 设 ACCEPT，会瞬间裸奔并抹掉 NFT 转发/代理/用户自有规则。
+    # ufw --force reset / firewalld 卸载本身已清掉各自规则，这里无需再 flush。
     if command -v iptables &>/dev/null; then
-        iptables -F 2>/dev/null
-        iptables -X 2>/dev/null
-        iptables -P INPUT ACCEPT 2>/dev/null
-        iptables -P FORWARD ACCEPT 2>/dev/null
-        iptables -P OUTPUT ACCEPT 2>/dev/null
-        ip6tables -F 2>/dev/null
-        ip6tables -X 2>/dev/null
-        ip6tables -P INPUT ACCEPT 2>/dev/null
-        ip6tables -P FORWARD ACCEPT 2>/dev/null
-        ip6tables -P OUTPUT ACCEPT 2>/dev/null
+        # 删除本脚本 SSH 放行可能残留的 INPUT ACCEPT 规则（逐条删，删到没有为止）
+        local _p
+        for _p in $(get_config "Port" 2>/dev/null) 22; do
+            [ -n "$_p" ] || continue
+            while iptables -C INPUT -p tcp --dport "$_p" -j ACCEPT 2>/dev/null; do
+                iptables -D INPUT -p tcp --dport "$_p" -j ACCEPT 2>/dev/null || break
+            done
+        done
     fi
+    info "已清理本脚本残留规则（未触碰默认策略与其它规则）"
 }
 
 # 统一标题栏
@@ -184,7 +189,7 @@ print_header() {
     safe_clear
     echo ""
     box_top
-    box_title "VPS 开荒脚本 V3.5.8"
+    box_title "VPS 开荒脚本 V3.5.9"
     box_title "· · 银趴火山帮 · ·"
     box_sep
     box_title "$1"
@@ -320,6 +325,57 @@ svc_disable() {
     fi
 }
 
+# 通用服务 start/stop/restart 封装（systemd / OpenRC / sysvinit）
+# OpenRC 服务名常带不同后缀，systemd 用 .service；调用方传裸名即可。
+# 获取默认出口网卡：ip route get 比 awk '/^default/' 更准
+# （多默认路由 / 策略路由 / IPv6-only 时不易取错），失败回退旧法
+default_iface() {
+    local DEV
+    DEV=$(ip route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="dev"){print $(i+1); exit}}')
+    [ -z "$DEV" ] && DEV=$(ip -6 route get 2606:4700:4700::1111 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="dev"){print $(i+1); exit}}')
+    [ -z "$DEV" ] && DEV=$(ip route 2>/dev/null | awk '/^default/{print $5; exit}')
+    echo "$DEV"
+}
+
+svc_start() {
+    local SVC="$1"
+    if command -v systemctl &>/dev/null && pidof systemd &>/dev/null; then
+        systemctl start "$SVC" 2>/dev/null
+    elif command -v rc-service &>/dev/null; then
+        rc-service "$SVC" start 2>/dev/null
+    elif command -v service &>/dev/null; then
+        service "$SVC" start 2>/dev/null
+    else
+        return 1
+    fi
+}
+
+svc_stop() {
+    local SVC="$1"
+    if command -v systemctl &>/dev/null && pidof systemd &>/dev/null; then
+        systemctl stop "$SVC" 2>/dev/null
+    elif command -v rc-service &>/dev/null; then
+        rc-service "$SVC" stop 2>/dev/null
+    elif command -v service &>/dev/null; then
+        service "$SVC" stop 2>/dev/null
+    else
+        return 1
+    fi
+}
+
+svc_restart() {
+    local SVC="$1"
+    if command -v systemctl &>/dev/null && pidof systemd &>/dev/null; then
+        systemctl restart "$SVC" 2>/dev/null
+    elif command -v rc-service &>/dev/null; then
+        rc-service "$SVC" restart 2>/dev/null
+    elif command -v service &>/dev/null; then
+        service "$SVC" restart 2>/dev/null
+    else
+        return 1
+    fi
+}
+
 # 通用服务 is-active 检测
 svc_is_active() {
     local SVC="$1"
@@ -376,18 +432,35 @@ set_config() {
 backup_config() {
     local BACKUP="$SSHD_CONFIG.bak.$(date +%Y%m%d_%H%M%S)"
     cp "$SSHD_CONFIG" "$BACKUP"
+    LAST_SSHD_BACKUP="$BACKUP"   # 供 apply_and_restart 失败时回滚
     info "配置已备份：$BACKUP"
 }
 
 apply_and_restart() {
+    # 失败时自动回滚到最近备份，避免把自己锁在外面
+    _ssh_rollback() {
+        if [ -n "${LAST_SSHD_BACKUP:-}" ] && [ -f "$LAST_SSHD_BACKUP" ]; then
+            cp "$LAST_SSHD_BACKUP" "$SSHD_CONFIG" 2>/dev/null
+            warn "已回滚 sshd_config 到备份：$LAST_SSHD_BACKUP"
+            if sshd -t 2>/dev/null && restart_ssh; then
+                info "已用备份配置恢复 SSH 服务 ✓"
+            else
+                error "回滚后仍异常，请立即手动检查 sshd_config 与 SSH 服务！"
+            fi
+        else
+            error "未找到可回滚的备份，请立即手动检查 SSH 配置！"
+        fi
+    }
     if ! sshd -t 2>/dev/null; then
-        error "配置文件语法错误，已取消应用"
+        error "配置文件语法错误，自动回滚中..."
+        _ssh_rollback
         return 1
     fi
     if restart_ssh; then
         info "SSH 服务已重启 ✓"
     else
-        error "SSH 服务重启失败，请手动执行：systemctl restart ssh 或 rc-service sshd restart"
+        error "SSH 服务重启失败，自动回滚中..."
+        _ssh_rollback
         return 1
     fi
 }
@@ -714,34 +787,47 @@ change_port() {
     set_config "Port" "$INPUT_PORT"
 
     if ! sshd -t 2>/dev/null; then
-        error "配置语法错误，已取消。"; return
+        error "配置语法错误，自动回滚中..."
+        [ -n "${LAST_SSHD_BACKUP:-}" ] && [ -f "$LAST_SSHD_BACKUP" ] && cp "$LAST_SSHD_BACKUP" "$SSHD_CONFIG" 2>/dev/null && warn "已回滚配置"
+        return
     fi
 
     local OLD_PORT="${CURRENT_PORT:-22}"
+    # 先放行新端口（旧端口暂不删，避免 restart 失败/连不上时被锁外面）
     firewall_allow_port "$INPUT_PORT"
-    # 关闭旧端口
-    if [ "$OLD_PORT" != "$INPUT_PORT" ]; then
-        local UFW_OLD=false FWD_OLD=false
-        command -v ufw &>/dev/null && ufw status 2>/dev/null | grep -q "Status: active" && UFW_OLD=true
-        command -v firewall-cmd &>/dev/null && svc_is_active firewalld && FWD_OLD=true
-        if [ "$UFW_OLD" = true ]; then
-            ufw delete allow "${OLD_PORT}"/tcp 2>/dev/null && info "ufw 已关闭旧端口 ${OLD_PORT}/tcp ✓"
-        fi
-        if [ "$FWD_OLD" = true ]; then
-            firewall-cmd --permanent --remove-port="${OLD_PORT}/tcp" 2>/dev/null
-            firewall-cmd --reload 2>/dev/null && info "firewalld 已关闭旧端口 ${OLD_PORT}/tcp ✓"
-        fi
-    fi
-    apply_and_restart || return
+
+    # 应用并重启（失败会自动回滚到旧配置）
+    apply_and_restart || {
+        error "SSH 重启失败，已回滚。旧端口 ${OLD_PORT} 未改动，当前连接安全。"
+        return
+    }
 
     echo ""
     menu_div
-    warn "请【保持当前连接不断开】，新开终端测试新端口："
+    warn "新端口已生效，但【旧端口 ${OLD_PORT} 暂未关闭】——这是为防止你被锁在外面。"
+    echo ""
+    echo -e "  请【保持当前连接不要断开】，新开一个终端测试新端口："
     echo ""
     echo -e "     ${BOLD}ssh -p $INPUT_PORT 用户名@服务器IP${NC}"
     echo ""
-    warn "确认登录成功后再关闭当前会话！"
+    warn "确认新端口能登录后，再回来关闭旧端口。"
     menu_div
+    echo ""
+    read -rp "  新端口已测试可登录，现在关闭旧端口 ${OLD_PORT}？(y/N，默认N): " CLOSE_OLD
+    [ -z "$CLOSE_OLD" ] && CLOSE_OLD="n"
+    if echo "$CLOSE_OLD" | grep -qiE '^y(es)?$'; then
+        if [ "$OLD_PORT" != "$INPUT_PORT" ]; then
+            command -v ufw &>/dev/null && ufw status 2>/dev/null | grep -q "Status: active" && \
+                ufw delete allow "${OLD_PORT}"/tcp 2>/dev/null && info "ufw 已关闭旧端口 ${OLD_PORT}/tcp ✓"
+            if command -v firewall-cmd &>/dev/null && svc_is_active firewalld; then
+                firewall-cmd --permanent --remove-port="${OLD_PORT}/tcp" 2>/dev/null
+                firewall-cmd --reload 2>/dev/null && info "firewalld 已关闭旧端口 ${OLD_PORT}/tcp ✓"
+            fi
+        fi
+        info "旧端口已关闭。"
+    else
+        warn "旧端口 ${OLD_PORT} 保留开放。确认无误后可手动关闭，或重新进入本菜单。"
+    fi
 }
 
 
@@ -836,8 +922,7 @@ f2b_install() {
                 info "安装 rsyslog 以生成 auth.log..."
                 pkg_install rsyslog &>/dev/null 2>&1
                 svc_enable rsyslog
-                systemctl start rsyslog 2>/dev/null \
-                    || rc-service rsyslog start 2>/dev/null || true
+                svc_start rsyslog || true
                 sleep 1
             fi
         fi
@@ -1143,7 +1228,7 @@ f2b_uninstall() {
     [ -z "${CONFIRM}" ] && CONFIRM="y"
     if ! echo "${CONFIRM}" | grep -qiE '^y(es)?$'; then warn "已取消"; return; fi
 
-    systemctl stop fail2ban 2>/dev/null
+    stop_fail2ban
     svc_disable fail2ban
     if pkg_remove fail2ban; then
         info "Fail2ban 已卸载 ✓"
@@ -1200,7 +1285,7 @@ fail2ban_menu() {
         safe_clear
         echo ""
         box_top
-        box_title "VPS 开荒脚本 V3.5.8"
+        box_title "VPS 开荒脚本 V3.5.9"
         box_title "· · 银趴火山帮 · ·"
         box_sep
         box_title "Fail2ban 管理"
@@ -1407,7 +1492,7 @@ SYSCTL_FILE="/etc/sysctl.d/99-vps-bbr.conf"
 
 # ── 状态显示 ──────────────────────────────────────────────
 bbr_print_status() {
-    local DEV; DEV=$(ip route | awk '/^default/{print $5}')
+    local DEV; DEV=$(default_iface)
     local RATE; RATE=$(tc qdisc show dev "$DEV" 2>/dev/null | grep -oE '(maxrate|rate) [^ ]+' | head -1 | awk '{print $2}')
     [ -z "$RATE" ] && RATE="未设置"
     local BBR; BBR=$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null || echo "未知")
@@ -1580,7 +1665,7 @@ bbr_apply_sysctl() {
 # ── 应用 tc 限速 ──────────────────────────────────────────
 bbr_apply_tc() {
     local RATE="$1"
-    local DEV; DEV=$(ip route | awk '/^default/{print $5}')
+    local DEV; DEV=$(default_iface)
     [ -z "$DEV" ] && { error "无法确定默认出口网卡"; return 1; }
 
     # burst/cburst 随速率缩放（约 8ms 量级，≈ RATE KB），下限 32KB。
@@ -2078,7 +2163,7 @@ bbr_menu_tc() {
         return
     fi
 
-    local DEV; DEV=$(ip route | awk '/^default/{print $5}')
+    local DEV; DEV=$(default_iface)
     local QTYPE; QTYPE=$(tc qdisc show dev "$DEV" 2>/dev/null | awk 'NR==1{print $2}')
     [ -z "$QTYPE" ] && QTYPE="未知"
     # 当前限速：优先取 htb class 的 rate，其次 fq maxrate
@@ -2165,7 +2250,7 @@ bbr_menu_initcwnd() {
     fi
 
     local DEV GW ONLINK
-    DEV=$(ip route | awk '/^default/{print $5}')
+    DEV=$(default_iface)
     GW=$(ip route | awk '/^default/{print $3}')
     ONLINK=$(ip route | grep "^default" | grep -q "onlink" && echo "onlink" || echo "")
     local CUR; CUR=$(ip route show | grep "^default" | grep -oE 'initcwnd [0-9]+' | awk '{print $2}')
@@ -2560,7 +2645,7 @@ fw_install() {
         firewalld)
             if pkg_install firewalld; then
                 svc_enable firewalld
-                rc-service firewalld start 2>/dev/null || systemctl start firewalld 2>/dev/null
+                svc_start firewalld
                 info "firewalld 安装并启动成功 ✓"
                 fw_allow_common_ports "firewalld"
             else
@@ -2723,15 +2808,15 @@ ufw_menu() {
                 [ -z "${CONFIRM}" ] && CONFIRM="y"
     if echo "${CONFIRM}" | grep -qiE '^y(es)?$'; then
                     # 完整清理：禁用 → 重置规则 → 卸载 → 清残留
-                    warn "即将清空防火墙规则，主机短暂完全暴露，请确保 SSH 端口可达！"
-                    sleep 2
+                    warn "即将卸载 ufw 并清理其规则（默认策略与其它规则不受影响）"
+                    sleep 1
                     ufw --force disable 2>/dev/null
                     ufw --force reset 2>/dev/null
                     pkg_remove ufw
                     # 清理残留文件（防止重装时读到旧配置）
                     rm -rf /etc/ufw /lib/ufw /usr/share/ufw 2>/dev/null
                     clear_iptables_residue  # 清理 iptables 残留规则
-                    info "ufw 已完整卸载 ✓（iptables 规则已清空，SSH 仍可连接）"
+                    info "ufw 已完整卸载 ✓（仅清理 ufw 自身规则，SSH 仍可连接）"
                     return
                 else
                     warn "已取消"
@@ -2892,9 +2977,9 @@ fwd_menu() {
         case "$CH" in
             1)
                 if [ "$STATUS" = "active" ]; then
-                    systemctl stop firewalld && info "防火墙已关闭 ✓"
+                    svc_stop firewalld && info "防火墙已关闭 ✓"
                 else
-                    systemctl start firewalld && info "防火墙已开启 ✓"
+                    svc_start firewalld && info "防火墙已开启 ✓"
                 fi
                 sleep 1; continue
                 ;;
@@ -2910,13 +2995,13 @@ fwd_menu() {
                 read -rp "  确认卸载？(Y/n，默认Y): " CONFIRM
                 [ -z "${CONFIRM}" ] && CONFIRM="y"
     if echo "${CONFIRM}" | grep -qiE '^y(es)?$'; then
-                    systemctl stop firewalld 2>/dev/null
-                    systemctl disable firewalld 2>/dev/null
+                    svc_stop firewalld
+                    svc_disable firewalld
                     pkg_remove firewalld
                     # 清理残留配置
                     rm -rf /etc/firewalld/zones /etc/firewalld/services 2>/dev/null
                     clear_iptables_residue  # 清理 iptables 残留规则
-                    info "firewalld 已完整卸载 ✓（iptables 规则已清空）"
+                    info "firewalld 已完整卸载 ✓（仅清理 firewalld 自身规则）"
                     return
                 else
                     warn "已取消"
@@ -3531,7 +3616,7 @@ CEOF
         info "已创建默认 Caddyfile：$CADDYFILE"
     fi
     svc_enable caddy
-    systemctl start caddy 2>/dev/null || rc-service caddy start 2>/dev/null || true
+    svc_start caddy || true
     info "Caddy 已启动 ✓"
 }
 
@@ -3625,7 +3710,7 @@ caddy_uninstall() {
     read -rp "  确认卸载？(Y/n，默认Y): " CONFIRM
     [ -z "${CONFIRM}" ] && CONFIRM="y"
     if ! echo "${CONFIRM}" | grep -qiE '^y(es)?$'; then warn "已取消"; return; fi
-    systemctl stop caddy 2>/dev/null || rc-service caddy stop 2>/dev/null || true
+    svc_stop caddy || true
     svc_disable caddy
     pkg_remove caddy 2>/dev/null
     rm -f /usr/local/bin/caddy /etc/systemd/system/caddy.service
@@ -3634,6 +3719,24 @@ caddy_uninstall() {
 }
 
 # ── 重载配置 ──────────────────────────────────────────────
+# 安全追加 Caddy 配置块：先备份 → 追加 → validate，失败则还原，不污染正式配置
+caddy_append_safe() {
+    local BLOCK="$1"
+    local BAK="${CADDYFILE}.bak.$(date +%Y%m%d_%H%M%S)"
+    cp "$CADDYFILE" "$BAK" 2>/dev/null
+    printf '%s\n' "$BLOCK" >> "$CADDYFILE"
+    if caddy validate --config "$CADDYFILE" 2>/tmp/caddy_err; then
+        rm -f "$BAK" 2>/dev/null
+        return 0
+    fi
+    # 验证失败：还原备份
+    cp "$BAK" "$CADDYFILE" 2>/dev/null
+    rm -f "$BAK" 2>/dev/null
+    error "新配置验证失败，已还原（未写入）："
+    while IFS= read -r l; do echo -e "  ${RED}$l${NC}"; done < /tmp/caddy_err
+    return 1
+}
+
 caddy_reload_config() {
     echo ""
     info "验证 Caddyfile 语法..."
@@ -3642,8 +3745,7 @@ caddy_reload_config() {
         if svc_is_active caddy; then
             caddy reload --config "$CADDYFILE" 2>/dev/null && info "配置已重载 ✓"
         else
-            systemctl start caddy 2>/dev/null \
-                || rc-service caddy start 2>/dev/null \
+            svc_start caddy \
                 || caddy start --config "$CADDYFILE" &>/dev/null
             info "Caddy 已启动 ✓"
         fi
@@ -3746,8 +3848,9 @@ http://%s {
     [ -z "${CONFIRM}" ] && CONFIRM="y"
     if ! echo "${CONFIRM}" | grep -qiE '^y(es)?$'; then warn "已取消"; return; fi
 
-    echo "$CADDY_BLOCK" >> "$CADDYFILE"
-    caddy_reload_config && info "站点 ${DOMAIN} 已添加 ✓"
+    if caddy_append_safe "$CADDY_BLOCK"; then
+        caddy_reload_config && info "站点 ${DOMAIN} 已添加 ✓"
+    fi
 }
 
 # ── 添加静态网站 ──────────────────────────────────────────
@@ -3811,8 +3914,9 @@ http://%s {
     if ! echo "${CONFIRM}" | grep -qiE '^y(es)?$'; then warn "已取消"; return; fi
 
     mkdir -p "$WEBROOT"
-    echo "$CADDY_BLOCK" >> "$CADDYFILE"
-    caddy_reload_config && info "静态站点 ${DOMAIN} 已添加 ✓"
+    if caddy_append_safe "$CADDY_BLOCK"; then
+        caddy_reload_config && info "静态站点 ${DOMAIN} 已添加 ✓"
+    fi
 }
 
 # ── 删除站点 ──────────────────────────────────────────────
@@ -4078,11 +4182,10 @@ caddy_menu() {
                 ;;
             9)
                 if [ "$C_ST" = "running" ]; then
-                    systemctl stop caddy 2>/dev/null || rc-service caddy stop 2>/dev/null
+                    svc_stop caddy
                     info "Caddy 已停止 ✓"
                 else
-                    systemctl start caddy 2>/dev/null \
-                        || rc-service caddy start 2>/dev/null \
+                    svc_start caddy \
                         || caddy start --config "$CADDYFILE" &>/dev/null
                     info "Caddy 已启动 ✓"
                 fi
@@ -4785,7 +4888,7 @@ self_check_first_run() {
     clear
     echo ""
     box_top
-    box_title "VPS 开荒脚本 V3.5.8"
+    box_title "VPS 开荒脚本 V3.5.9"
     box_title "· · 银趴火山帮 · ·"
     box_sep
     box_title "首次运行检测"
@@ -6361,8 +6464,9 @@ if [ -z "$CURRENT_IP4" ]; then
     exit 1
 fi
 
-# 校验是否为合法 IPv4 格式（防止获取到 IPv6 或 HTML 错误页）
-if ! echo "$CURRENT_IP4" | grep -qE '^([0-9]{1,3}\.){3}[0-9]{1,3}$'; then
+# 校验是否为合法 IPv4 格式（每段 0-255，防止获取到 IPv6 或 HTML 错误页）
+if ! echo "$CURRENT_IP4" | grep -qE '^([0-9]{1,3}\.){3}[0-9]{1,3}$' || \
+   ! echo "$CURRENT_IP4" | awk -F. '{for(i=1;i<=4;i++) if($i<0||$i>255) exit 1}'; then
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] ERROR: 获取到的 IP 非法：${CURRENT_IP4}（可能为 IPv6 或网络异常）" >> "$LOG_FILE"
     exit 1
 fi
@@ -6812,7 +6916,7 @@ main_menu() {
         volcano_art_banner
         echo ""
         box_top
-        box_title "VPS 开荒脚本 V3.5.8"
+        box_title "VPS 开荒脚本 V3.5.9"
         box_title "· · 银趴火山帮 · ·"
         box_sep
         # 收集状态数据
@@ -6826,7 +6930,7 @@ main_menu() {
             FW_STAT="${FW_TYPE} inactive"; FW_COLOR="$RED"
         fi
         local BBR_CC; BBR_CC=$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null || echo "未知")
-        local TC_RATE; TC_RATE=$(tc qdisc show dev "$(ip route | awk '/^default/{print $5}')" 2>/dev/null | grep -oE '(maxrate|rate) [^ ]+' | head -1 | awk '{print $2}'); [ -z "$TC_RATE" ] && TC_RATE="无限速"
+        local TC_RATE; TC_RATE=$(tc qdisc show dev "$(default_iface)" 2>/dev/null | grep -oE '(maxrate|rate) [^ ]+' | head -1 | awk '{print $2}'); [ -z "$TC_RATE" ] && TC_RATE="无限速"
         local CADDY_ST; CADDY_ST=$(caddy_status)
         local CADDY_COLOR CADDY_LABEL
         case "$CADDY_ST" in
