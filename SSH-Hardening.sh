@@ -1,8 +1,10 @@
 #!/bin/bash
 
 # ============================================================
-#  VPS 开荒脚本 V3.5.7 — 银趴火山帮
+#  VPS 开荒脚本 V3.5.8 — 银趴火山帮
 #  功能：SSH管理 / Fail2ban / BBR TCP 调优
+#  V3.5.8: 修复 bbr-tune.sh 独立版缺失 4 个辅助函数(ensure_conntrack_module/
+#          svc_daemon_reload/svc_enable/svc_disable)，独立运行限速/场景预设不再中断
 #  V3.5.7: DDNS 状态区增加「最后一次 IP 变更时间 + 新旧 IP」显示
 #  V3.5.6: 新增 UDP 缓冲(QUIC/Hysteria2)、场景预设加端口范围/tw_buckets/file-max
 #          防高并发端口耗尽、应用场景预设后检测代理 service LimitNOFILE
@@ -182,7 +184,7 @@ print_header() {
     safe_clear
     echo ""
     box_top
-    box_title "VPS 开荒脚本 V3.5.7"
+    box_title "VPS 开荒脚本 V3.5.8"
     box_title "· · 银趴火山帮 · ·"
     box_sep
     box_title "$1"
@@ -1198,7 +1200,7 @@ fail2ban_menu() {
         safe_clear
         echo ""
         box_top
-        box_title "VPS 开荒脚本 V3.5.7"
+        box_title "VPS 开荒脚本 V3.5.8"
         box_title "· · 银趴火山帮 · ·"
         box_sep
         box_title "Fail2ban 管理"
@@ -4783,7 +4785,7 @@ self_check_first_run() {
     clear
     echo ""
     box_top
-    box_title "VPS 开荒脚本 V3.5.7"
+    box_title "VPS 开荒脚本 V3.5.8"
     box_title "· · 银趴火山帮 · ·"
     box_sep
     box_title "首次运行检测"
@@ -6810,7 +6812,7 @@ main_menu() {
         volcano_art_banner
         echo ""
         box_top
-        box_title "VPS 开荒脚本 V3.5.7"
+        box_title "VPS 开荒脚本 V3.5.8"
         box_title "· · 银趴火山帮 · ·"
         box_sep
         # 收集状态数据
