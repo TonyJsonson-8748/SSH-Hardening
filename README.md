@@ -1,4 +1,4 @@
-# VPS 开荒脚本 V3.5.7
+# VPS 开荒脚本 V3.5.8
 
 > **银趴火山帮** 出品 · SSH · BBR · DDNS · Caddy · Firewall · NFT 转发
 
@@ -30,7 +30,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/chnnic/SSH-Hardening/refs/he
    ...
 
 ════════════════════════════════════════
-       VPS 开荒脚本 V3.5.7
+       VPS 开荒脚本 V3.5.8
   ··银趴火山帮··
 ────────────────────────────────────────
   端口 22  |  公钥数 1
@@ -453,6 +453,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/chnnic/SSH-Hardening/refs/he
 
 | 版本 | 主要变更 |
 |------|---------|
+| **V3.5.8** | 修复 `bbr-tune.sh` 独立版缺失 4 个辅助函数（`ensure_conntrack_module` / `svc_daemon_reload` / `svc_enable` / `svc_disable`，提取时遗漏），独立运行限速 / 场景预设 / initcwnd 不再中断（主脚本不受影响） |
 | **V3.5.7** | DDNS 状态区增加「最后一次 IP 变更时间 + 新旧 IP」显示（记录于 `/root/.cf_last_change`，PUT 成功时写入，卸载时清理） |
 | **V3.5.6** | 新增 UDP 缓冲（`udp_rmem_min/wmem_min`，优化 QUIC/Hysteria2/TUIC）；场景预设加扩大出站端口范围 + `tcp_max_tw_buckets` + `fs.file-max`，防高并发端口/fd 耗尽；应用场景预设后自动检测代理 service 的 `LimitNOFILE`，偏低时询问写入 drop-in |
 | **V3.5.5** | BBR 限速改 htb 整形 + fq pacing（多队列网卡保留 BBR pacing，旧 tbf 会废 pacing）；burst 随速率缩放；切换预设复位残留场景键；新增 32MB 缓冲档；修 BDP 双截断；line_landing ADV_WIN 1→2；UI 全面美化对齐（统一 menu_div/menu_group/menu_item，分隔线对齐 40 宽） |
