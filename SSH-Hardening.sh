@@ -1,8 +1,10 @@
 #!/bin/bash
 
 # ============================================================
-#  VPS 开荒脚本 V3.5.9 — 银趴火山帮
+#  VPS 开荒脚本 V3.6.0 — 银趴火山帮
 #  功能：SSH管理 / Fail2ban / BBR TCP 调优
+#  V3.6.0: Fail2ban 加 mode=aggressive(纯公钥机抓扫描)、journalmatch 双服务名
+#          (兼容 Debian ssh / RedHat sshd)、jail.local 已存在改为备份后重写(原跳过)
 #  V3.5.9: SSH改端口/配置失败自动回滚、改端口延后删旧(防锁死)、防火墙卸载不再
 #          flush全表(只删自身规则)、DDNS IPv4严格校验、服务操作统一svc_*封装、
 #          默认网卡用 ip route get、Caddy 配置临时验证通过才写入
@@ -189,7 +191,7 @@ print_header() {
     safe_clear
     echo ""
     box_top
-    box_title "VPS 开荒脚本 V3.5.9"
+    box_title "VPS 开荒脚本 V3.6.0"
     box_title "· · 银趴火山帮 · ·"
     box_sep
     box_title "$1"
@@ -936,26 +938,38 @@ f2b_install() {
     [ "${F2B_MAJOR:-0}" -ge 1 ] && ALLOW_IPV6_LINE="allowipv6 = auto"
 
     # ── 3. 写入 jail.local ───────────────────────────────────
-    if [ ! -f /etc/fail2ban/jail.local ]; then
-        local LOGPATH_LINE=""
-        [ "$BACKEND" = "auto" ] && LOGPATH_LINE="logpath  = %(sshd_log)s"
-
-        mkdir -p /etc/fail2ban
-        {
-            echo "[DEFAULT]"
-            echo "bantime  = 3600"
-            echo "findtime = 600"
-            echo "maxretry = 5"
-            echo "backend  = ${BACKEND}"
-            [ -n "$ALLOW_IPV6_LINE" ] && echo "$ALLOW_IPV6_LINE"
-            echo ""
-            echo "[sshd]"
-            echo "enabled  = true"
-            echo "port     = ssh"
-            [ -n "$LOGPATH_LINE" ] && echo "$LOGPATH_LINE"
-        } > /etc/fail2ban/jail.local
-        info "已创建 jail.local（backend=${BACKEND}）✓"
+    # 已存在则先备份再重写：旧逻辑「存在就跳过」会导致脚本更新的配置永不生效
+    if [ -f /etc/fail2ban/jail.local ]; then
+        cp /etc/fail2ban/jail.local "/etc/fail2ban/jail.local.bak.$(date +%Y%m%d_%H%M%S)" 2>/dev/null
+        info "已备份原有 jail.local"
     fi
+
+    local LOGPATH_LINE=""
+    [ "$BACKEND" = "auto" ] && LOGPATH_LINE="logpath  = %(sshd_log)s"
+    # systemd backend：显式声明 journalmatch，同时匹配 Debian(ssh.service) 与
+    # RedHat(sshd.service)，避免纯公钥机/不同发行版漏抓（不修改系统 filter 文件）
+    local JMATCH_LINE=""
+    [ "$BACKEND" = "systemd" ] && JMATCH_LINE="journalmatch = _SYSTEMD_UNIT=ssh.service + _SYSTEMD_UNIT=sshd.service + _COMM=sshd"
+
+    mkdir -p /etc/fail2ban
+    {
+        echo "[DEFAULT]"
+        echo "bantime  = 3600"
+        echo "findtime = 600"
+        echo "maxretry = 5"
+        echo "backend  = ${BACKEND}"
+        [ -n "$ALLOW_IPV6_LINE" ] && echo "$ALLOW_IPV6_LINE"
+        echo ""
+        echo "[sshd]"
+        echo "enabled  = true"
+        echo "port     = ssh"
+        # aggressive：纯公钥机(禁密码)下，扫描者被 publickey 拒绝/探测即断的行为
+        # 默认 normal 模式不计为 failure；aggressive 才能抓到并封禁
+        echo "mode     = aggressive"
+        [ -n "$JMATCH_LINE" ] && echo "$JMATCH_LINE"
+        [ -n "$LOGPATH_LINE" ] && echo "$LOGPATH_LINE"
+    } > /etc/fail2ban/jail.local
+    info "已写入 jail.local（backend=${BACKEND}, mode=aggressive）✓"
 
     # ── 4. 清理残留，准备启动 ────────────────────────────────
     # 清理旧 socket
@@ -1285,7 +1299,7 @@ fail2ban_menu() {
         safe_clear
         echo ""
         box_top
-        box_title "VPS 开荒脚本 V3.5.9"
+        box_title "VPS 开荒脚本 V3.6.0"
         box_title "· · 银趴火山帮 · ·"
         box_sep
         box_title "Fail2ban 管理"
@@ -4888,7 +4902,7 @@ self_check_first_run() {
     clear
     echo ""
     box_top
-    box_title "VPS 开荒脚本 V3.5.9"
+    box_title "VPS 开荒脚本 V3.6.0"
     box_title "· · 银趴火山帮 · ·"
     box_sep
     box_title "首次运行检测"
@@ -6916,7 +6930,7 @@ main_menu() {
         volcano_art_banner
         echo ""
         box_top
-        box_title "VPS 开荒脚本 V3.5.9"
+        box_title "VPS 开荒脚本 V3.6.0"
         box_title "· · 银趴火山帮 · ·"
         box_sep
         # 收集状态数据
