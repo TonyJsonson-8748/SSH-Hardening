@@ -10,13 +10,22 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Check shell syntax
         run: bash -n SSH-Hardening.sh
+
+      - name: Verify generated release
+        run: ./build.sh --check
 
       - name: Run ShellCheck
         run: shellcheck --severity=warning -x SSH-Hardening.sh
 
       - name: Verify release checksum
         run: sha256sum -c SSH-Hardening.sh.sha256
+
+      - name: Run smoke tests
+        run: tests/smoke.sh
+
+      - name: Run fault injection tests
+        run: tests/fault-injection.sh

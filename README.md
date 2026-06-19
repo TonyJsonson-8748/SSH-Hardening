@@ -1,4 +1,4 @@
-# VPS 开荒脚本 V3.7.0
+# VPS 开荒脚本 V3.8.0
 
 > **银趴火山帮** 出品 · SSH · BBR · DDNS · Caddy · Firewall · NFT 转发
 
@@ -30,7 +30,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/chnnic/SSH-Hardening/refs/he
    ...
 
 ════════════════════════════════════════
-       VPS 开荒脚本 V3.7.0
+       VPS 开荒脚本 V3.8.0
   ··银趴火山帮··
 ────────────────────────────────────────
   端口 22  |  公钥数 1
@@ -383,8 +383,12 @@ LXC / OpenVZ 容器自动提示可能不支持。
 | 网络诊断 | 地址、路由、DNS、Ping、公网出口和路径 MTU 检测 |
 | 配置备份恢复 | 统一备份 SSH、防火墙、DNS、sysctl、Caddy、DDNS 和 NFT 配置 |
 | 操作记录 | 将关键操作、来源 IP 和结果写入 `/var/log/vps-tools-audit.log` |
+| 系统资源健康 | CPU、负载、内存、磁盘、inode、连接、进程及失败服务 |
+| 系统更新管理 | 检查更新、安全更新、完整更新、自动安全更新和缓存清理 |
 
 SSH、防火墙、DNS、IP 优先级及 IPv6 修改会启动 180 秒防断联保护。用户未确认新连接正常时，脚本自动恢复修改前配置和服务状态。
+
+高风险配置修改会先显示变更计划或逐行差异；配置备份默认保留最近 20 份，可通过环境变量 `VPS_BACKUP_KEEP` 调整。
 
 DNS 设置会自动识别 `systemd-resolved`、NetworkManager、resolvconf 或静态 `/etc/resolv.conf`，使用对应后端持久化配置。
 
@@ -472,12 +476,26 @@ https://github.com/chnnic/SSH-Hardening
 bash <(curl -fsSL https://raw.githubusercontent.com/chnnic/SSH-Hardening/refs/heads/main/SSH-Hardening.sh)
 ```
 
+### 开发与构建
+
+仓库源码位于 `src/lib/` 和 `src/modules/`。用户安装的 `SSH-Hardening.sh` 是由模块生成的完整单文件，运行时不下载任何模块：
+
+```bash
+./build.sh          # 生成单文件并刷新 SHA256
+./build.sh --check  # 检查发行文件是否与模块源码一致
+tests/smoke.sh
+tests/fault-injection.sh
+```
+
+GitHub Actions 还会在 Debian、Ubuntu、Alpine、Rocky Linux 容器中加载生成脚本并执行冒烟测试。
+
 ---
 
 ## 版本沿革（近期）
 
 | 版本 | 主要变更 |
 |------|---------|
+| **V3.8.0** | 源码拆分为 core 和功能模块，由 `build.sh` 生成单文件发行版；新增 Debian/Ubuntu/Alpine/Rocky 冒烟测试与故障注入测试；新增备份保留策略、配置变更预览、资源健康检查和系统更新管理 |
 | **V3.7.0** | 新增安全体检、登录安全日志、网络诊断、统一配置备份恢复、操作审计；SSH/防火墙/DNS/IP 修改加入 180 秒防断联回滚；DNS 自动适配 resolved/NetworkManager/resolvconf；脚本更新增加 SHA256 校验、旧版本留存和一键回滚 |
 | **V3.6.3** | IPv4/IPv6 配置菜单新增“设置 IPv6 优先”，可移除 `/etc/gai.conf` 中的 IPv4 优先规则并恢复系统默认地址选择策略 |
 | **V3.6.2** | BBR 模块增强：sysctl 权限探测不再改变 TCP 参数；tc 限速服务运行时动态识别 `tc` 路径和默认网卡；不支持的 sysctl 参数会在持久化文件中注释；Alpine 内核包安装改为确认后执行；新增 BBR 诊断入口 |

@@ -1,0 +1,174 @@
+# ══════════════════════════════════════════════════════════
+#  DNS 优化模块
+# ══════════════════════════════════════════════════════════
+
+dns_show_current() {
+    echo -e "  ${BOLD}当前 DNS 地址：${NC}"
+    grep "^nameserver" /etc/resolv.conf 2>/dev/null | while read -r line; do
+        local IP; IP=$(echo "$line" | awk '{print $2}')
+        if echo "$IP" | grep -q ":"; then
+            echo -e "    ${YELLOW}$line${NC}  ${DIM}(IPv6)${NC}"
+        else
+            echo -e "    ${CYAN}$line${NC}  ${DIM}(IPv4)${NC}"
+        fi
+    done
+}
+
+# 检测网络协议支持
+dns_detect_network() {
+    local HAS_V4=false HAS_V6=false
+    # 检测 IPv4 全局地址
+    ip -4 addr show scope global 2>/dev/null | grep -q "inet " && HAS_V4=true
+    # 检测 IPv6 全局地址
+    local V6_DISABLED
+    V6_DISABLED=$(sysctl -n net.ipv6.conf.all.disable_ipv6 2>/dev/null)
+    if [ "$V6_DISABLED" != "1" ]; then
+        ip -6 addr show scope global 2>/dev/null | grep -q "inet6" && HAS_V6=true
+    fi
+    echo "${HAS_V4}:${HAS_V6}"
+}
+
+dns_write() {
+    local V4_LIST="$1"
+    local V6_LIST="$2"
+    local HAS_V6="$3"  # 是否写入 v6 DNS
+    local RESOLV="/etc/resolv.conf" ALL_DNS="$V4_LIST" BACKEND="static" CON
+    [ "$HAS_V6" = "true" ] && [ -n "$V6_LIST" ] && ALL_DNS="$ALL_DNS $V6_LIST"
+    confirm_change_preview "DNS 配置" "当前：$(awk '/^nameserver/ {printf "%s ", $2}' "$RESOLV" 2>/dev/null)" "目标：$ALL_DNS" || { warn "已取消"; return; }
+    safety_arm dns || return 1
+
+    if command -v resolvectl >/dev/null 2>&1 && { svc_is_active systemd-resolved || { [ -L "$RESOLV" ] && readlink "$RESOLV" | grep -q 'systemd/resolve'; }; }; then
+        BACKEND="systemd-resolved"
+        mkdir -p /etc/systemd/resolved.conf.d
+        {
+            echo "[Resolve]"
+            echo "DNS=$ALL_DNS"
+            echo "FallbackDNS="
+        } > /etc/systemd/resolved.conf.d/99-vps-tools.conf
+        svc_restart systemd-resolved || { error "systemd-resolved 重启失败"; return 1; }
+    elif command -v nmcli >/dev/null 2>&1 && svc_is_active NetworkManager; then
+        BACKEND="NetworkManager"
+        while IFS= read -r CON; do
+            [ -n "$CON" ] || continue
+            nmcli connection modify "$CON" ipv4.ignore-auto-dns yes ipv4.dns "$V4_LIST" 2>/dev/null || true
+            if [ "$HAS_V6" = true ] && [ -n "$V6_LIST" ]; then
+                nmcli connection modify "$CON" ipv6.ignore-auto-dns yes ipv6.dns "$V6_LIST" 2>/dev/null || true
+            fi
+        done < <(nmcli -t -f NAME connection show --active 2>/dev/null)
+        nmcli device reapply "$(default_iface)" 2>/dev/null || svc_restart NetworkManager
+    elif command -v resolvconf >/dev/null 2>&1; then
+        BACKEND="resolvconf"
+        mkdir -p /etc/resolvconf/resolv.conf.d
+        : > /etc/resolvconf/resolv.conf.d/head
+        for ip in $ALL_DNS; do echo "nameserver $ip" >> /etc/resolvconf/resolv.conf.d/head; done
+        resolvconf -u || { error "resolvconf 更新失败"; return 1; }
+    else
+        chattr -i "$RESOLV" 2>/dev/null || true
+        cp -a "$RESOLV" "${RESOLV}.bak.$(date +%Y%m%d_%H%M%S)" 2>/dev/null || true
+        local OTHER
+        OTHER=$(grep -v "^nameserver" "$RESOLV" 2>/dev/null)
+        {
+            [ -n "$OTHER" ] && echo "$OTHER"
+            for ip in $ALL_DNS; do echo "nameserver $ip"; done
+        } > "$RESOLV"
+    fi
+
+    local DNS_OK=false
+    if command -v getent >/dev/null 2>&1; then getent hosts github.com >/dev/null 2>&1 && DNS_OK=true
+    elif command -v nslookup >/dev/null 2>&1; then nslookup github.com >/dev/null 2>&1 && DNS_OK=true
+    else ping -c 1 -W 3 github.com >/dev/null 2>&1 && DNS_OK=true
+    fi
+    if [ "$DNS_OK" != true ]; then
+        error "DNS 解析测试失败，保留自动回滚计时器"
+        audit_action "DNS更新失败，后端 $BACKEND" FAILED
+        return 1
+    fi
+    info "DNS 已通过 $BACKEND 持久化更新 ✓"
+    audit_action "更新DNS，后端 $BACKEND" SUCCESS
+    echo ""
+    echo -e "  ${BOLD}更新后：${NC}"
+    grep "^nameserver" "$RESOLV" | while read -r line; do
+        local IP; IP=$(echo "$line" | awk '{print $2}')
+        echo "$IP" | grep -q ":"             && echo -e "    ${YELLOW}$line${NC}  ${DIM}(IPv6)${NC}"             || echo -e "    ${CYAN}$line${NC}  ${DIM}(IPv4)${NC}"
+    done
+    safety_confirm
+}
+
+dns_menu() {
+    while true; do
+        print_header "DNS 优化"
+        dns_show_current
+        echo ""
+
+        # 检测网络协议
+        local NET_INFO; NET_INFO=$(dns_detect_network)
+        local HAS_V4; HAS_V4=$(echo "$NET_INFO" | cut -d: -f1)
+        local HAS_V6; HAS_V6=$(echo "$NET_INFO" | cut -d: -f2)
+
+        # 显示当前网络状态
+        local V4_LABEL V6_LABEL
+        [ "$HAS_V4" = "true" ] && V4_LABEL="${GREEN}有 IPv4${NC}" || V4_LABEL="${YELLOW}无 IPv4${NC}"
+        [ "$HAS_V6" = "true" ] && V6_LABEL="${GREEN}有 IPv6${NC}" || V6_LABEL="${DIM}无 IPv6${NC}"
+        echo -e "  网络：$V4_LABEL  $V6_LABEL"
+        [ "$HAS_V6" = "true" ] || echo -e "  ${DIM}（未检测到 IPv6，仅显示 IPv4 DNS 选项）${NC}"
+        echo ""
+
+        menu_div
+        echo -e "  ${BOLD}国外 DNS：${NC}"
+        if [ "$HAS_V6" = "true" ]; then
+            echo -e "  ${GREEN}1${NC}) Cloudflare  v4: 1.1.1.1 / 1.0.0.1"
+            echo -e "             v6: 2606:4700:4700::1111"
+            echo -e "  ${GREEN}2${NC}) Google      v4: 8.8.8.8 / 8.8.4.4"
+            echo -e "             v6: 2001:4860:4860::8888"
+            echo -e "  ${GREEN}3${NC}) 混合推荐    CF v4 + Google v4 + 双栈 v6"
+        else
+            echo -e "  ${GREEN}1${NC}) Cloudflare  1.1.1.1 / 1.0.0.1"
+            echo -e "  ${GREEN}2${NC}) Google      8.8.8.8 / 8.8.4.4"
+            echo -e "  ${GREEN}3${NC}) 混合推荐    1.1.1.1 + 8.8.8.8"
+        fi
+        menu_div
+        echo -e "  ${BOLD}国内 DNS：${NC}"
+        if [ "$HAS_V6" = "true" ]; then
+            echo -e "  ${GREEN}4${NC}) 阿里云      v4: 223.5.5.5 / 223.6.6.6"
+            echo -e "             v6: 2400:3200::1"
+            echo -e "  ${GREEN}5${NC}) 腾讯 DNSpod v4: 119.29.29.29 / 183.60.83.19"
+            echo -e "  ${GREEN}6${NC}) 114 DNS     v4: 114.114.114.114 / 114.114.115.115"
+        else
+            echo -e "  ${GREEN}4${NC}) 阿里云      223.5.5.5 / 223.6.6.6"
+            echo -e "  ${GREEN}5${NC}) 腾讯 DNSpod 119.29.29.29 / 183.60.83.19"
+            echo -e "  ${GREEN}6${NC}) 114 DNS     114.114.114.114 / 114.114.115.115"
+        fi
+        menu_div
+        echo -e "  ${GREEN}7${NC}) 手动编辑 DNS 配置"
+        echo -e "  ${RED}0${NC}) 返回"
+        echo -e "  ${RED}00${NC}) 退出脚本"
+        menu_div
+        echo ""
+        read -rp "  请选择 [0-7]: " CH
+
+        case "$CH" in
+            1) dns_write "1.1.1.1 1.0.0.1" "2606:4700:4700::1111 2606:4700:4700::1001" "$HAS_V6" ;;
+            2) dns_write "8.8.8.8 8.8.4.4" "2001:4860:4860::8888 2001:4860:4860::8844" "$HAS_V6" ;;
+            3) dns_write "1.1.1.1 8.8.8.8" "2606:4700:4700::1111 2001:4860:4860::8888" "$HAS_V6" ;;
+            4) dns_write "223.5.5.5 223.6.6.6" "2400:3200::1 2400:3200:baba::1" "$HAS_V6" ;;
+            5) dns_write "119.29.29.29 183.60.83.19" "" "$HAS_V6" ;;
+            6) dns_write "114.114.114.114 114.114.115.115" "" "$HAS_V6" ;;
+            7)
+                warn "即将用 $(get_editor) 编辑 /etc/resolv.conf"
+                confirm_change_preview "手动编辑 DNS" "文件：/etc/resolv.conf" "保存后将立即影响域名解析" || { warn "已取消"; continue; }
+                safety_arm dns_manual || return 1
+                chattr -i /etc/resolv.conf 2>/dev/null
+                read -rp "  按 Enter 继续..." _
+                open_editor /etc/resolv.conf
+                info "DNS 配置已保存"
+                audit_action "手动编辑DNS配置" SUCCESS
+                safety_confirm
+                ;;
+            0) return ;;
+            00) safe_clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;
+            *) warn "无效选项"; sleep 1; continue ;;
+        esac
+
+        [ "${CH}" != "0" ] && { echo ""; read -rp "  按 Enter 返回..." _; }
+    done
+}

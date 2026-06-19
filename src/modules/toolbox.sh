@@ -1,0 +1,428 @@
+# ══════════════════════════════════════════════════════════
+#  系统检查、备份与诊断工具箱
+# ══════════════════════════════════════════════════════════
+
+config_backup_paths() {
+    local p
+    for p in \
+        etc/ssh/sshd_config etc/ssh/sshd_config.d root/.ssh/authorized_keys \
+        etc/fail2ban etc/ufw etc/firewalld etc/nftables.conf etc/nft-port-forward \
+        etc/sysctl.conf etc/sysctl.d/99-vps-bbr.conf etc/sysctl.d/99-ipv6-disable.conf \
+        etc/gai.conf etc/resolv.conf etc/systemd/resolved.conf etc/systemd/resolved.conf.d \
+        etc/NetworkManager/conf.d etc/NetworkManager/system-connections etc/resolvconf/resolv.conf.d \
+        etc/caddy root/ddns.sh root/.cf_token root/.cf_zone root/.cf_tg root/.cf_last_change \
+        var/spool/cron/crontabs/root var/spool/cron/root etc/crontabs/root; do
+        [ -e "/$p" ] || [ -L "/$p" ] || continue
+        printf '%s\n' "$p"
+    done
+}
+
+config_backup_prune() {
+    local FILES=() f REMOVE_COUNT i
+    while IFS= read -r f; do FILES+=("$f"); done < <(
+        find "$VPS_BACKUP_DIR" -maxdepth 1 -type f -name '*.tar.gz' 2>/dev/null | sort -r
+    )
+    [ "${#FILES[@]}" -le "$VPS_BACKUP_KEEP" ] && return 0
+    REMOVE_COUNT=$((${#FILES[@]} - VPS_BACKUP_KEEP))
+    for ((i=${#FILES[@]}-1; i>=VPS_BACKUP_KEEP; i--)); do
+        rm -f "${FILES[$i]}"
+    done
+    audit_action "自动清理 $REMOVE_COUNT 个旧配置备份" SUCCESS
+}
+
+cancel_safety_timer() {
+    [ -n "${SAFETY_PID:-}" ] || return 0
+    kill "$SAFETY_PID" 2>/dev/null || true
+    wait "$SAFETY_PID" 2>/dev/null || true
+    rm -f "${SAFETY_SCRIPT:-}"
+    SAFETY_PID="" SAFETY_SCRIPT=""
+}
+
+confirm_change_preview() {
+    local TITLE="$1"
+    shift
+    echo ""
+    menu_div
+    echo -e "  ${BOLD}变更预览：$TITLE${NC}"
+    while [ "$#" -gt 0 ]; do echo -e "  ${YELLOW}•${NC} $1"; shift; done
+    menu_div
+    read -rp "  确认应用以上变更？(y/N): " CONFIRM
+    echo "$CONFIRM" | grep -qiE '^y(es)?$'
+}
+
+confirm_file_diff() {
+    local OLD_FILE="$1" NEW_FILE="$2" TITLE="$3"
+    echo ""
+    menu_div
+    echo -e "  ${BOLD}配置差异：$TITLE${NC}"
+    if command -v diff >/dev/null 2>&1; then
+        diff -u "$OLD_FILE" "$NEW_FILE" 2>/dev/null | sed -n '1,120p' || true
+    else
+        warn "系统没有 diff，无法显示逐行差异"
+    fi
+    menu_div
+    read -rp "  确认应用以上配置？(y/N): " CONFIRM
+    echo "$CONFIRM" | grep -qiE '^y(es)?$'
+}
+
+config_backup_create() {
+    local LABEL="${1:-manual}" QUIET="${2:-false}" TS FILE LIST
+    TS=$(date +%Y%m%d_%H%M%S)
+    mkdir -p "$VPS_BACKUP_DIR"
+    chmod 700 "$VPS_DATA_DIR" "$VPS_BACKUP_DIR" 2>/dev/null || true
+    FILE="$VPS_BACKUP_DIR/${TS}_${LABEL}.tar.gz"
+    LIST=$(mktemp)
+    config_backup_paths > "$LIST"
+    if [ ! -s "$LIST" ] || ! tar -czf "$FILE" -C / -T "$LIST" 2>/dev/null; then
+        rm -f "$LIST" "$FILE"
+        [ "$QUIET" = true ] || error "配置备份失败"
+        return 1
+    fi
+    rm -f "$LIST"
+    chmod 600 "$FILE"
+    audit_action "创建配置备份 $(basename "$FILE")" SUCCESS
+    config_backup_prune
+    if [ "$QUIET" = true ]; then printf '%s\n' "$FILE"; else info "配置已备份：$FILE"; fi
+}
+
+config_backup_restore() {
+    local FILE="$1"
+    [ -f "$FILE" ] || { error "备份不存在"; return 1; }
+    tar -tzf "$FILE" >/dev/null 2>&1 || { error "备份文件损坏"; return 1; }
+    warn "恢复将覆盖当前配置，并重启相关服务。"
+    read -rp "  输入 RESTORE 确认恢复: " CONFIRM
+    [ "$CONFIRM" = "RESTORE" ] || { warn "已取消"; return; }
+    config_backup_create before_restore true >/dev/null || return 1
+    safety_arm config_restore || return 1
+    if ! tar -xzf "$FILE" -C / 2>/dev/null; then
+        error "恢复失败，已保留恢复前快照"
+        audit_action "恢复配置 $(basename "$FILE")" FAILED
+        return 1
+    fi
+    if command -v sshd >/dev/null 2>&1 && ! sshd -t 2>/dev/null; then
+        error "恢复后的 SSH 配置语法错误，请从 before_restore 快照恢复"
+        audit_action "恢复配置 $(basename "$FILE") SSH校验失败" FAILED
+        return 1
+    fi
+    restart_ssh 2>/dev/null || true
+    command -v systemctl >/dev/null 2>&1 && systemctl restart systemd-resolved 2>/dev/null || true
+    command -v nft >/dev/null 2>&1 && [ -f /etc/nftables.conf ] && nft -f /etc/nftables.conf 2>/dev/null || true
+    audit_action "恢复配置 $(basename "$FILE")" SUCCESS
+    info "配置恢复完成"
+    safety_confirm
+}
+
+config_backup_menu() {
+    while true; do
+        print_header "配置备份与恢复"
+        mkdir -p "$VPS_BACKUP_DIR"
+        local FILES=() f i=1
+        while IFS= read -r f; do FILES+=("$f"); done < <(find "$VPS_BACKUP_DIR" -maxdepth 1 -type f -name '*.tar.gz' 2>/dev/null | sort -r)
+        for f in "${FILES[@]}"; do
+            echo -e "  ${GREEN}[$i]${NC} $(basename "$f")  ${DIM}$(du -h "$f" 2>/dev/null | awk '{print $1}')${NC}"
+            i=$((i+1))
+        done
+        [ "${#FILES[@]}" -eq 0 ] && echo -e "  ${DIM}暂无备份${NC}"
+        menu_div
+        echo -e "  ${GREEN}c${NC}) 创建备份   ${YELLOW}r${NC}) 恢复备份   ${RED}d${NC}) 删除备份"
+        echo -e "  ${RED}0${NC}) 返回"
+        read -rp "  请选择: " CH
+        case "$CH" in
+            c|C) config_backup_create manual ;;
+            r|R|d|D)
+                [ "${#FILES[@]}" -gt 0 ] || { warn "暂无备份"; sleep 1; continue; }
+                read -rp "  输入备份编号: " N
+                echo "$N" | grep -qE '^[0-9]+$' || { warn "编号无效"; continue; }
+                [ "$N" -ge 1 ] && [ "$N" -le "${#FILES[@]}" ] || { warn "编号无效"; continue; }
+                if echo "$CH" | grep -qi '^r$'; then
+                    config_backup_restore "${FILES[$((N-1))]}"
+                else
+                    rm -f "${FILES[$((N-1))]}" && audit_action "删除配置备份 $(basename "${FILES[$((N-1))]}")" SUCCESS
+                fi
+                ;;
+            0) return ;;
+            *) warn "无效选项" ;;
+        esac
+        echo ""; read -rp "  按 Enter 返回..." _
+    done
+}
+
+safety_arm() {
+    local LABEL="$1" SNAP SCRIPT UFW_STATE="inactive" FIREWALLD_STATE="inactive"
+    SNAP=$(config_backup_create "safety_${LABEL}" true) || return 1
+    command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q 'Status: active' && UFW_STATE="active"
+    svc_is_active firewalld && FIREWALLD_STATE="active"
+    SCRIPT="$VPS_DATA_DIR/rollback_$$_$(date +%s)_${RANDOM}.sh"
+    mkdir -p "$VPS_DATA_DIR"
+    cat > "$SCRIPT" <<ROLLBACK_EOF
+#!/bin/bash
+sleep 180
+tar -xzf '$SNAP' -C / >/dev/null 2>&1
+sshd -t >/dev/null 2>&1 && (systemctl restart ssh 2>/dev/null || systemctl restart sshd 2>/dev/null || service ssh restart 2>/dev/null || service sshd restart 2>/dev/null)
+systemctl restart systemd-resolved >/dev/null 2>&1 || true
+systemctl restart NetworkManager >/dev/null 2>&1 || true
+if command -v ufw >/dev/null 2>&1; then
+    if [ '$UFW_STATE' = active ]; then ufw --force enable >/dev/null 2>&1; else ufw --force disable >/dev/null 2>&1; fi
+fi
+if command -v firewall-cmd >/dev/null 2>&1; then
+    if [ '$FIREWALLD_STATE' = active ]; then systemctl start firewalld >/dev/null 2>&1; else systemctl stop firewalld >/dev/null 2>&1; fi
+    firewall-cmd --reload >/dev/null 2>&1 || true
+fi
+nft -f /etc/nftables.conf >/dev/null 2>&1 || true
+logger -t vps-tools '未确认连接，已自动恢复 $LABEL 配置'
+rm -f '$SCRIPT'
+ROLLBACK_EOF
+    chmod 700 "$SCRIPT"
+    nohup bash "$SCRIPT" >/dev/null 2>&1 &
+    SAFETY_PID=$!
+    SAFETY_SCRIPT="$SCRIPT"
+    audit_action "启动防断联保护 $LABEL" SUCCESS
+    warn "防断联保护已启动：180 秒内未确认将自动恢复。"
+}
+
+safety_confirm() {
+    [ -n "${SAFETY_PID:-}" ] || return 0
+    echo ""
+    warn "请保持当前连接，并用新终端确认 SSH 和网络正常。"
+    read -rp "  确认连接正常，取消自动回滚？(y/N): " OK
+    if echo "$OK" | grep -qiE '^y(es)?$'; then
+        kill "$SAFETY_PID" 2>/dev/null || true
+        wait "$SAFETY_PID" 2>/dev/null || true
+        rm -f "${SAFETY_SCRIPT:-}"
+        audit_action "确认连接正常，取消自动回滚" SUCCESS
+        info "已取消自动回滚"
+        SAFETY_PID="" SAFETY_SCRIPT=""
+    else
+        warn "自动回滚仍在计时，请勿关闭旧连接。"
+    fi
+}
+
+security_audit() {
+    print_header "系统安全体检"
+    local WARNINGS=0 VALUE PORT
+    echo -e "  ${BOLD}SSH${NC}"
+    VALUE=$(get_config PasswordAuthentication)
+    if [ "$VALUE" = no ]; then info "密码登录已关闭"; else warn "密码登录未关闭"; WARNINGS=$((WARNINGS+1)); fi
+    VALUE=$(get_config PermitRootLogin)
+    if [ "$VALUE" = no ] || [ "$VALUE" = prohibit-password ]; then info "root 密码登录已限制"; else warn "root 密码登录允许"; WARNINGS=$((WARNINGS+1)); fi
+    VALUE=$(get_config PermitEmptyPasswords)
+    if [ "$VALUE" = yes ]; then warn "允许空密码登录"; WARNINGS=$((WARNINGS+1)); else info "未允许空密码登录"; fi
+    if command -v sshd >/dev/null 2>&1 && sshd -t 2>/dev/null; then info "sshd 配置语法正常"; else warn "无法通过 sshd 配置检查"; WARNINGS=$((WARNINGS+1)); fi
+    echo ""; echo -e "  ${BOLD}网络与服务${NC}"
+    PORT=$(get_config Port); PORT=${PORT:-22}
+    echo -e "  SSH 端口：${BOLD}$PORT${NC}"
+    local FW_CHECK; FW_CHECK=$(fw_detect)
+    if [ "$FW_CHECK" != none ] && [ "$(fw_running "$FW_CHECK")" = active ]; then info "防火墙运行中"; else warn "防火墙未运行"; WARNINGS=$((WARNINGS+1)); fi
+    if [ "$(f2b_status)" = running ]; then info "Fail2ban 运行中"; else warn "Fail2ban 未运行"; WARNINGS=$((WARNINGS+1)); fi
+    command -v ss >/dev/null 2>&1 && { echo -e "  ${DIM}公网监听端口：${NC}"; ss -H -lntup 2>/dev/null | awk '$5 ~ /(^|\]):[0-9]+$/ {print "    " $5 "  " $7}' | sort -u | head -20; }
+    echo ""; echo -e "  ${BOLD}账户与更新${NC}"
+    local UID0; UID0=$(awk -F: '$3==0 {print $1}' /etc/passwd | paste -sd, -)
+    if [ "$UID0" = root ]; then info "未发现额外 UID 0 账户"; else warn "UID 0 账户：$UID0"; WARNINGS=$((WARNINGS+1)); fi
+    if command -v apt-get >/dev/null 2>&1; then
+        local UPDATES; UPDATES=$(apt list --upgradable 2>/dev/null | tail -n +2 | wc -l)
+        if [ "$UPDATES" -eq 0 ]; then info "未发现待更新软件包"; else warn "有 $UPDATES 个软件包可更新"; WARNINGS=$((WARNINGS+1)); fi
+    fi
+    echo ""; menu_div
+    if [ "$WARNINGS" -eq 0 ]; then info "未发现明显风险"; else warn "发现 $WARNINGS 项需要关注"; fi
+    audit_action "执行系统安全体检，警告 $WARNINGS 项" SUCCESS
+}
+
+login_security_logs() {
+    while true; do
+        print_header "登录记录与安全日志"
+        echo -e "  ${GREEN}1${NC}) 最近成功登录       ${GREEN}2${NC}) 最近失败登录"
+        echo -e "  ${GREEN}3${NC}) 当前在线会话       ${GREEN}4${NC}) SSH 安全日志"
+        echo -e "  ${GREEN}5${NC}) Fail2ban 封禁状态   ${RED}0${NC}) 返回"
+        read -rp "  请选择 [0-5]: " CH
+        case "$CH" in
+            1) last -ai 2>/dev/null | head -30 ;;
+            2) if command -v lastb >/dev/null 2>&1; then lastb -ai 2>/dev/null | head -30; else warn "系统没有 lastb 数据"; fi ;;
+            3) who -uH 2>/dev/null; echo ""; w 2>/dev/null ;;
+            4) if command -v journalctl >/dev/null 2>&1; then journalctl -u ssh -u sshd --since '24 hours ago' --no-pager 2>/dev/null | tail -80; else grep -Ei 'sshd.*(accepted|failed|invalid)' /var/log/auth.log /var/log/secure 2>/dev/null | tail -80; fi ;;
+            5) fail2ban-client status 2>/dev/null || warn "Fail2ban 未运行" ;;
+            0) return ;;
+            *) warn "无效选项"; continue ;;
+        esac
+        audit_action "查看登录安全日志选项 $CH" SUCCESS
+        echo ""; read -rp "  按 Enter 返回..." _
+    done
+}
+
+network_diagnostics() {
+    print_header "网络诊断工具箱"
+    local TARGET
+    read -rp "  目标域名或 IP（默认 1.1.1.1）: " TARGET
+    TARGET=${TARGET:-1.1.1.1}
+    echo ""; echo -e "  ${BOLD}地址与默认路由${NC}"
+    ip -brief address 2>/dev/null || ip addr 2>/dev/null | head -40
+    ip route 2>/dev/null | head -10
+    ip -6 route 2>/dev/null | head -10
+    echo ""; echo -e "  ${BOLD}DNS 解析${NC}"
+    if command -v getent >/dev/null 2>&1; then getent ahosts "$TARGET" 2>/dev/null | head -8; else nslookup "$TARGET" 2>/dev/null | head -15; fi
+    echo ""; echo -e "  ${BOLD}连通性${NC}"
+    ping -c 4 -W 2 "$TARGET" 2>/dev/null || warn "IPv4/默认协议 Ping 失败"
+    command -v ping6 >/dev/null 2>&1 && ping6 -c 2 -W 2 "$TARGET" 2>/dev/null || true
+    echo ""; echo -e "  ${BOLD}公网出口${NC}"
+    command -v curl >/dev/null 2>&1 && { printf '  IPv4: '; curl -4 -fsS --max-time 5 https://api.ipify.org 2>/dev/null || echo "不可用"; echo ""; printf '  IPv6: '; curl -6 -fsS --max-time 5 https://api64.ipify.org 2>/dev/null || echo "不可用"; echo ""; }
+    echo ""; echo -e "  ${BOLD}MTU 探测${NC}"
+    if ping -c 1 -W 2 -M "do" -s 1472 "$TARGET" >/dev/null 2>&1; then info "路径 MTU 至少为 1500"; else warn "1500 MTU 探测失败，可能需要降低 MTU"; fi
+    audit_action "网络诊断 $TARGET" SUCCESS
+}
+
+audit_log_view() {
+    print_header "脚本操作记录"
+    if [ -s "$VPS_AUDIT_LOG" ]; then
+        tail -100 "$VPS_AUDIT_LOG" | column -t -s $'\t' 2>/dev/null || tail -100 "$VPS_AUDIT_LOG"
+    else
+        warn "暂无操作记录"
+    fi
+}
+
+resource_health_check() {
+    print_header "系统资源与健康检查"
+    local CPU_COUNT LOAD MEM_TOTAL MEM_AVAIL MEM_USED
+    CPU_COUNT=$(getconf _NPROCESSORS_ONLN 2>/dev/null || nproc 2>/dev/null || echo 1)
+    LOAD=$(awk '{print $1, $2, $3}' /proc/loadavg 2>/dev/null || uptime)
+    MEM_TOTAL=$(awk '/^MemTotal:/ {print $2}' /proc/meminfo 2>/dev/null)
+    MEM_AVAIL=$(awk '/^MemAvailable:/ {print $2}' /proc/meminfo 2>/dev/null)
+    MEM_TOTAL=${MEM_TOTAL:-0}; MEM_AVAIL=${MEM_AVAIL:-0}; MEM_USED=$((MEM_TOTAL-MEM_AVAIL))
+
+    echo -e "  ${BOLD}概览${NC}"
+    echo -e "  运行时间：$(uptime -p 2>/dev/null || uptime 2>/dev/null)"
+    echo -e "  CPU：${CPU_COUNT} 核   负载：${LOAD}"
+    if [ "$MEM_TOTAL" -gt 0 ]; then
+        printf '  内存：%.1f / %.1f MiB（%.0f%%）\n' \
+            "$(awk "BEGIN {print $MEM_USED/1024}")" "$(awk "BEGIN {print $MEM_TOTAL/1024}")" \
+            "$(awk "BEGIN {print $MEM_USED*100/$MEM_TOTAL}")"
+    fi
+    echo ""; echo -e "  ${BOLD}磁盘空间${NC}"
+    df -hP 2>/dev/null | awk 'NR==1 || $1 ~ /^\/dev\// {print "  " $0}'
+    echo ""; echo -e "  ${BOLD}inode 使用${NC}"
+    df -iP 2>/dev/null | awk 'NR==1 || $1 ~ /^\/dev\// {print "  " $0}'
+    echo ""; echo -e "  ${BOLD}网络连接${NC}"
+    if command -v ss >/dev/null 2>&1; then ss -s 2>/dev/null | sed 's/^/  /'; else netstat -s 2>/dev/null | head -12 | sed 's/^/  /'; fi
+    echo ""; echo -e "  ${BOLD}资源占用最高的进程${NC}"
+    ps aux 2>/dev/null | awk 'NR==1 {print; next} {print}' | sort -rk3 | head -6 | sed 's/^/  /'
+    if command -v systemctl >/dev/null 2>&1; then
+        echo ""; echo -e "  ${BOLD}失败的 systemd 服务${NC}"
+        systemctl --failed --no-pager --plain 2>/dev/null | sed -n '1,15p' | sed 's/^/  /'
+    fi
+    audit_action "执行系统资源健康检查" SUCCESS
+}
+
+system_update_manager() {
+    while true; do
+        print_header "系统更新管理"
+        local PM="unknown" PENDING="未知"
+        if command -v apt-get >/dev/null 2>&1; then PM="apt"; PENDING=$(apt list --upgradable 2>/dev/null | tail -n +2 | wc -l)
+        elif command -v dnf >/dev/null 2>&1; then PM="dnf"; PENDING=$(dnf -q check-update 2>/dev/null | awk 'NF>=3 {n++} END {print n+0}')
+        elif command -v yum >/dev/null 2>&1; then PM="yum"; PENDING=$(yum -q check-update 2>/dev/null | awk 'NF>=3 {n++} END {print n+0}')
+        elif command -v apk >/dev/null 2>&1; then PM="apk"; PENDING=$(apk version -l '<' 2>/dev/null | wc -l)
+        elif command -v opkg >/dev/null 2>&1; then PM="opkg"; PENDING=$(opkg list-upgradable 2>/dev/null | wc -l)
+        fi
+        echo -e "  包管理器：${BOLD}$PM${NC}   待更新：${BOLD}$PENDING${NC}"
+        menu_div
+        echo -e "  ${GREEN}1${NC}) 刷新并检查更新     ${GREEN}2${NC}) 安装安全更新"
+        echo -e "  ${YELLOW}3${NC}) 安装全部更新       ${GREEN}4${NC}) 配置自动安全更新"
+        echo -e "  ${GREEN}5${NC}) 清理软件包缓存     ${RED}0${NC}) 返回"
+        read -rp "  请选择 [0-5]: " CH
+        case "$CH" in
+            1)
+                case "$PM" in
+                    apt) apt-get update ;;
+                    dnf) dnf check-update || [ "$?" -eq 100 ] ;;
+                    yum) yum check-update || [ "$?" -eq 100 ] ;;
+                    apk) apk update ;;
+                    opkg) opkg update; opkg list-upgradable ;;
+                    *) error "不支持当前包管理器" ;;
+                esac
+                audit_action "刷新系统软件包索引" SUCCESS
+                ;;
+            2)
+                confirm_change_preview "安全更新" "包管理器：$PM" "仅安装安全修复（Alpine 安装仓库可用更新）" || { warn "已取消"; continue; }
+                case "$PM" in
+                    apt) pkg_install unattended-upgrades && unattended-upgrade -d ;;
+                    dnf) dnf upgrade --security -y ;;
+                    yum) yum update --security -y ;;
+                    apk) apk upgrade ;;
+                    opkg) warn "OpenWrt 不区分安全更新，请按包逐项升级"; continue ;;
+                    *) error "不支持当前包管理器"; continue ;;
+                esac
+                audit_action "安装系统安全更新" SUCCESS
+                ;;
+            3)
+                confirm_change_preview "全部系统更新" "将更新所有已安装软件包" "可能需要重启服务器" || { warn "已取消"; continue; }
+                case "$PM" in
+                    apt) apt-get update && DEBIAN_FRONTEND=noninteractive apt-get dist-upgrade -y ;;
+                    dnf) dnf upgrade -y ;;
+                    yum) yum update -y ;;
+                    apk) apk update && apk upgrade ;;
+                    opkg) warn "OpenWrt 不建议无差别升级全部基础包，请使用固件升级或逐包维护"; continue ;;
+                    *) error "不支持当前包管理器"; continue ;;
+                esac
+                audit_action "安装全部系统更新" SUCCESS
+                ;;
+            4)
+                confirm_change_preview "自动安全更新" "启用发行版提供的定时安全更新" "更新行为由系统包管理器维护" || { warn "已取消"; continue; }
+                case "$PM" in
+                    apt)
+                        pkg_install unattended-upgrades
+                        mkdir -p /etc/apt/apt.conf.d
+                        printf '%s\n' 'APT::Periodic::Update-Package-Lists "1";' 'APT::Periodic::Unattended-Upgrade "1";' > /etc/apt/apt.conf.d/20auto-upgrades
+                        ;;
+                    dnf)
+                        pkg_install dnf-automatic
+                        sed -i 's/^apply_updates[[:space:]]*=.*/apply_updates = yes/' /etc/dnf/automatic.conf 2>/dev/null
+                        systemctl enable --now dnf-automatic.timer
+                        ;;
+                    yum) pkg_install yum-cron; svc_enable yum-cron; svc_start yum-cron ;;
+                    apk) warn "Alpine 未自动写入定时更新，请使用系统 cron 按维护窗口安排"; continue ;;
+                    opkg) warn "OpenWrt 未自动写入更新任务，请按固件维护策略安排"; continue ;;
+                    *) error "不支持当前包管理器"; continue ;;
+                esac
+                audit_action "启用自动安全更新" SUCCESS
+                info "自动安全更新已启用"
+                ;;
+            5)
+                case "$PM" in
+                    apt) apt-get autoremove -y && apt-get clean ;;
+                    dnf) dnf autoremove -y; dnf clean all ;;
+                    yum) yum autoremove -y; yum clean all ;;
+                    apk) rm -rf /var/cache/apk/* ;;
+                    opkg) rm -rf /tmp/opkg-lists/* ;;
+                    *) error "不支持当前包管理器"; continue ;;
+                esac
+                audit_action "清理软件包缓存" SUCCESS
+                info "清理完成"
+                ;;
+            0) return ;;
+            *) warn "无效选项"; continue ;;
+        esac
+        echo ""; read -rp "  按 Enter 返回..." _
+    done
+}
+
+system_toolbox_menu() {
+    while true; do
+        print_header "安全与诊断工具箱"
+        echo -e "  ${GREEN}1${NC}) 系统安全体检       ${GREEN}2${NC}) 登录记录与安全日志"
+        echo -e "  ${GREEN}3${NC}) 网络诊断工具箱     ${GREEN}4${NC}) 配置备份与恢复"
+        echo -e "  ${GREEN}5${NC}) 查看脚本操作记录   ${GREEN}6${NC}) 系统资源健康检查"
+        echo -e "  ${GREEN}7${NC}) 系统更新管理       ${RED}0${NC}) 返回"
+        menu_div
+        echo -e "  ${DIM}防断联保护已自动用于 SSH、防火墙、DNS 和 IP 配置修改${NC}"
+        read -rp "  请选择 [0-7]: " CH
+        case "$CH" in
+            1) security_audit ;;
+            2) login_security_logs; continue ;;
+            3) network_diagnostics ;;
+            4) config_backup_menu; continue ;;
+            5) audit_log_view ;;
+            6) resource_health_check ;;
+            7) system_update_manager; continue ;;
+            0) return ;;
+            *) warn "无效选项"; sleep 1; continue ;;
+        esac
+        echo ""; read -rp "  按 Enter 返回..." _
+    done
+}
