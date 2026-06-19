@@ -1,4 +1,4 @@
-# VPS 开荒脚本 V3.6.3
+# VPS 开荒脚本 V3.7.0
 
 > **银趴火山帮** 出品 · SSH · BBR · DDNS · Caddy · Firewall · NFT 转发
 
@@ -30,7 +30,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/chnnic/SSH-Hardening/refs/he
    ...
 
 ════════════════════════════════════════
-       VPS 开荒脚本 V3.6.3
+       VPS 开荒脚本 V3.7.0
   ··银趴火山帮··
 ────────────────────────────────────────
   端口 22  |  公钥数 1
@@ -57,6 +57,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/chnnic/SSH-Hardening/refs/he
   n) NFT 转发管理（端口转发 / DDNS / 访问控制）
   t) 时间同步
   s) Swap 管理
+  h) 安全与诊断工具箱
   m) 脚本管理（安装 / 更新 / 卸载）
   0) 退出
 ════════════════════════════════════════
@@ -373,12 +374,29 @@ LXC / OpenVZ 容器自动提示可能不支持。
 
 ---
 
+### h. 安全与诊断工具箱
+
+| 功能 | 说明 |
+|------|------|
+| 系统安全体检 | 检查 SSH 登录策略、配置语法、防火墙、Fail2ban、UID 0 账户、监听端口及待更新软件包 |
+| 登录安全日志 | 查看成功/失败登录、当前会话、SSH 日志和 Fail2ban 状态 |
+| 网络诊断 | 地址、路由、DNS、Ping、公网出口和路径 MTU 检测 |
+| 配置备份恢复 | 统一备份 SSH、防火墙、DNS、sysctl、Caddy、DDNS 和 NFT 配置 |
+| 操作记录 | 将关键操作、来源 IP 和结果写入 `/var/log/vps-tools-audit.log` |
+
+SSH、防火墙、DNS、IP 优先级及 IPv6 修改会启动 180 秒防断联保护。用户未确认新连接正常时，脚本自动恢复修改前配置和服务状态。
+
+DNS 设置会自动识别 `systemd-resolved`、NetworkManager、resolvconf 或静态 `/etc/resolv.conf`，使用对应后端持久化配置。
+
+---
+
 ### m. 脚本管理
 
 | 功能 | 说明 |
 |------|------|
 | 安装 + 设置快捷键 | `/usr/local/bin/vps-tools` + `v` / `V` 软链接 |
-| 从 GitHub 更新 | 下载、验证、覆盖、清理旧 alias、自动重启 |
+| 从 GitHub 更新 | SHA256 + Bash 语法校验、保存旧版本、覆盖并自动重启 |
+| 回滚脚本版本 | 从 `/var/lib/vps-tools/versions` 选择更新前版本恢复 |
 | 删除本地脚本 | 仅删除指向本脚本的软链接，不影响其他脚本 |
 
 **快捷键设计（V3.0.4+）：**
@@ -400,6 +418,8 @@ LXC / OpenVZ 容器自动提示可能不支持。
 | HTTP 时间同步 | 标注未经认证，可被中间人伪造 |
 | 内核支持检测 | BBR 应用前检测内核版本和模块 |
 | 容器权限检测 | 自动识别无特权容器，sysctl 操作受限时友好提示 |
+| 防断联保护 | 高风险网络修改 180 秒未确认自动回滚 |
+| 更新完整性 | 下载脚本必须匹配仓库中的 SHA256 校验文件 |
 
 ---
 
@@ -422,6 +442,10 @@ LXC / OpenVZ 容器自动提示可能不支持。
 |------|------|
 | `/usr/local/bin/vps-tools` | 主脚本 |
 | `/usr/local/bin/v` `/V` | 快捷命令（软链接） |
+| `/var/lib/vps-tools/backups` | 统一配置备份与防断联快照 |
+| `/var/lib/vps-tools/versions` | 更新前的历史脚本版本 |
+| `/var/log/vps-tools-audit.log` | 脚本操作审计日志（600） |
+| `SSH-Hardening.sh.sha256` | 自更新完整性校验值 |
 | `/etc/sysctl.d/99-vps-bbr.conf` | BBR TCP 配置 |
 | `/etc/nftables.conf` | NFT 转发配置（脚本托管） |
 | `/etc/nft-port-forward/rules.db` | NFT 转发规则数据库 |
@@ -454,6 +478,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/chnnic/SSH-Hardening/refs/he
 
 | 版本 | 主要变更 |
 |------|---------|
+| **V3.7.0** | 新增安全体检、登录安全日志、网络诊断、统一配置备份恢复、操作审计；SSH/防火墙/DNS/IP 修改加入 180 秒防断联回滚；DNS 自动适配 resolved/NetworkManager/resolvconf；脚本更新增加 SHA256 校验、旧版本留存和一键回滚 |
 | **V3.6.3** | IPv4/IPv6 配置菜单新增“设置 IPv6 优先”，可移除 `/etc/gai.conf` 中的 IPv4 优先规则并恢复系统默认地址选择策略 |
 | **V3.6.2** | BBR 模块增强：sysctl 权限探测不再改变 TCP 参数；tc 限速服务运行时动态识别 `tc` 路径和默认网卡；不支持的 sysctl 参数会在持久化文件中注释；Alpine 内核包安装改为确认后执行；新增 BBR 诊断入口 |
 | **V3.6.1** | 修复删除最后一个 SSH 公钥不生效；DDNS 在 `/var/log/ddns.log` 不可写时正确使用备用日志路径；nftables 配置应用失败时不再误报成功；BBR `initcwnd` 支持无网关默认路由 |

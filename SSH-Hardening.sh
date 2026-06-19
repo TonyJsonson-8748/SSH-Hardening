@@ -1,8 +1,10 @@
 #!/bin/bash
 
 # ============================================================
-#  VPS 开荒脚本 V3.6.3 — 银趴火山帮
+#  VPS 开荒脚本 V3.7.0 — 银趴火山帮
 #  功能：SSH管理 / Fail2ban / BBR TCP 调优
+#  V3.7.0: 新增系统安全体检、登录安全日志、网络诊断、统一配置备份恢复、
+#          操作审计、防断联延迟回滚、DNS 后端适配、脚本版本回滚与 SHA256 校验
 #  V3.6.3: IPv4/IPv6 配置菜单新增“设置 IPv6 优先”，可恢复系统默认地址优先级
 #  V3.6.2: BBR 模块增强：sysctl 权限探测无副作用、tc service 动态找 tc/网卡、
 #          不支持 sysctl 参数注释持久化、Alpine 内核包安装需确认、增加诊断入口
@@ -41,6 +43,10 @@ SSHD_CONFIG="/etc/ssh/sshd_config"
 # 优先使用 /root/.ssh/authorized_keys，兼容系统预装公钥路径
 AUTH_KEYS="${HOME}/.ssh/authorized_keys"
 [ "$(id -u)" = "0" ] && AUTH_KEYS="/root/.ssh/authorized_keys"
+VPS_DATA_DIR="/var/lib/vps-tools"
+VPS_BACKUP_DIR="$VPS_DATA_DIR/backups"
+VPS_VERSION_DIR="$VPS_DATA_DIR/versions"
+VPS_AUDIT_LOG="/var/log/vps-tools-audit.log"
 
 RED=$'\033[0;31m'
 GREEN=$'\033[0;32m'
@@ -54,6 +60,15 @@ NC=$'\033[0m'
 info()  { echo -e "  ${GREEN}✔${NC}  $1"; }
 warn()  { echo -e "  ${YELLOW}⚠${NC}  $1"; }
 error() { echo -e "  ${RED}✘${NC}  $1"; }
+
+audit_action() {
+    local ACTION="$1" RESULT="${2:-INFO}" SOURCE_IP="local"
+    [ -n "${SSH_CONNECTION:-}" ] && SOURCE_IP=$(echo "$SSH_CONNECTION" | awk '{print $1}')
+    mkdir -p "$(dirname "$VPS_AUDIT_LOG")" 2>/dev/null || true
+    printf '%s\t%s\t%s\t%s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$RESULT" "$SOURCE_IP" "$ACTION" \
+        >> "$VPS_AUDIT_LOG" 2>/dev/null || true
+    chmod 600 "$VPS_AUDIT_LOG" 2>/dev/null || true
+}
 
 # 兼容 dumb 终端（OpenWrt / tmux 等不支持 clear 的环境）
 safe_clear() {
@@ -195,7 +210,7 @@ print_header() {
     safe_clear
     echo ""
     box_top
-    box_title "VPS 开荒脚本 V3.6.3"
+    box_title "VPS 开荒脚本 V3.7.0"
     box_title "· · 银趴火山帮 · ·"
     box_sep
     box_title "$1"
@@ -740,17 +755,19 @@ set_login_mode() {
     if ! echo "${FORCE}" | grep -qiE '^y(es)?$'; then warn "已取消"; return; fi
             fi
             backup_config
+            safety_arm ssh_login || return 1
             set_config "PasswordAuthentication" "no"
             set_config "PubkeyAuthentication"   "yes"
             set_config "PermitRootLogin"        "prohibit-password"
-            apply_and_restart && info "已切换：仅密钥登录 ✓"
+            if apply_and_restart; then info "已切换：仅密钥登录 ✓"; audit_action "SSH切换为仅密钥登录" SUCCESS; safety_confirm; fi
             ;;
         2)
             backup_config
+            safety_arm ssh_login || return 1
             set_config "PasswordAuthentication" "yes"
             set_config "PubkeyAuthentication"   "yes"
             set_config "PermitRootLogin"        "yes"
-            apply_and_restart && info "已切换：密码 + 密钥均可登录 ✓"
+            if apply_and_restart; then info "已切换：密码 + 密钥均可登录 ✓"; audit_action "SSH启用密码和密钥登录" SUCCESS; safety_confirm; fi
             ;;
         3)
             warn "仅密码登录安全性较低，建议配合强密码使用！"
@@ -758,10 +775,11 @@ set_login_mode() {
             [ -z "${CONFIRM}" ] && CONFIRM="y"
     if ! echo "${CONFIRM}" | grep -qiE '^y(es)?$'; then warn "已取消"; return; fi
             backup_config
+            safety_arm ssh_login || return 1
             set_config "PasswordAuthentication" "yes"
             set_config "PubkeyAuthentication"   "no"
             set_config "PermitRootLogin"        "yes"
-            apply_and_restart && info "已切换：仅密码登录 ✓"
+            if apply_and_restart; then info "已切换：仅密码登录 ✓"; audit_action "SSH切换为仅密码登录" SUCCESS; safety_confirm; fi
             ;;
         0) return ;;
         00) safe_clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;
@@ -792,6 +810,7 @@ change_port() {
     fi
 
     backup_config
+    safety_arm ssh_port || return 1
     set_config "Port" "$INPUT_PORT"
 
     if ! sshd -t 2>/dev/null; then
@@ -809,6 +828,7 @@ change_port() {
         error "SSH 重启失败，已回滚。旧端口 ${OLD_PORT} 未改动，当前连接安全。"
         return
     }
+    audit_action "SSH端口 ${CURRENT_PORT:-22} 修改为 $INPUT_PORT" SUCCESS
 
     echo ""
     menu_div
@@ -836,6 +856,7 @@ change_port() {
     else
         warn "旧端口 ${OLD_PORT} 保留开放。确认无误后可手动关闭，或重新进入本菜单。"
     fi
+    safety_confirm
 }
 
 
@@ -1305,7 +1326,7 @@ fail2ban_menu() {
         safe_clear
         echo ""
         box_top
-        box_title "VPS 开荒脚本 V3.6.3"
+        box_title "VPS 开荒脚本 V3.7.0"
         box_title "· · 银趴火山帮 · ·"
         box_sep
         box_title "Fail2ban 管理"
@@ -2868,6 +2889,8 @@ ufw_menu() {
         echo ""
         read -rp "  请选择 [0-9/u]: " CH
 
+        case "$CH" in 1|3|4|5|6|7|8) safety_arm ufw || continue ;; esac
+
         case "$CH" in
             u|U)
                 print_header "安装/更新 ufw"
@@ -2883,7 +2906,7 @@ ufw_menu() {
                 else
                     ufw --force enable  && info "防火墙已开启 ✓"
                 fi
-                sleep 1; continue
+                audit_action "切换ufw状态" SUCCESS
                 ;;
             2) ufw_show_rules ;;
             3) ufw_add_port ;;
@@ -2916,6 +2939,8 @@ ufw_menu() {
             00) safe_clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;
             *) warn "无效选项"; sleep 1; continue ;;
         esac
+
+        case "$CH" in 1|3|4|5|6|7|8) safety_confirm ;; esac
 
         [ "${CH}" != "0" ] && { echo ""; read -rp "  按 Enter 返回..." _; }
     done
@@ -3064,6 +3089,8 @@ fwd_menu() {
         echo ""
         read -rp "  请选择 [0-9]: " CH
 
+        case "$CH" in 1|3|4|5|6|7|8) safety_arm firewalld || continue ;; esac
+
         case "$CH" in
             1)
                 if [ "$STATUS" = "active" ]; then
@@ -3071,7 +3098,7 @@ fwd_menu() {
                 else
                     svc_start firewalld && info "防火墙已开启 ✓"
                 fi
-                sleep 1; continue
+                audit_action "切换firewalld状态" SUCCESS
                 ;;
             2) fwd_show_rules ;;
             3) fwd_add_port ;;
@@ -3101,6 +3128,8 @@ fwd_menu() {
             00) safe_clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;
             *) warn "无效选项"; sleep 1; continue ;;
         esac
+
+        case "$CH" in 1|3|4|5|6|7|8) safety_confirm ;; esac
 
         [ "${CH}" != "0" ] && { echo ""; read -rp "  按 Enter 返回..." _; }
     done
@@ -3222,30 +3251,65 @@ dns_write() {
     local V4_LIST="$1"
     local V6_LIST="$2"
     local HAS_V6="$3"  # 是否写入 v6 DNS
-    local RESOLV="/etc/resolv.conf"
+    local RESOLV="/etc/resolv.conf" ALL_DNS="$V4_LIST" BACKEND="static" CON
+    [ "$HAS_V6" = "true" ] && [ -n "$V6_LIST" ] && ALL_DNS="$ALL_DNS $V6_LIST"
+    safety_arm dns || return 1
 
-    chattr -i "$RESOLV" 2>/dev/null
-    cp "$RESOLV" "${RESOLV}.bak.$(date +%Y%m%d_%H%M%S)" 2>/dev/null
+    if command -v resolvectl >/dev/null 2>&1 && { svc_is_active systemd-resolved || { [ -L "$RESOLV" ] && readlink "$RESOLV" | grep -q 'systemd/resolve'; }; }; then
+        BACKEND="systemd-resolved"
+        mkdir -p /etc/systemd/resolved.conf.d
+        {
+            echo "[Resolve]"
+            echo "DNS=$ALL_DNS"
+            echo "FallbackDNS="
+        } > /etc/systemd/resolved.conf.d/99-vps-tools.conf
+        svc_restart systemd-resolved || { error "systemd-resolved 重启失败"; return 1; }
+    elif command -v nmcli >/dev/null 2>&1 && svc_is_active NetworkManager; then
+        BACKEND="NetworkManager"
+        while IFS= read -r CON; do
+            [ -n "$CON" ] || continue
+            nmcli connection modify "$CON" ipv4.ignore-auto-dns yes ipv4.dns "$V4_LIST" 2>/dev/null || true
+            if [ "$HAS_V6" = true ] && [ -n "$V6_LIST" ]; then
+                nmcli connection modify "$CON" ipv6.ignore-auto-dns yes ipv6.dns "$V6_LIST" 2>/dev/null || true
+            fi
+        done < <(nmcli -t -f NAME connection show --active 2>/dev/null)
+        nmcli device reapply "$(default_iface)" 2>/dev/null || svc_restart NetworkManager
+    elif command -v resolvconf >/dev/null 2>&1; then
+        BACKEND="resolvconf"
+        mkdir -p /etc/resolvconf/resolv.conf.d
+        : > /etc/resolvconf/resolv.conf.d/head
+        for ip in $ALL_DNS; do echo "nameserver $ip" >> /etc/resolvconf/resolv.conf.d/head; done
+        resolvconf -u || { error "resolvconf 更新失败"; return 1; }
+    else
+        chattr -i "$RESOLV" 2>/dev/null || true
+        cp -a "$RESOLV" "${RESOLV}.bak.$(date +%Y%m%d_%H%M%S)" 2>/dev/null || true
+        local OTHER
+        OTHER=$(grep -v "^nameserver" "$RESOLV" 2>/dev/null)
+        {
+            [ -n "$OTHER" ] && echo "$OTHER"
+            for ip in $ALL_DNS; do echo "nameserver $ip"; done
+        } > "$RESOLV"
+    fi
 
-    local OTHER
-    OTHER=$(grep -v "^nameserver" "$RESOLV" 2>/dev/null)
-
-    {
-        [ -n "$OTHER" ] && echo "$OTHER"
-        for ip in $V4_LIST; do echo "nameserver $ip"; done
-        # 只在有 IPv6 时写入 v6 DNS
-        if [ "$HAS_V6" = "true" ] && [ -n "$V6_LIST" ]; then
-            for ip in $V6_LIST; do echo "nameserver $ip"; done
-        fi
-    } > "$RESOLV"
-
-    info "DNS 已更新 ✓"
+    local DNS_OK=false
+    if command -v getent >/dev/null 2>&1; then getent hosts github.com >/dev/null 2>&1 && DNS_OK=true
+    elif command -v nslookup >/dev/null 2>&1; then nslookup github.com >/dev/null 2>&1 && DNS_OK=true
+    else ping -c 1 -W 3 github.com >/dev/null 2>&1 && DNS_OK=true
+    fi
+    if [ "$DNS_OK" != true ]; then
+        error "DNS 解析测试失败，保留自动回滚计时器"
+        audit_action "DNS更新失败，后端 $BACKEND" FAILED
+        return 1
+    fi
+    info "DNS 已通过 $BACKEND 持久化更新 ✓"
+    audit_action "更新DNS，后端 $BACKEND" SUCCESS
     echo ""
     echo -e "  ${BOLD}更新后：${NC}"
     grep "^nameserver" "$RESOLV" | while read -r line; do
         local IP; IP=$(echo "$line" | awk '{print $2}')
         echo "$IP" | grep -q ":"             && echo -e "    ${YELLOW}$line${NC}  ${DIM}(IPv6)${NC}"             || echo -e "    ${CYAN}$line${NC}  ${DIM}(IPv4)${NC}"
     done
+    safety_confirm
 }
 
 dns_menu() {
@@ -3309,10 +3373,13 @@ dns_menu() {
             6) dns_write "114.114.114.114 114.114.115.115" "" "$HAS_V6" ;;
             7)
                 warn "即将用 $(get_editor) 编辑 /etc/resolv.conf"
+                safety_arm dns_manual || return 1
                 chattr -i /etc/resolv.conf 2>/dev/null
                 read -rp "  按 Enter 继续..." _
                 open_editor /etc/resolv.conf
                 info "DNS 配置已保存"
+                audit_action "手动编辑DNS配置" SUCCESS
+                safety_confirm
                 ;;
             0) return ;;
             00) safe_clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;
@@ -3538,6 +3605,7 @@ ip_show_status() {
 ip_prefer_v4() {
     print_header "设置 IPv4 优先"
     local GAICONF="/etc/gai.conf"
+    safety_arm prefer_v4 || return 1
 
     # 备份
     cp "$GAICONF" "${GAICONF}.bak.$(date +%Y%m%d_%H%M%S)" 2>/dev/null
@@ -3560,11 +3628,14 @@ ip_prefer_v4() {
     echo -e "  ${DIM}curl -s --max-time 5 ip.sb${NC}"
     local RESULT; RESULT=$(curl -s --max-time 5 ip.sb 2>/dev/null)
     [ -n "$RESULT" ] && echo -e "  当前出口 IP：${BOLD}${RESULT}${NC}" || warn "无法连接 ip.sb 进行验证"
+    audit_action "设置IPv4优先" SUCCESS
+    safety_confirm
 }
 
 ip_prefer_v6() {
     print_header "设置 IPv6 优先"
     local GAICONF="/etc/gai.conf"
+    safety_arm prefer_v6 || return 1
 
     [ -f "$GAICONF" ] && cp "$GAICONF" "${GAICONF}.bak.$(date +%Y%m%d_%H%M%S)" 2>/dev/null
     [ -f "$GAICONF" ] || touch "$GAICONF"
@@ -3580,6 +3651,8 @@ ip_prefer_v6() {
     echo -e "  ${DIM}curl -6 -s --max-time 5 ip.sb${NC}"
     local RESULT; RESULT=$(curl -6 -s --max-time 5 ip.sb 2>/dev/null)
     [ -n "$RESULT" ] && echo -e "  当前 IPv6 出口：${BOLD}${RESULT}${NC}" || warn "无法通过 IPv6 连接 ip.sb 进行验证"
+    audit_action "设置IPv6优先" SUCCESS
+    safety_confirm
 }
 
 ip_disable_v6() {
@@ -3589,6 +3662,7 @@ ip_disable_v6() {
     read -rp "  确认关闭？(Y/n，默认Y): " CONFIRM
     [ -z "${CONFIRM}" ] && CONFIRM="y"
     if ! echo "${CONFIRM}" | grep -qiE '^y(es)?$'; then warn "已取消"; return; fi
+    safety_arm disable_v6 || return 1
 
     local SYSCTL_FILE="/etc/sysctl.d/99-vps-bbr.conf"
 
@@ -3612,11 +3686,14 @@ ip_disable_v6() {
     echo ""
     echo -e "  当前 IPv6 状态：${RED}${BOLD}已禁用${NC}"
     warn "如 SSH 监听了 IPv6，建议确认 SSH 配置正常后再断开连接"
+    audit_action "关闭IPv6" SUCCESS
+    safety_confirm
 }
 
 ip_enable_v6() {
     print_header "开启 IPv6"
     local SYSCTL_FILE="/etc/sysctl.d/99-vps-bbr.conf"
+    safety_arm enable_v6 || return 1
 
     # 移除或改为 0
     for KEY in net.ipv6.conf.all.disable_ipv6 net.ipv6.conf.default.disable_ipv6 net.ipv6.conf.lo.disable_ipv6; do
@@ -3647,6 +3724,8 @@ ip_enable_v6() {
         warn "已开启但暂未获取到 IPv6 地址，可能需要重启网络服务或等待 SLAAC"
         echo -e "  ${DIM}可尝试：systemctl restart networking 或 reboot${NC}"
     fi
+    audit_action "开启IPv6" SUCCESS
+    safety_confirm
 }
 
 ip_config_menu() {
@@ -4835,11 +4914,273 @@ swap_menu() {
 
 
 # ══════════════════════════════════════════════════════════
+#  系统检查、备份与诊断工具箱
+# ══════════════════════════════════════════════════════════
+
+config_backup_paths() {
+    local p
+    for p in \
+        etc/ssh/sshd_config etc/ssh/sshd_config.d root/.ssh/authorized_keys \
+        etc/fail2ban etc/ufw etc/firewalld etc/nftables.conf etc/nft-port-forward \
+        etc/sysctl.conf etc/sysctl.d/99-vps-bbr.conf etc/sysctl.d/99-ipv6-disable.conf \
+        etc/gai.conf etc/resolv.conf etc/systemd/resolved.conf etc/systemd/resolved.conf.d \
+        etc/NetworkManager/conf.d etc/NetworkManager/system-connections etc/resolvconf/resolv.conf.d \
+        etc/caddy root/ddns.sh root/.cf_token root/.cf_zone root/.cf_tg root/.cf_last_change \
+        var/spool/cron/crontabs/root var/spool/cron/root etc/crontabs/root; do
+        [ -e "/$p" ] || [ -L "/$p" ] || continue
+        printf '%s\n' "$p"
+    done
+}
+
+config_backup_create() {
+    local LABEL="${1:-manual}" QUIET="${2:-false}" TS FILE LIST
+    TS=$(date +%Y%m%d_%H%M%S)
+    mkdir -p "$VPS_BACKUP_DIR"
+    chmod 700 "$VPS_DATA_DIR" "$VPS_BACKUP_DIR" 2>/dev/null || true
+    FILE="$VPS_BACKUP_DIR/${TS}_${LABEL}.tar.gz"
+    LIST=$(mktemp)
+    config_backup_paths > "$LIST"
+    if [ ! -s "$LIST" ] || ! tar -czf "$FILE" -C / -T "$LIST" 2>/dev/null; then
+        rm -f "$LIST" "$FILE"
+        [ "$QUIET" = true ] || error "配置备份失败"
+        return 1
+    fi
+    rm -f "$LIST"
+    chmod 600 "$FILE"
+    audit_action "创建配置备份 $(basename "$FILE")" SUCCESS
+    if [ "$QUIET" = true ]; then printf '%s\n' "$FILE"; else info "配置已备份：$FILE"; fi
+}
+
+config_backup_restore() {
+    local FILE="$1"
+    [ -f "$FILE" ] || { error "备份不存在"; return 1; }
+    tar -tzf "$FILE" >/dev/null 2>&1 || { error "备份文件损坏"; return 1; }
+    warn "恢复将覆盖当前配置，并重启相关服务。"
+    read -rp "  输入 RESTORE 确认恢复: " CONFIRM
+    [ "$CONFIRM" = "RESTORE" ] || { warn "已取消"; return; }
+    config_backup_create before_restore true >/dev/null || return 1
+    safety_arm config_restore || return 1
+    if ! tar -xzf "$FILE" -C / 2>/dev/null; then
+        error "恢复失败，已保留恢复前快照"
+        audit_action "恢复配置 $(basename "$FILE")" FAILED
+        return 1
+    fi
+    if command -v sshd >/dev/null 2>&1 && ! sshd -t 2>/dev/null; then
+        error "恢复后的 SSH 配置语法错误，请从 before_restore 快照恢复"
+        audit_action "恢复配置 $(basename "$FILE") SSH校验失败" FAILED
+        return 1
+    fi
+    restart_ssh 2>/dev/null || true
+    command -v systemctl >/dev/null 2>&1 && systemctl restart systemd-resolved 2>/dev/null || true
+    command -v nft >/dev/null 2>&1 && [ -f /etc/nftables.conf ] && nft -f /etc/nftables.conf 2>/dev/null || true
+    audit_action "恢复配置 $(basename "$FILE")" SUCCESS
+    info "配置恢复完成"
+    safety_confirm
+}
+
+config_backup_menu() {
+    while true; do
+        print_header "配置备份与恢复"
+        mkdir -p "$VPS_BACKUP_DIR"
+        local FILES=() f i=1
+        while IFS= read -r f; do FILES+=("$f"); done < <(find "$VPS_BACKUP_DIR" -maxdepth 1 -type f -name '*.tar.gz' 2>/dev/null | sort -r)
+        for f in "${FILES[@]}"; do
+            echo -e "  ${GREEN}[$i]${NC} $(basename "$f")  ${DIM}$(du -h "$f" 2>/dev/null | awk '{print $1}')${NC}"
+            i=$((i+1))
+        done
+        [ "${#FILES[@]}" -eq 0 ] && echo -e "  ${DIM}暂无备份${NC}"
+        menu_div
+        echo -e "  ${GREEN}c${NC}) 创建备份   ${YELLOW}r${NC}) 恢复备份   ${RED}d${NC}) 删除备份"
+        echo -e "  ${RED}0${NC}) 返回"
+        read -rp "  请选择: " CH
+        case "$CH" in
+            c|C) config_backup_create manual ;;
+            r|R|d|D)
+                [ "${#FILES[@]}" -gt 0 ] || { warn "暂无备份"; sleep 1; continue; }
+                read -rp "  输入备份编号: " N
+                echo "$N" | grep -qE '^[0-9]+$' || { warn "编号无效"; continue; }
+                [ "$N" -ge 1 ] && [ "$N" -le "${#FILES[@]}" ] || { warn "编号无效"; continue; }
+                if echo "$CH" | grep -qi '^r$'; then
+                    config_backup_restore "${FILES[$((N-1))]}"
+                else
+                    rm -f "${FILES[$((N-1))]}" && audit_action "删除配置备份 $(basename "${FILES[$((N-1))]}")" SUCCESS
+                fi
+                ;;
+            0) return ;;
+            *) warn "无效选项" ;;
+        esac
+        echo ""; read -rp "  按 Enter 返回..." _
+    done
+}
+
+safety_arm() {
+    local LABEL="$1" SNAP SCRIPT UFW_STATE="inactive" FIREWALLD_STATE="inactive"
+    SNAP=$(config_backup_create "safety_${LABEL}" true) || return 1
+    command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q 'Status: active' && UFW_STATE="active"
+    svc_is_active firewalld && FIREWALLD_STATE="active"
+    SCRIPT="$VPS_DATA_DIR/rollback_$$_$(date +%s)_${RANDOM}.sh"
+    mkdir -p "$VPS_DATA_DIR"
+    cat > "$SCRIPT" <<ROLLBACK_EOF
+#!/bin/bash
+sleep 180
+tar -xzf '$SNAP' -C / >/dev/null 2>&1
+sshd -t >/dev/null 2>&1 && (systemctl restart ssh 2>/dev/null || systemctl restart sshd 2>/dev/null || service ssh restart 2>/dev/null || service sshd restart 2>/dev/null)
+systemctl restart systemd-resolved >/dev/null 2>&1 || true
+systemctl restart NetworkManager >/dev/null 2>&1 || true
+if command -v ufw >/dev/null 2>&1; then
+    if [ '$UFW_STATE' = active ]; then ufw --force enable >/dev/null 2>&1; else ufw --force disable >/dev/null 2>&1; fi
+fi
+if command -v firewall-cmd >/dev/null 2>&1; then
+    if [ '$FIREWALLD_STATE' = active ]; then systemctl start firewalld >/dev/null 2>&1; else systemctl stop firewalld >/dev/null 2>&1; fi
+    firewall-cmd --reload >/dev/null 2>&1 || true
+fi
+nft -f /etc/nftables.conf >/dev/null 2>&1 || true
+logger -t vps-tools '未确认连接，已自动恢复 $LABEL 配置'
+rm -f '$SCRIPT'
+ROLLBACK_EOF
+    chmod 700 "$SCRIPT"
+    nohup bash "$SCRIPT" >/dev/null 2>&1 &
+    SAFETY_PID=$!
+    SAFETY_SCRIPT="$SCRIPT"
+    audit_action "启动防断联保护 $LABEL" SUCCESS
+    warn "防断联保护已启动：180 秒内未确认将自动恢复。"
+}
+
+safety_confirm() {
+    [ -n "${SAFETY_PID:-}" ] || return 0
+    echo ""
+    warn "请保持当前连接，并用新终端确认 SSH 和网络正常。"
+    read -rp "  确认连接正常，取消自动回滚？(y/N): " OK
+    if echo "$OK" | grep -qiE '^y(es)?$'; then
+        kill "$SAFETY_PID" 2>/dev/null || true
+        wait "$SAFETY_PID" 2>/dev/null || true
+        rm -f "${SAFETY_SCRIPT:-}"
+        audit_action "确认连接正常，取消自动回滚" SUCCESS
+        info "已取消自动回滚"
+        SAFETY_PID="" SAFETY_SCRIPT=""
+    else
+        warn "自动回滚仍在计时，请勿关闭旧连接。"
+    fi
+}
+
+security_audit() {
+    print_header "系统安全体检"
+    local WARNINGS=0 VALUE PORT
+    echo -e "  ${BOLD}SSH${NC}"
+    VALUE=$(get_config PasswordAuthentication)
+    if [ "$VALUE" = no ]; then info "密码登录已关闭"; else warn "密码登录未关闭"; WARNINGS=$((WARNINGS+1)); fi
+    VALUE=$(get_config PermitRootLogin)
+    if [ "$VALUE" = no ] || [ "$VALUE" = prohibit-password ]; then info "root 密码登录已限制"; else warn "root 密码登录允许"; WARNINGS=$((WARNINGS+1)); fi
+    VALUE=$(get_config PermitEmptyPasswords)
+    if [ "$VALUE" = yes ]; then warn "允许空密码登录"; WARNINGS=$((WARNINGS+1)); else info "未允许空密码登录"; fi
+    if command -v sshd >/dev/null 2>&1 && sshd -t 2>/dev/null; then info "sshd 配置语法正常"; else warn "无法通过 sshd 配置检查"; WARNINGS=$((WARNINGS+1)); fi
+    echo ""; echo -e "  ${BOLD}网络与服务${NC}"
+    PORT=$(get_config Port); PORT=${PORT:-22}
+    echo -e "  SSH 端口：${BOLD}$PORT${NC}"
+    local FW_CHECK; FW_CHECK=$(fw_detect)
+    if [ "$FW_CHECK" != none ] && [ "$(fw_running "$FW_CHECK")" = active ]; then info "防火墙运行中"; else warn "防火墙未运行"; WARNINGS=$((WARNINGS+1)); fi
+    if [ "$(f2b_status)" = running ]; then info "Fail2ban 运行中"; else warn "Fail2ban 未运行"; WARNINGS=$((WARNINGS+1)); fi
+    command -v ss >/dev/null 2>&1 && { echo -e "  ${DIM}公网监听端口：${NC}"; ss -H -lntup 2>/dev/null | awk '$5 ~ /(^|\]):[0-9]+$/ {print "    " $5 "  " $7}' | sort -u | head -20; }
+    echo ""; echo -e "  ${BOLD}账户与更新${NC}"
+    local UID0; UID0=$(awk -F: '$3==0 {print $1}' /etc/passwd | paste -sd, -)
+    if [ "$UID0" = root ]; then info "未发现额外 UID 0 账户"; else warn "UID 0 账户：$UID0"; WARNINGS=$((WARNINGS+1)); fi
+    if command -v apt-get >/dev/null 2>&1; then
+        local UPDATES; UPDATES=$(apt list --upgradable 2>/dev/null | tail -n +2 | wc -l)
+        if [ "$UPDATES" -eq 0 ]; then info "未发现待更新软件包"; else warn "有 $UPDATES 个软件包可更新"; WARNINGS=$((WARNINGS+1)); fi
+    fi
+    echo ""; menu_div
+    if [ "$WARNINGS" -eq 0 ]; then info "未发现明显风险"; else warn "发现 $WARNINGS 项需要关注"; fi
+    audit_action "执行系统安全体检，警告 $WARNINGS 项" SUCCESS
+}
+
+login_security_logs() {
+    while true; do
+        print_header "登录记录与安全日志"
+        echo -e "  ${GREEN}1${NC}) 最近成功登录       ${GREEN}2${NC}) 最近失败登录"
+        echo -e "  ${GREEN}3${NC}) 当前在线会话       ${GREEN}4${NC}) SSH 安全日志"
+        echo -e "  ${GREEN}5${NC}) Fail2ban 封禁状态   ${RED}0${NC}) 返回"
+        read -rp "  请选择 [0-5]: " CH
+        case "$CH" in
+            1) last -ai 2>/dev/null | head -30 ;;
+            2) if command -v lastb >/dev/null 2>&1; then lastb -ai 2>/dev/null | head -30; else warn "系统没有 lastb 数据"; fi ;;
+            3) who -uH 2>/dev/null; echo ""; w 2>/dev/null ;;
+            4) if command -v journalctl >/dev/null 2>&1; then journalctl -u ssh -u sshd --since '24 hours ago' --no-pager 2>/dev/null | tail -80; else grep -Ei 'sshd.*(accepted|failed|invalid)' /var/log/auth.log /var/log/secure 2>/dev/null | tail -80; fi ;;
+            5) fail2ban-client status 2>/dev/null || warn "Fail2ban 未运行" ;;
+            0) return ;;
+            *) warn "无效选项"; continue ;;
+        esac
+        audit_action "查看登录安全日志选项 $CH" SUCCESS
+        echo ""; read -rp "  按 Enter 返回..." _
+    done
+}
+
+network_diagnostics() {
+    print_header "网络诊断工具箱"
+    local TARGET
+    read -rp "  目标域名或 IP（默认 1.1.1.1）: " TARGET
+    TARGET=${TARGET:-1.1.1.1}
+    echo ""; echo -e "  ${BOLD}地址与默认路由${NC}"
+    ip -brief address 2>/dev/null || ip addr 2>/dev/null | head -40
+    ip route 2>/dev/null | head -10
+    ip -6 route 2>/dev/null | head -10
+    echo ""; echo -e "  ${BOLD}DNS 解析${NC}"
+    if command -v getent >/dev/null 2>&1; then getent ahosts "$TARGET" 2>/dev/null | head -8; else nslookup "$TARGET" 2>/dev/null | head -15; fi
+    echo ""; echo -e "  ${BOLD}连通性${NC}"
+    ping -c 4 -W 2 "$TARGET" 2>/dev/null || warn "IPv4/默认协议 Ping 失败"
+    command -v ping6 >/dev/null 2>&1 && ping6 -c 2 -W 2 "$TARGET" 2>/dev/null || true
+    echo ""; echo -e "  ${BOLD}公网出口${NC}"
+    command -v curl >/dev/null 2>&1 && { printf '  IPv4: '; curl -4 -fsS --max-time 5 https://api.ipify.org 2>/dev/null || echo "不可用"; echo ""; printf '  IPv6: '; curl -6 -fsS --max-time 5 https://api64.ipify.org 2>/dev/null || echo "不可用"; echo ""; }
+    echo ""; echo -e "  ${BOLD}MTU 探测${NC}"
+    if ping -c 1 -W 2 -M "do" -s 1472 "$TARGET" >/dev/null 2>&1; then info "路径 MTU 至少为 1500"; else warn "1500 MTU 探测失败，可能需要降低 MTU"; fi
+    audit_action "网络诊断 $TARGET" SUCCESS
+}
+
+audit_log_view() {
+    print_header "脚本操作记录"
+    if [ -s "$VPS_AUDIT_LOG" ]; then
+        tail -100 "$VPS_AUDIT_LOG" | column -t -s $'\t' 2>/dev/null || tail -100 "$VPS_AUDIT_LOG"
+    else
+        warn "暂无操作记录"
+    fi
+}
+
+system_toolbox_menu() {
+    while true; do
+        print_header "安全与诊断工具箱"
+        echo -e "  ${GREEN}1${NC}) 系统安全体检       ${GREEN}2${NC}) 登录记录与安全日志"
+        echo -e "  ${GREEN}3${NC}) 网络诊断工具箱     ${GREEN}4${NC}) 配置备份与恢复"
+        echo -e "  ${GREEN}5${NC}) 查看脚本操作记录   ${RED}0${NC}) 返回"
+        menu_div
+        echo -e "  ${DIM}防断联保护已自动用于 SSH、防火墙、DNS 和 IP 配置修改${NC}"
+        read -rp "  请选择 [0-5]: " CH
+        case "$CH" in
+            1) security_audit ;;
+            2) login_security_logs; continue ;;
+            3) network_diagnostics ;;
+            4) config_backup_menu; continue ;;
+            5) audit_log_view ;;
+            0) return ;;
+            *) warn "无效选项"; sleep 1; continue ;;
+        esac
+        echo ""; read -rp "  按 Enter 返回..." _
+    done
+}
+
+# ══════════════════════════════════════════════════════════
 #  脚本自我管理模块
 # ══════════════════════════════════════════════════════════
 
 SCRIPT_URL="https://raw.githubusercontent.com/chnnic/SSH-Hardening/refs/heads/main/SSH-Hardening.sh"
+CHECKSUM_URL="https://raw.githubusercontent.com/chnnic/SSH-Hardening/refs/heads/main/SSH-Hardening.sh.sha256"
 LOCAL_SCRIPT="/usr/local/bin/vps-tools"
+
+file_sha256() {
+    if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | awk '{print $1}'
+    elif command -v shasum >/dev/null 2>&1; then shasum -a 256 "$1" | awk '{print $1}'
+    elif command -v openssl >/dev/null 2>&1; then openssl dgst -sha256 "$1" | awk '{print $NF}'
+    else return 1
+    fi
+}
 
 # ── 安装脚本到本地（设置快捷键 v）────────────────────────
 self_install() {
@@ -4891,7 +5232,7 @@ self_update() {
     echo -e "  ${DIM}${SCRIPT_URL}${NC}"
     echo ""
 
-    local TMP_FILE; TMP_FILE="/tmp/vps_update_$$.sh"
+    local TMP_FILE CHECKSUM_FILE; TMP_FILE="/tmp/vps_update_$$.sh"; CHECKSUM_FILE="/tmp/vps_update_$$.sha256"
 
     info "正在下载最新版本..."
     if ! curl -fsSL "$SCRIPT_URL" -o "$TMP_FILE" 2>/dev/null; then
@@ -4900,6 +5241,23 @@ self_update() {
         echo -e "  ${DIM}手动更新：curl -fsSL ${SCRIPT_URL} -o ${LOCAL_SCRIPT} && chmod +x ${LOCAL_SCRIPT}${NC}"
         return
     fi
+
+    if ! curl -fsSL "$CHECKSUM_URL" -o "$CHECKSUM_FILE" 2>/dev/null; then
+        rm -f "$TMP_FILE" "$CHECKSUM_FILE"
+        error "无法下载 SHA256 校验文件，已拒绝更新"
+        return
+    fi
+    local EXPECTED_HASH ACTUAL_HASH
+    EXPECTED_HASH=$(awk 'NR==1 {print $1}' "$CHECKSUM_FILE")
+    ACTUAL_HASH=$(file_sha256 "$TMP_FILE" 2>/dev/null || true)
+    rm -f "$CHECKSUM_FILE"
+    if [ -z "$ACTUAL_HASH" ] || [ "$ACTUAL_HASH" != "$EXPECTED_HASH" ]; then
+        rm -f "$TMP_FILE"
+        error "SHA256 校验失败，已拒绝更新"
+        audit_action "脚本更新SHA256校验失败" FAILED
+        return
+    fi
+    info "SHA256 校验通过：${ACTUAL_HASH:0:16}..."
 
     # 验证语法
     if ! bash -n "$TMP_FILE" 2>/dev/null; then
@@ -4914,6 +5272,15 @@ self_update() {
     echo -e "  当前版本：${BOLD}${CUR_VER:-未知}${NC}  →  最新版本：${GREEN}${BOLD}${NEW_VER:-未知}${NC}"
     echo ""
 
+    # 覆盖前保留当前可执行版本
+    if [ -f "$LOCAL_SCRIPT" ]; then
+        mkdir -p "$VPS_VERSION_DIR"
+        chmod 700 "$VPS_DATA_DIR" "$VPS_VERSION_DIR" 2>/dev/null || true
+        local SAVED_VER
+        SAVED_VER="${CUR_VER:-unknown}_$(date +%Y%m%d_%H%M%S).sh"
+        cp "$LOCAL_SCRIPT" "$VPS_VERSION_DIR/$SAVED_VER"
+        chmod 700 "$VPS_VERSION_DIR/$SAVED_VER"
+    fi
     # 覆盖安装
     cp "$TMP_FILE" "$LOCAL_SCRIPT"
     chmod +x "$LOCAL_SCRIPT"
@@ -4925,6 +5292,7 @@ self_update() {
     ln -sf "$LOCAL_SCRIPT" /usr/local/bin/V 2>/dev/null
 
     info "更新完成 ✓"
+    audit_action "脚本更新 ${CUR_VER:-未知} 到 ${NEW_VER:-未知}" SUCCESS
     # 清理 DDNS 日志，保留最后 500 行（避免文件过大）
     if [ -f /var/log/ddns.log ]; then
         local _LL; _LL=$(wc -l < /var/log/ddns.log 2>/dev/null || echo 0)
@@ -4946,6 +5314,31 @@ self_update() {
     # 清除更新提示，避免新版本启动后还显示旧提示
     rm -f /tmp/.vps_new_version 2>/dev/null
     warn "即将用新版本重启脚本..."
+    sleep 1
+    exec "$LOCAL_SCRIPT"
+}
+
+# ── 回滚到更新前版本 ──────────────────────────────────────
+self_rollback() {
+    print_header "回滚脚本版本"
+    mkdir -p "$VPS_VERSION_DIR"
+    local FILES=() f i=1
+    while IFS= read -r f; do FILES+=("$f"); done < <(find "$VPS_VERSION_DIR" -maxdepth 1 -type f -name '*.sh' 2>/dev/null | sort -r)
+    [ "${#FILES[@]}" -gt 0 ] || { warn "暂无可回滚版本"; return; }
+    for f in "${FILES[@]}"; do echo -e "  ${GREEN}[$i]${NC} $(basename "$f")"; i=$((i+1)); done
+    read -rp "  选择版本编号（回车取消）: " N
+    [ -n "$N" ] || return
+    echo "$N" | grep -qE '^[0-9]+$' || { warn "编号无效"; return; }
+    [ "$N" -ge 1 ] && [ "$N" -le "${#FILES[@]}" ] || { warn "编号无效"; return; }
+    local SELECTED="${FILES[$((N-1))]}"
+    bash -n "$SELECTED" 2>/dev/null || { error "该版本语法校验失败"; return 1; }
+    read -rp "  确认回滚到 $(basename "$SELECTED")？(y/N): " OK
+    echo "$OK" | grep -qiE '^y(es)?$' || { warn "已取消"; return; }
+    [ -f "$LOCAL_SCRIPT" ] && cp "$LOCAL_SCRIPT" "$VPS_VERSION_DIR/before_rollback_$(date +%Y%m%d_%H%M%S).sh"
+    if ! cp "$SELECTED" "$LOCAL_SCRIPT" || ! chmod 700 "$LOCAL_SCRIPT"; then error "回滚失败"; return 1; fi
+    audit_action "脚本回滚到 $(basename "$SELECTED")" SUCCESS
+    info "版本回滚完成"
+    warn "即将用回滚版本重启脚本..."
     sleep 1
     exec "$LOCAL_SCRIPT"
 }
@@ -4998,7 +5391,7 @@ self_check_first_run() {
     clear
     echo ""
     box_top
-    box_title "VPS 开荒脚本 V3.6.3"
+    box_title "VPS 开荒脚本 V3.7.0"
     box_title "· · 银趴火山帮 · ·"
     box_sep
     box_title "首次运行检测"
@@ -5048,15 +5441,17 @@ self_manage_menu() {
         echo -e "  ${GREEN}1${NC}) 安装脚本 + 设置快捷键 v"
         echo -e "  ${GREEN}2${NC}) 从 GitHub 更新最新版"
         echo -e "  ${YELLOW}3${NC}) 删除本地脚本和快捷键"
+        echo -e "  ${YELLOW}4${NC}) 回滚到更新前版本"
         echo -e "  ${RED}0${NC}) 返回              ${RED}00${NC}) 退出脚本"
         menu_div
         echo ""
-        read -rp "  请选择 [0-3]: " CH
+        read -rp "  请选择 [0-4]: " CH
 
         case "$CH" in
             1) self_install ;;
             2) self_update ;;
             3) self_uninstall ;;
+            4) self_rollback ;;
             0) return ;;
             00) safe_clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;
             *) warn "无效选项"; sleep 1; continue ;;
@@ -7040,7 +7435,7 @@ main_menu() {
         volcano_art_banner
         echo ""
         box_top
-        box_title "VPS 开荒脚本 V3.6.3"
+        box_title "VPS 开荒脚本 V3.7.0"
         box_title "· · 银趴火山帮 · ·"
         box_sep
         # 收集状态数据
@@ -7109,12 +7504,14 @@ main_menu() {
         menu_item "n" "NFT 转发管理 ${DIM}（端口转发 / DDNS / 访问控制）${NC}"
         menu_item "t" "时间同步"
         menu_item "s" "Swap 管理"
+        menu_item "h" "安全与诊断工具箱"
         menu_item "m" "脚本管理 ${DIM}（安装 / 更新 / 卸载）${NC}"
         echo ""
         menu_item "0" "退出" "$RED"
         box_bot
         echo ""
-        read -rp "  请选择功能 [0-9/n/t/s/m]: " CHOICE
+        read -rp "  请选择功能 [0-9/n/t/s/h/m]: " CHOICE
+        audit_action "主菜单选择 $CHOICE" INFO
 
         case "$CHOICE" in
             1) ssh_tools_menu ;;
@@ -7129,6 +7526,7 @@ main_menu() {
             n|N) nft_menu ;;
             t|T) timesync_menu ;;
             s|S) swap_menu ;;
+            h|H) system_toolbox_menu ;;
             m|M) self_manage_menu ;;
             0) safe_clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;
             *) warn "无效选项，请重新输入。"; sleep 1 ;;
