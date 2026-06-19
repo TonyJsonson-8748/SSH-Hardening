@@ -106,7 +106,6 @@ box_title() {
 # 普通内容行：PLAIN=纯文本(算宽度)  COLORED=带色码(显示用)
 # 用法: box_line "纯文本" "带色码文本"
 box_line() {
-    local PLAIN="$1"
     local COLORED="${2:-$1}"
     echo -e "$COLORED"
 }
@@ -434,7 +433,8 @@ set_config() {
 }
 
 backup_config() {
-    local BACKUP="$SSHD_CONFIG.bak.$(date +%Y%m%d_%H%M%S)"
+    local BACKUP
+    BACKUP="$SSHD_CONFIG.bak.$(date +%Y%m%d_%H%M%S)"
     cp "$SSHD_CONFIG" "$BACKUP"
     LAST_SSHD_BACKUP="$BACKUP"   # 供 apply_and_restart 失败时回滚
     info "配置已备份：$BACKUP"
@@ -1548,7 +1548,8 @@ bbr_print_status() {
 # ── 备份 sysctl ───────────────────────────────────────────
 bbr_backup_sysctl() {
     if [ -f "$SYSCTL_FILE" ]; then
-        local BAK="${SYSCTL_FILE}.bak.$(date +%Y%m%d_%H%M%S)"
+        local BAK
+        BAK="${SYSCTL_FILE}.bak.$(date +%Y%m%d_%H%M%S)"
         cp "$SYSCTL_FILE" "$BAK"
         info "已备份至：$BAK"
     fi
@@ -1660,7 +1661,7 @@ bbr_apply_sysctl() {
     echo "$CONFIG" > "$SYSCTL_FILE"
 
     # 逐行应用，跳过不支持的参数（Alpine 部分内核不支持 default_qdisc 等）
-    local FAILED=0 SKIPPED=0
+    local SKIPPED=0
     while IFS= read -r line; do
         # 跳过注释和空行
         echo "$line" | grep -qE '^\s*#|^\s*$' && continue
@@ -2536,7 +2537,6 @@ bbr_check_kernel() {
     # Alpine 上尝试安装内核模块包
     if command -v apk &>/dev/null; then
         warn "tcp_bbr 模块未加载，尝试安装内核模块..."
-        local KFULL; KFULL=$(uname -r)
         apk add --no-cache "linux-lts-dev" 2>/dev/null             || apk add --no-cache "linux-virt" 2>/dev/null || true
         modprobe tcp_bbr 2>/dev/null && { info "tcp_bbr 模块已加载 ✓"; return 0; }
     fi
@@ -3270,7 +3270,8 @@ detect_os() {
 
 mirror_backup() {
     local SRC_FILE="$1"
-    local BAK="${SRC_FILE}.bak.$(date +%Y%m%d_%H%M%S)"
+    local BAK
+    BAK="${SRC_FILE}.bak.$(date +%Y%m%d_%H%M%S)"
     cp "$SRC_FILE" "$BAK" 2>/dev/null && info "已备份原始源文件：$BAK"
 }
 
@@ -3743,7 +3744,8 @@ caddy_uninstall() {
 # 安全追加 Caddy 配置块：先备份 → 追加 → validate，失败则还原，不污染正式配置
 caddy_append_safe() {
     local BLOCK="$1"
-    local BAK="${CADDYFILE}.bak.$(date +%Y%m%d_%H%M%S)"
+    local BAK
+    BAK="${CADDYFILE}.bak.$(date +%Y%m%d_%H%M%S)"
     cp "$CADDYFILE" "$BAK" 2>/dev/null
     printf '%s\n' "$BLOCK" >> "$CADDYFILE"
     if caddy validate --config "$CADDYFILE" 2>/tmp/caddy_err; then
@@ -4786,9 +4788,6 @@ self_install() {
         fi
     done
 
-    # 不写入 alias，只用软链接，避免前缀冲突其他命令（如 volss）
-    local WROTE_ALIAS=false
-
     echo ""
     menu_div
     info "安装完成！新终端直接输入 ${BOLD}v${NC} 即可启动"
@@ -5271,8 +5270,8 @@ EOF
     echo "        # NFTPF_ACCESS_MODE=$mode"
 
     # 为每条规则生成访问控制匹配
-    local id f lip ls le ttype thost tip ts te md match
-    while IFS='|' read -r id f lip ls le ttype thost tip ts te md; do
+    local id f lip ls le ttype thost tip ts te _md match
+    while IFS='|' read -r id f lip ls le ttype thost tip ts te _md; do
         [[ -z "$id" || "$id" = \#* ]] && continue
         [ "$f" = "$family" ] || continue
         # 构造匹配（不带 dnat 的版本）
@@ -5815,11 +5814,11 @@ nft_validate_access_entry() {
     local family; family=$(nft_classify "$base")
     case "$family" in
         ipv4)
-            [ -z "$prefix" ] || [ "$prefix" -ge 0 -a "$prefix" -le 32 ] || return 1
+            [ -z "$prefix" ] || { [ "$prefix" -ge 0 ] && [ "$prefix" -le 32 ]; } || return 1
             NFT_AC_FAMILY="ipv4"
             ;;
         ipv6)
-            [ -z "$prefix" ] || [ "$prefix" -ge 0 -a "$prefix" -le 128 ] || return 1
+            [ -z "$prefix" ] || { [ "$prefix" -ge 0 ] && [ "$prefix" -le 128 ]; } || return 1
             NFT_AC_FAMILY="ipv6"
             ;;
         *) return 1 ;;
