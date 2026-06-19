@@ -1,4 +1,4 @@
-# VPS 开荒脚本 V3.6.2
+# VPS 开荒脚本 V3.6.3
 
 > **银趴火山帮** 出品 · SSH · BBR · DDNS · Caddy · Firewall · NFT 转发
 
@@ -30,7 +30,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/chnnic/SSH-Hardening/refs/he
    ...
 
 ════════════════════════════════════════
-       VPS 开荒脚本 V3.6.2
+       VPS 开荒脚本 V3.6.3
   ··银趴火山帮··
 ────────────────────────────────────────
   端口 22  |  公钥数 1
@@ -258,6 +258,7 @@ IP 真实变化时推送通知，实时读取 `/root/.cf_tg`，兼容 crontab �
 |------|------|
 | 查看详细状态 | IP 地址 / 优先级 / 默认路由 |
 | 设置 IPv4 优先 | 写入 `/etc/gai.conf` 立即生效 |
+| 设置 IPv6 优先 | 移除 IPv4 优先规则，恢复系统默认 IPv6 优先 |
 | 关闭 IPv6 | sysctl 持久化 |
 | 开启 IPv6 | 恢复 sysctl + 等待 SLAAC |
 
@@ -453,6 +454,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/chnnic/SSH-Hardening/refs/he
 
 | 版本 | 主要变更 |
 |------|---------|
+| **V3.6.3** | IPv4/IPv6 配置菜单新增“设置 IPv6 优先”，可移除 `/etc/gai.conf` 中的 IPv4 优先规则并恢复系统默认地址选择策略 |
 | **V3.6.2** | BBR 模块增强：sysctl 权限探测不再改变 TCP 参数；tc 限速服务运行时动态识别 `tc` 路径和默认网卡；不支持的 sysctl 参数会在持久化文件中注释；Alpine 内核包安装改为确认后执行；新增 BBR 诊断入口 |
 | **V3.6.1** | 修复删除最后一个 SSH 公钥不生效；DDNS 在 `/var/log/ddns.log` 不可写时正确使用备用日志路径；nftables 配置应用失败时不再误报成功；BBR `initcwnd` 支持无网关默认路由 |
 | **V3.6.0** | Fail2ban 修正：jail 加 `mode = aggressive`（纯公钥机/禁密码下也能抓扫描者并封禁，解决 `Total failed` 恒为 0）；`journalmatch` 显式双服务名 `ssh.service + sshd.service`（兼容 Debian/RedHat，不改系统 filter）；`jail.local` 已存在由「跳过」改为「备份后重写」（否则脚本更新的配置永不生效） |

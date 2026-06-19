@@ -1,8 +1,9 @@
 #!/bin/bash
 
 # ============================================================
-#  VPS 开荒脚本 V3.6.2 — 银趴火山帮
+#  VPS 开荒脚本 V3.6.3 — 银趴火山帮
 #  功能：SSH管理 / Fail2ban / BBR TCP 调优
+#  V3.6.3: IPv4/IPv6 配置菜单新增“设置 IPv6 优先”，可恢复系统默认地址优先级
 #  V3.6.2: BBR 模块增强：sysctl 权限探测无副作用、tc service 动态找 tc/网卡、
 #          不支持 sysctl 参数注释持久化、Alpine 内核包安装需确认、增加诊断入口
 #  V3.6.1: 修复删除最后一个 SSH 公钥不生效、DDNS 备用日志路径不生效、
@@ -194,7 +195,7 @@ print_header() {
     safe_clear
     echo ""
     box_top
-    box_title "VPS 开荒脚本 V3.6.2"
+    box_title "VPS 开荒脚本 V3.6.3"
     box_title "· · 银趴火山帮 · ·"
     box_sep
     box_title "$1"
@@ -1304,7 +1305,7 @@ fail2ban_menu() {
         safe_clear
         echo ""
         box_top
-        box_title "VPS 开荒脚本 V3.6.2"
+        box_title "VPS 开荒脚本 V3.6.3"
         box_title "· · 银趴火山帮 · ·"
         box_sep
         box_title "Fail2ban 管理"
@@ -3561,6 +3562,26 @@ ip_prefer_v4() {
     [ -n "$RESULT" ] && echo -e "  当前出口 IP：${BOLD}${RESULT}${NC}" || warn "无法连接 ip.sb 进行验证"
 }
 
+ip_prefer_v6() {
+    print_header "设置 IPv6 优先"
+    local GAICONF="/etc/gai.conf"
+
+    [ -f "$GAICONF" ] && cp "$GAICONF" "${GAICONF}.bak.$(date +%Y%m%d_%H%M%S)" 2>/dev/null
+    [ -f "$GAICONF" ] || touch "$GAICONF"
+
+    # 移除本脚本写入的 IPv4 优先规则，恢复 glibc 默认地址选择策略（IPv6 优先）。
+    sed -i '/^precedence ::ffff:0:0\/96[[:space:]]\+100/d' "$GAICONF" 2>/dev/null
+
+    info "已移除 IPv4 优先规则，恢复 IPv6 优先（系统默认）✓"
+    echo ""
+    warn "IPv6 优先已生效，部分程序需重启才能感知变化"
+    echo ""
+    echo -e "  验证（如网络可用，应显示 IPv6 连接）："
+    echo -e "  ${DIM}curl -6 -s --max-time 5 ip.sb${NC}"
+    local RESULT; RESULT=$(curl -6 -s --max-time 5 ip.sb 2>/dev/null)
+    [ -n "$RESULT" ] && echo -e "  当前 IPv6 出口：${BOLD}${RESULT}${NC}" || warn "无法通过 IPv6 连接 ip.sb 进行验证"
+}
+
 ip_disable_v6() {
     print_header "关闭 IPv6"
     warn "关闭 IPv6 后，仅 IPv6 的服务将无法访问！"
@@ -3643,18 +3664,19 @@ ip_config_menu() {
         echo ""
         menu_div
         echo -e "  ${GREEN}1${NC}) 查看IPv4/IPv6状态"
-        echo -e "  ${GREEN}2${NC}) 设置IPv4优先      ${GREEN}3${NC}) 关闭 IPv6"
-        echo -e "  ${GREEN}4${NC}) 开启 IPv6"
+        echo -e "  ${GREEN}2${NC}) 设置IPv4优先      ${GREEN}3${NC}) 设置IPv6优先"
+        echo -e "  ${GREEN}4${NC}) 关闭 IPv6        ${GREEN}5${NC}) 开启 IPv6"
         echo -e "  ${RED}0${NC}) 返回              ${RED}00${NC}) 退出脚本"
         menu_div
         echo ""
-        read -rp "  请选择 [0-4]: " CH
+        read -rp "  请选择 [0-5]: " CH
 
         case "$CH" in
             1) ip_show_status ;;
             2) ip_prefer_v4 ;;
-            3) ip_disable_v6 ;;
-            4) ip_enable_v6 ;;
+            3) ip_prefer_v6 ;;
+            4) ip_disable_v6 ;;
+            5) ip_enable_v6 ;;
             0) return ;;
             00) safe_clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;
             *) warn "无效选项"; sleep 1; continue ;;
@@ -4976,7 +4998,7 @@ self_check_first_run() {
     clear
     echo ""
     box_top
-    box_title "VPS 开荒脚本 V3.6.2"
+    box_title "VPS 开荒脚本 V3.6.3"
     box_title "· · 银趴火山帮 · ·"
     box_sep
     box_title "首次运行检测"
@@ -7018,7 +7040,7 @@ main_menu() {
         volcano_art_banner
         echo ""
         box_top
-        box_title "VPS 开荒脚本 V3.6.2"
+        box_title "VPS 开荒脚本 V3.6.3"
         box_title "· · 银趴火山帮 · ·"
         box_sep
         # 收集状态数据
