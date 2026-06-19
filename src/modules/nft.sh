@@ -1190,29 +1190,28 @@ nft_menu() {
 
         menu_div
         if command -v nft &>/dev/null; then
-            echo -e "  ${GREEN}1${NC}) 添加单端口转发     ${GREEN}2${NC}) 添加端口段转发"
-            echo -e "  ${GREEN}3${NC}) 查看所有规则       ${GREEN}e${NC}) 修改规则"
-            echo -e "  ${YELLOW}4${NC}) 删除规则           ${YELLOW}5${NC}) 清空所有规则"
-            menu_div
-            echo -e "  ${GREEN}6${NC}) 立即刷新 DDNS"
+            menu_pair "1" "添加单端口转发" "2" "添加端口段转发"
+            menu_pair "3" "查看所有规则" "e" "修改规则"
+            menu_pair "4" "删除规则" "5" "清空所有规则" "$YELLOW" "$YELLOW"
+            echo ""
+            menu_group "动态解析与访问"
+            menu_item "6" "立即刷新 DDNS"
             if [ "$timer_st" = "active" ]; then
-                echo -e "  ${YELLOW}7${NC}) 关闭 DDNS 自动刷新"
+                menu_item "7" "关闭 DDNS 自动刷新" "$YELLOW"
             else
-                echo -e "  ${GREEN}7${NC}) 启用 DDNS 自动刷新"
+                menu_item "7" "启用 DDNS 自动刷新"
             fi
-            echo -e "  ${GREEN}8${NC}) 访问控制（白/黑名单）"
-            echo -e "  ${GREEN}l${NC}) iptables 本地端口转发"
-            menu_div
-            echo -e "  ${YELLOW}9${NC}) 卸载 nftables"
+            menu_pair "8" "访问控制" "l" "iptables 本地转发"
+            menu_item "9" "卸载 nftables" "$YELLOW"
         else
             echo -e "  ${YELLOW}未检测到 nftables，请先安装：${NC}"
-            echo -e "  ${GREEN}i${NC}) 安装 nftables"
-            echo -e "  ${GREEN}l${NC}) iptables 本地端口转发（无需 nftables）"
+            menu_item "i" "安装 nftables"
+            menu_item "l" "iptables 本地端口转发"
             menu_div
         fi
-        echo -e "  ${RED}0${NC}) 返回   ${RED}00${NC}) 退出脚本"
+        menu_pair "0" "返回主菜单" "00" "退出脚本" "$RED" "$RED"
         echo ""
-        read -rp "  请选择: " ch
+        read -rp "$(ui_prompt '选择操作: ')" ch
 
         if ! command -v nft &>/dev/null; then
             case "$ch" in

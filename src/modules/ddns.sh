@@ -621,23 +621,23 @@ ddns_menu() {
         echo ""
         menu_div
         if [ "$D_ST" = "not_installed" ]; then
-            echo -e "  ${GREEN}1${NC}) 开始安装配置 DDNS"
-            echo -e "  ${RED}0${NC}) 返回  ${RED}00${NC}) 退出脚本"
+            menu_item "1" "开始安装并配置 DDNS"
+            menu_pair "0" "返回主菜单" "00" "退出脚本" "$RED" "$RED"
         else
-            echo -e "  ${GREEN}1${NC}) 手动立即更新     ${GREEN}2${NC}) 查看日志"
-            echo -e "  ${GREEN}3${NC}) 修改配置         ${GREEN}6${NC}) Telegram 通知"
+            menu_pair "1" "立即更新" "2" "查看日志"
+            menu_pair "3" "修改配置" "6" "Telegram 通知"
             if [ "$D_ST" = "running" ]; then
-                echo -e "  ${YELLOW}4${NC}) 暂停自动更新     ${YELLOW}5${NC}) 卸载 DDNS"
+                menu_pair "4" "暂停自动更新" "5" "卸载 DDNS" "$YELLOW" "$YELLOW"
             elif [ "$D_ST" = "no_cron" ]; then
-                echo -e "  ${GREEN}4${NC}) 安装 cron 并恢复  ${YELLOW}5${NC}) 卸载 DDNS"
+                menu_pair "4" "安装 cron 并恢复" "5" "卸载 DDNS" "$GREEN" "$YELLOW"
             else
-                echo -e "  ${GREEN}4${NC}) 恢复自动更新     ${YELLOW}5${NC}) 卸载 DDNS"
+                menu_pair "4" "恢复自动更新" "5" "卸载 DDNS" "$GREEN" "$YELLOW"
             fi
-            echo -e "  ${RED}0${NC}) 返回  ${RED}00${NC}) 退出脚本"
+            menu_pair "0" "返回主菜单" "00" "退出脚本" "$RED" "$RED"
         fi
         menu_div
         echo ""
-        read -rp "  请选择: " CH
+        read -rp "$(ui_prompt '选择操作: ')" CH
 
         if [ "$D_ST" = "not_installed" ]; then
             case "$CH" in
@@ -665,7 +665,7 @@ ddns_menu() {
 
         # 日志查看后不需要再 Enter 一次（内部已有循环）
         if [ "$CH" != "0" ] && [ "$CH" != "2" ]; then
-            echo ""; read -rp "  按 Enter 返回..." _
+            ui_pause
         fi
     done
 }

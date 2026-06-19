@@ -223,7 +223,7 @@ self_check_first_run() {
     clear
     echo ""
     box_top
-    box_title "VPS 开荒脚本 V3.8.0"
+    box_title "VPS 开荒脚本 V3.9.0"
     box_title "· · 银趴火山帮 · ·"
     box_sep
     box_title "首次运行检测"
@@ -270,14 +270,12 @@ self_manage_menu() {
         echo -e "  快捷键 v：${BOLD}$([ "$HAS_CMD" = true ] && echo "${GREEN}已设置${NC}" || echo "${YELLOW}未设置${NC}")${NC}"
         echo ""
         menu_div
-        echo -e "  ${GREEN}1${NC}) 安装脚本 + 设置快捷键 v"
-        echo -e "  ${GREEN}2${NC}) 从 GitHub 更新最新版"
-        echo -e "  ${YELLOW}3${NC}) 删除本地脚本和快捷键"
-        echo -e "  ${YELLOW}4${NC}) 回滚到更新前版本"
-        echo -e "  ${RED}0${NC}) 返回              ${RED}00${NC}) 退出脚本"
+        menu_pair "1" "安装并设置快捷键" "2" "更新到最新版"
+        menu_pair "3" "卸载本地脚本" "4" "回滚历史版本" "$YELLOW" "$YELLOW"
+        menu_pair "0" "返回主菜单" "00" "退出脚本" "$RED" "$RED"
         menu_div
         echo ""
-        read -rp "  请选择 [0-4]: " CH
+        read -rp "$(ui_prompt '选择操作 [0-4]: ')" CH
 
         case "$CH" in
             1) self_install ;;

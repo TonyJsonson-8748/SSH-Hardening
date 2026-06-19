@@ -139,12 +139,11 @@ dns_menu() {
             echo -e "  ${GREEN}6${NC}) 114 DNS     114.114.114.114 / 114.114.115.115"
         fi
         menu_div
-        echo -e "  ${GREEN}7${NC}) 手动编辑 DNS 配置"
-        echo -e "  ${RED}0${NC}) 返回"
-        echo -e "  ${RED}00${NC}) 退出脚本"
+        menu_item "7" "手动编辑 DNS 配置"
+        menu_pair "0" "返回主菜单" "00" "退出脚本" "$RED" "$RED"
         menu_div
         echo ""
-        read -rp "  请选择 [0-7]: " CH
+        read -rp "$(ui_prompt '选择 DNS [0-7]: ')" CH
 
         case "$CH" in
             1) dns_write "1.1.1.1 1.0.0.1" "2606:4700:4700::1111 2606:4700:4700::1001" "$HAS_V6" ;;

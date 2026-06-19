@@ -464,7 +464,7 @@ fail2ban_menu() {
         safe_clear
         echo ""
         box_top
-        box_title "VPS 开荒脚本 V3.8.0"
+        box_title "VPS 开荒脚本 V3.9.0"
         box_title "· · 银趴火山帮 · ·"
         box_sep
         box_title "Fail2ban 管理"
@@ -488,23 +488,19 @@ fail2ban_menu() {
         box_line "  封禁IP: ${BANNED_COUNT}  总失败: ${TOTAL_FAIL}  监控端口: ${CUR_PORT}"                  "  封禁IP: ${RED}${BOLD}${BANNED_COUNT}${NC}  总失败: ${YELLOW}${BOLD}${TOTAL_FAIL}${NC}  端口: ${BOLD}${CUR_PORT}${NC}"
         box_line "  封禁时长: ${BAN_HUMAN}  窗口: ${FIND_HUMAN}  最大重试: ${CUR_MAX}次"                  "  封禁时长: ${BOLD}${BAN_HUMAN}${NC}  窗口: ${BOLD}${FIND_HUMAN}${NC}  最大重试: ${BOLD}${CUR_MAX}${NC}次"
         box_sep
-        box_line "  1) 查看封禁 IP 列表" "  ${GREEN}1${NC}) 查看封禁 IP 列表"
-        box_line "  2) 手动解封 IP"      "  ${GREEN}2${NC}) 手动解封 IP"
-        box_line "  3) 实时日志"         "  ${GREEN}3${NC}) 实时日志"
-        box_line "  4) 基础参数配置"     "  ${GREEN}4${NC}) 基础参数配置"
-        box_line "  5) 编辑配置文件"     "  ${GREEN}5${NC}) 编辑配置文件"
-        box_line "  6) 卸载 Fail2ban"    "  ${YELLOW}6${NC}) 卸载 Fail2ban"
-        box_line "  u) 安装/更新 Fail2ban" "  ${CYAN}u${NC}) 安装/更新 Fail2ban"
+        menu_pair "1" "查看封禁 IP" "2" "手动解封"
+        menu_pair "3" "实时日志" "4" "基础参数"
+        menu_pair "5" "编辑配置" "6" "卸载 Fail2ban" "$GREEN" "$YELLOW"
+        menu_item "u" "安装 / 更新 Fail2ban" "$CYAN"
         if [ "$F2B_ST" = "running" ]; then
-            box_line "  7) 停止服务"     "  ${YELLOW}7${NC}) 停止服务"
+            menu_item "7" "停止服务" "$YELLOW"
         else
-            box_line "  7) 启动服务"     "  ${GREEN}7${NC}) 启动服务"
+            menu_item "7" "启动服务"
         fi
-        box_line "  0) 返回主菜单"       "  ${RED}0${NC}) 返回主菜单"
-        box_line "  00) 退出脚本"        "  ${RED}00${NC}) 退出脚本"
+        menu_pair "0" "返回主菜单" "00" "退出脚本" "$RED" "$RED"
         box_bot
         echo ""
-        read -rp "  请选择 [0-7/u]: " CHOICE
+        read -rp "$(ui_prompt '选择操作 [0-7 / u]: ')" CHOICE
 
         case "$CHOICE" in
             1) f2b_banned_list "$JAIL_NAME" ;;

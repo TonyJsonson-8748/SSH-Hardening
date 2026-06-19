@@ -201,13 +201,13 @@ ip_config_menu() {
         echo -e "  优先级：$V4_PREF"
         echo ""
         menu_div
-        echo -e "  ${GREEN}1${NC}) 查看IPv4/IPv6状态"
-        echo -e "  ${GREEN}2${NC}) 设置IPv4优先      ${GREEN}3${NC}) 设置IPv6优先"
-        echo -e "  ${GREEN}4${NC}) 关闭 IPv6        ${GREEN}5${NC}) 开启 IPv6"
-        echo -e "  ${RED}0${NC}) 返回              ${RED}00${NC}) 退出脚本"
+        menu_item "1" "查看 IPv4 / IPv6 状态"
+        menu_pair "2" "设置 IPv4 优先" "3" "设置 IPv6 优先"
+        menu_pair "4" "关闭 IPv6" "5" "开启 IPv6"
+        menu_pair "0" "返回主菜单" "00" "退出脚本" "$RED" "$RED"
         menu_div
         echo ""
-        read -rp "  请选择 [0-5]: " CH
+        read -rp "$(ui_prompt '选择操作 [0-5]: ')" CH
 
         case "$CH" in
             1) ip_show_status ;;

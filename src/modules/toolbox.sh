@@ -405,13 +405,14 @@ system_update_manager() {
 system_toolbox_menu() {
     while true; do
         print_header "安全与诊断工具箱"
-        echo -e "  ${GREEN}1${NC}) 系统安全体检       ${GREEN}2${NC}) 登录记录与安全日志"
-        echo -e "  ${GREEN}3${NC}) 网络诊断工具箱     ${GREEN}4${NC}) 配置备份与恢复"
-        echo -e "  ${GREEN}5${NC}) 查看脚本操作记录   ${GREEN}6${NC}) 系统资源健康检查"
-        echo -e "  ${GREEN}7${NC}) 系统更新管理       ${RED}0${NC}) 返回"
+        menu_pair "1" "系统安全体检" "2" "登录与安全日志"
+        menu_pair "3" "网络诊断" "4" "配置备份与恢复"
+        menu_pair "5" "脚本操作记录" "6" "系统资源健康"
+        menu_pair "7" "系统更新管理" "0" "返回主菜单" "$GREEN" "$RED"
         menu_div
-        echo -e "  ${DIM}防断联保护已自动用于 SSH、防火墙、DNS 和 IP 配置修改${NC}"
-        read -rp "  请选择 [0-7]: " CH
+        ui_hint "SSH、防火墙、DNS 和 IP 修改均有防断联保护"
+        echo ""
+        read -rp "$(ui_prompt '选择工具 [0-7]: ')" CH
         case "$CH" in
             1) security_audit ;;
             2) login_security_logs; continue ;;
@@ -423,6 +424,6 @@ system_toolbox_menu() {
             0) return ;;
             *) warn "无效选项"; sleep 1; continue ;;
         esac
-        echo ""; read -rp "  按 Enter 返回..." _
+        ui_pause
     done
 }

@@ -182,19 +182,19 @@ ufw_menu() {
         echo ""
         menu_div
         if [ "$STATUS" = "active" ]; then
-            echo -e "  ${YELLOW}1${NC}) 关闭防火墙"
+            menu_item "1" "关闭防火墙" "$YELLOW"
         else
-            echo -e "  ${GREEN}1${NC}) 开启防火墙"
+            menu_item "1" "开启防火墙"
         fi
-        echo -e "  ${GREEN}2${NC}) 查看规则         ${GREEN}3${NC}) 添加端口"
-        echo -e "  ${GREEN}4${NC}) 删除端口         ${GREEN}5${NC}) 拉黑IP"
-        echo -e "  ${GREEN}6${NC}) 放行IP           ${GREEN}7${NC}) 删除IP规则"
-        echo -e "  ${GREEN}8${NC}) 一键放行常用端口"
-        echo -e "  ${CYAN}u${NC}) 安装/更新        ${YELLOW}9${NC}) 卸载 ufw"
-        echo -e "  ${RED}0${NC}) 返回              ${RED}00${NC}) 退出脚本"
+        menu_pair "2" "查看规则" "3" "添加端口"
+        menu_pair "4" "删除端口" "5" "拉黑 IP"
+        menu_pair "6" "放行 IP" "7" "删除 IP 规则"
+        menu_item "8" "一键放行常用端口"
+        menu_pair "u" "安装 / 更新" "9" "卸载 ufw" "$CYAN" "$YELLOW"
+        menu_pair "0" "返回主菜单" "00" "退出脚本" "$RED" "$RED"
         menu_div
         echo ""
-        read -rp "  请选择 [0-9/u]: " CH
+        read -rp "$(ui_prompt '选择操作 [0-9 / u]: ')" CH
 
         case "$CH" in 1|3|4|5|6|7|8) safety_arm ufw || continue ;; esac
 
@@ -378,23 +378,19 @@ fwd_menu() {
         echo ""
         menu_div
         if [ "$STATUS" = "active" ]; then
-            echo -e "  ${YELLOW}1${NC}) 关闭防火墙"
+            menu_item "1" "关闭防火墙" "$YELLOW"
         else
-            echo -e "  ${GREEN}1${NC}) 开启防火墙"
+            menu_item "1" "开启防火墙"
         fi
-        echo -e "  ${GREEN}2${NC}) 查看当前规则"
-        echo -e "  ${GREEN}3${NC}) 添加端口规则"
-        echo -e "  ${GREEN}4${NC}) 删除端口规则"
-        echo -e "  ${GREEN}5${NC}) 拉黑 IP（黑名单）"
-        echo -e "  ${GREEN}6${NC}) 放行 IP（白名单）"
-        echo -e "  ${GREEN}7${NC}) 删除 IP 规则"
-        echo -e "  ${GREEN}8${NC}) 一键放行常用端口"
-        echo -e "  ${YELLOW}9${NC}) 卸载 firewalld"
-        echo -e "  ${RED}0${NC}) 返回"
-        echo -e "  ${RED}00${NC}) 退出脚本"
+        menu_pair "2" "查看规则" "3" "添加端口"
+        menu_pair "4" "删除端口" "5" "拉黑 IP"
+        menu_pair "6" "放行 IP" "7" "删除 IP 规则"
+        menu_item "8" "一键放行常用端口"
+        menu_item "9" "卸载 firewalld" "$YELLOW"
+        menu_pair "0" "返回主菜单" "00" "退出脚本" "$RED" "$RED"
         menu_div
         echo ""
-        read -rp "  请选择 [0-9]: " CH
+        read -rp "$(ui_prompt '选择操作 [0-9]: ')" CH
 
         case "$CH" in 1|3|4|5|6|7|8) safety_arm firewalld || continue ;; esac
 

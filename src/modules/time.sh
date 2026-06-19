@@ -26,13 +26,13 @@ timesync_menu() {
         echo -e "  NTP状态 ：${NTP_STATUS}"
         echo ""
         menu_div
-        echo -e "  ${GREEN}1${NC}) 强制同步时间"
-        echo -e "  ${GREEN}2${NC}) 设置北京时区      ${GREEN}3${NC}) 一键同步+北京时区"
-        echo -e "  ${GREEN}4${NC}) 设置其他时区      ${GREEN}5${NC}) 开启NTP自动同步"
-        echo -e "  ${RED}0${NC}) 返回              ${RED}00${NC}) 退出脚本"
+        menu_item "1" "强制同步时间"
+        menu_pair "2" "设置北京时区" "3" "同步并设为北京"
+        menu_pair "4" "设置其他时区" "5" "开启 NTP 自动同步"
+        menu_pair "0" "返回主菜单" "00" "退出脚本" "$RED" "$RED"
         menu_div
         echo ""
-        read -rp "  请选择 [0-5]: " CH
+        read -rp "$(ui_prompt '选择操作 [0-5]: ')" CH
 
         case "$CH" in
             1) ts_sync_time ;;

@@ -246,12 +246,12 @@ swap_menu() {
         print_header "Swap 管理"
         swap_show_status
         menu_div
-        echo -e "  ${GREEN}1${NC}) 创建/更换 Swap   ${GREEN}2${NC}) 删除 Swap"
-        echo -e "  ${GREEN}3${NC}) 设置 Swappiness"
-        echo -e "  ${RED}0${NC}) 返回              ${RED}00${NC}) 退出脚本"
+        menu_pair "1" "创建 / 更换 Swap" "2" "删除 Swap"
+        menu_item "3" "设置 Swappiness"
+        menu_pair "0" "返回主菜单" "00" "退出脚本" "$RED" "$RED"
         menu_div
         echo ""
-        read -rp "  请选择 [0-3]: " CH
+        read -rp "$(ui_prompt '选择操作 [0-3]: ')" CH
 
         case "$CH" in
             1) swap_create ;;

@@ -14,4 +14,10 @@ done
 
 OS=$(detect_os)
 [ -n "$OS" ] || { echo "OS detection returned empty" >&2; exit 1; }
+
+COLUMNS=44; ui_refresh_dimensions
+[ "$UI_COMPACT" -eq 1 ] || { echo "Narrow terminal did not enable compact layout" >&2; exit 1; }
+COLUMNS=72; ui_refresh_dimensions
+[ "$UI_COMPACT" -eq 0 ] || { echo "Wide terminal did not enable two-column layout" >&2; exit 1; }
+
 echo "Smoke test passed on $OS."

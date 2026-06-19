@@ -1133,18 +1133,18 @@ bbr_menu() {
         fi
         echo ""
         menu_div
-        menu_div
-        echo -e "  ${GREEN}1${NC}) 智能向导（推荐）"
-        echo -e "  ${GREEN}2${NC}) 自动配置（内存/延迟/带宽）"
-        echo -e "  ${GREEN}3${NC}) 手动选择缓冲区大小"
-        menu_div
-        echo -e "  ${GREEN}4${NC}) 限速设置（tc）   ${GREEN}5${NC}) initcwnd 设置"
-        echo -e "  ${GREEN}6${NC}) 备份 TCP 配置    ${GREEN}7${NC}) 还原 TCP 配置"
-        echo -e "  ${GREEN}8${NC}) BBR 诊断"
-        echo -e "  ${RED}0${NC}) 返回主菜单        ${RED}00${NC}) 退出脚本"
+        menu_group "调优"
+        menu_item "1" "智能向导  ${DIM}推荐${NC}"
+        menu_pair "2" "自动配置" "3" "手动配置"
+        menu_pair "4" "限速设置" "5" "initcwnd 设置"
+        echo ""
+        menu_group "维护"
+        menu_pair "6" "备份 TCP 配置" "7" "还原 TCP 配置"
+        menu_item "8" "BBR 诊断"
+        menu_pair "0" "返回主菜单" "00" "退出脚本" "$RED" "$RED"
         menu_div
         echo ""
-        read -rp "  请选择 [0-8]: " CH
+        read -rp "$(ui_prompt '选择操作 [0-8]: ')" CH
 
         case "$CH" in
             1) bbr_smart_wizard ;;

@@ -14,13 +14,13 @@ ssh_tools_menu() {
                  "  密码登录 ${BOLD}${CUR_PWD:-未设置}${NC}  |  公钥认证 ${BOLD}${CUR_PUBKEY:-未设置}${NC}"
         echo ""
         menu_div
-        echo -e "  ${GREEN}1${NC}) 查看已有公钥     ${GREEN}2${NC}) 添加公钥"
-        echo -e "  ${GREEN}3${NC}) 删除公钥         ${GREEN}4${NC}) 生成密钥对"
-        echo -e "  ${GREEN}5${NC}) 设置登录方式     ${GREEN}6${NC}) 修改 SSH 端口"
-        echo -e "  ${RED}0${NC}) 返回主菜单        ${RED}00${NC}) 退出脚本"
+        menu_pair "1" "查看已有公钥" "2" "添加公钥"
+        menu_pair "3" "删除公钥" "4" "生成密钥对"
+        menu_pair "5" "设置登录方式" "6" "修改 SSH 端口"
+        menu_pair "0" "返回主菜单" "00" "退出脚本" "$RED" "$RED"
         menu_div
         echo ""
-        read -rp "  请选择 [0-6]: " CHOICE
+        read -rp "$(ui_prompt '选择操作 [0-6]: ')" CHOICE
 
         local NEED_PAUSE=1
         case "$CHOICE" in
@@ -35,6 +35,6 @@ ssh_tools_menu() {
             *) warn "无效选项"; sleep 1; NEED_PAUSE=0 ;;
         esac
 
-        [ "$NEED_PAUSE" -eq 1 ] && { echo ""; read -rp "  按 Enter 返回..." _; }
+        [ "$NEED_PAUSE" -eq 1 ] && ui_pause
     done
 }

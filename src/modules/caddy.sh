@@ -572,21 +572,20 @@ caddy_menu() {
         echo -e "  服务: ${C_COLOR}${BOLD}${C_ST}${NC}  版本: ${BOLD}${C_VER:-未知}${NC}  站点数: ${BOLD}${SITE_COUNT}${NC}"
         echo ""
         menu_div
-        menu_div
-        echo -e "  ${GREEN}1${NC}) 查看站点         ${GREEN}2${NC}) 添加反向代理"
-        echo -e "  ${GREEN}3${NC}) 添加静态网站     ${GREEN}4${NC}) 删除站点"
-        echo -e "  ${GREEN}5${NC}) SSL证书状态      ${GREEN}6${NC}) 查看日志"
-        echo -e "  ${GREEN}7${NC}) 编辑Caddyfile    ${GREEN}8${NC}) 重载配置"
+        menu_pair "1" "查看站点" "2" "添加反向代理"
+        menu_pair "3" "添加静态网站" "4" "删除站点"
+        menu_pair "5" "SSL 证书状态" "6" "查看日志"
+        menu_pair "7" "编辑 Caddyfile" "8" "重载配置"
         if [ "$C_ST" = "running" ]; then
-            echo -e "  ${YELLOW}9${NC}) 停止服务"
+            menu_item "9" "停止服务" "$YELLOW"
         else
-            echo -e "  ${GREEN}9${NC}) 启动服务"
+            menu_item "9" "启动服务"
         fi
-        echo -e "  ${CYAN}u${NC}) 安装/更新        ${YELLOW}d${NC}) 卸载 Caddy"
-        echo -e "  ${RED}0${NC}) 返回              ${RED}00${NC}) 退出脚本"
+        menu_pair "u" "安装 / 更新" "d" "卸载 Caddy" "$CYAN" "$YELLOW"
+        menu_pair "0" "返回主菜单" "00" "退出脚本" "$RED" "$RED"
         menu_div
         echo ""
-        read -rp "  请选择: " CH
+        read -rp "$(ui_prompt '选择操作: ')" CH
 
         case "$CH" in
             1) caddy_list_sites ;;

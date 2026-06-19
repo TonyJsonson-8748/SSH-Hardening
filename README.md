@@ -1,4 +1,4 @@
-# VPS 开荒脚本 V3.8.0
+# VPS 开荒脚本 V3.9.0
 
 > **银趴火山帮** 出品 · SSH · BBR · DDNS · Caddy · Firewall · NFT 转发
 
@@ -29,38 +29,27 @@ bash <(curl -fsSL https://raw.githubusercontent.com/chnnic/SSH-Hardening/refs/he
    /  _/  |/  / __ \/   |  / __ \/_  __/  / __ \/ __ \/ ___/
    ...
 
-════════════════════════════════════════
-       VPS 开荒脚本 V3.8.0
-  ··银趴火山帮··
-────────────────────────────────────────
-  端口 22  |  公钥数 1
-  密码登录 no  |  公钥认证 yes
-  BBR: bbr  |  限速: 无限速
-  Fail2ban: running
-  防火墙: ufw active
-  Caddy: running
-  DDNS: 运行中
-  时间: 2026-05-22 16:30:00  Asia/Jakarta
-────────────────────────────────────────
-  [安全与网络]
-  1) SSH 工具集
-  2) Fail2ban 管理
-  3) BBR TCP 调优
-  4) 防火墙管理
-  5) DNS 优化
-  6) Cloudflare DDNS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  VPS 开荒脚本  V3.9.0 · 银趴火山帮
 
-  [系统与服务]
-  7) 系统换源
-  8) IPv4/IPv6 配置
-  9) Caddy 管理
-  n) NFT 转发管理（端口转发 / DDNS / 访问控制）
-  t) 时间同步
-  s) Swap 管理
-  h) 安全与诊断工具箱
-  m) 脚本管理（安装 / 更新 / 卸载）
-  0) 退出
-════════════════════════════════════════
+  ◆ 系统概览
+  ● SSH  22 · 1 公钥          ● 认证  仅密钥
+  ● BBR  bbr · 无限速        ● Fail2ban  运行中
+  ● 防火墙  ufw active       ● Caddy  运行中
+  ● DDNS  运行中             ● 时间  16:30:00
+
+  ◆ 安全与网络
+    1  SSH 工具集              2  Fail2ban 管理
+    3  BBR TCP 调优            4  防火墙管理
+    5  DNS 优化                6  Cloudflare DDNS
+
+  ◆ 系统与服务
+    7  系统换源                8  IPv4 / IPv6
+    9  Caddy 管理              n  NFT 转发
+    t  时间与时区              s  Swap 管理
+    h  安全与诊断              m  脚本管理
+    0  退出脚本
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ```
 
 ---
@@ -435,7 +424,7 @@ DNS 设置会自动识别 `systemd-resolved`、NetworkManager、resolvconf 或�
 | 架构 | x86_64 / aarch64 / armv7 |
 | 服务管理 | systemd / OpenRC / SysV init |
 | 容器 | KVM / LXC / OpenVZ / 无特权容器 |
-| 终端 | 标准 / dumb（OpenWrt/tmux，`safe_clear` 兼容） |
+| 终端 | 36-76 列响应式布局；标准 / dumb / tmux / OpenWrt；支持 `NO_COLOR=1` |
 | Shell | **bash 必需**（Alpine: `apk add bash`，OpenWrt: `opkg install bash`；非 bash 环境自动切换 / fail-fast 提示） |
 
 ---
@@ -495,6 +484,7 @@ GitHub Actions 还会在 Debian、Ubuntu、Alpine、Rocky Linux 容器中加载�
 
 | 版本 | 主要变更 |
 |------|---------|
+| **V3.9.0** | 全面重构终端 UI：响应式宽度、窄屏单列/宽屏双列、统一状态仪表盘与操作提示、紧凑页面标题、主要模块菜单规范化，并支持 `NO_COLOR` 与非交互终端无 ANSI 输出 |
 | **V3.8.0** | 源码拆分为 core 和功能模块，由 `build.sh` 生成单文件发行版；新增 Debian/Ubuntu/Alpine/Rocky 冒烟测试与故障注入测试；新增备份保留策略、配置变更预览、资源健康检查和系统更新管理 |
 | **V3.7.0** | 新增安全体检、登录安全日志、网络诊断、统一配置备份恢复、操作审计；SSH/防火墙/DNS/IP 修改加入 180 秒防断联回滚；DNS 自动适配 resolved/NetworkManager/resolvconf；脚本更新增加 SHA256 校验、旧版本留存和一键回滚 |
 | **V3.6.3** | IPv4/IPv6 配置菜单新增“设置 IPv6 优先”，可移除 `/etc/gai.conf` 中的 IPv4 优先规则并恢复系统默认地址选择策略 |
