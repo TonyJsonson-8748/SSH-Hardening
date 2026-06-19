@@ -1,4 +1,4 @@
-# VPS 开荒脚本 V3.6.1
+# VPS 开荒脚本 V3.6.2
 
 > **银趴火山帮** 出品 · SSH · BBR · DDNS · Caddy · Firewall · NFT 转发
 
@@ -30,7 +30,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/chnnic/SSH-Hardening/refs/he
    ...
 
 ════════════════════════════════════════
-       VPS 开荒脚本 V3.6.1
+       VPS 开荒脚本 V3.6.2
   ··银趴火山帮··
 ────────────────────────────────────────
   端口 22  |  公钥数 1
@@ -453,6 +453,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/chnnic/SSH-Hardening/refs/he
 
 | 版本 | 主要变更 |
 |------|---------|
+| **V3.6.2** | BBR 模块增强：sysctl 权限探测不再改变 TCP 参数；tc 限速服务运行时动态识别 `tc` 路径和默认网卡；不支持的 sysctl 参数会在持久化文件中注释；Alpine 内核包安装改为确认后执行；新增 BBR 诊断入口 |
 | **V3.6.1** | 修复删除最后一个 SSH 公钥不生效；DDNS 在 `/var/log/ddns.log` 不可写时正确使用备用日志路径；nftables 配置应用失败时不再误报成功；BBR `initcwnd` 支持无网关默认路由 |
 | **V3.6.0** | Fail2ban 修正：jail 加 `mode = aggressive`（纯公钥机/禁密码下也能抓扫描者并封禁，解决 `Total failed` 恒为 0）；`journalmatch` 显式双服务名 `ssh.service + sshd.service`（兼容 Debian/RedHat，不改系统 filter）；`jail.local` 已存在由「跳过」改为「备份后重写」（否则脚本更新的配置永不生效） |
 | **V3.5.9** | 安全加固一批：SSH 改端口/配置失败**自动回滚**到备份；改端口**延后删旧端口**（先确认新端口可连，防锁死）；防火墙卸载**不再 flush 全表/改默认策略**（只删本脚本规则，避免裸奔与误删 NFT/代理规则）；DDNS IPv4 **严格校验**每段 0-255；服务操作统一 `svc_start/stop/restart` 封装（OpenRC/sysvinit 兼容）；默认网卡改用 `ip route get`；Caddy 配置**临时验证通过才写入**（失败自动还原） |
