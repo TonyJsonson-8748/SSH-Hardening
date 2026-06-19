@@ -1,8 +1,10 @@
 #!/bin/bash
 
 # ============================================================
-#  VPS 开荒脚本 V3.6.0 — 银趴火山帮
+#  VPS 开荒脚本 V3.6.1 — 银趴火山帮
 #  功能：SSH管理 / Fail2ban / BBR TCP 调优
+#  V3.6.1: 修复删除最后一个 SSH 公钥不生效、DDNS 备用日志路径不生效、
+#          nftables 应用失败误报成功、initcwnd 无网关默认路由失败
 #  V3.6.0: Fail2ban 加 mode=aggressive(纯公钥机抓扫描)、journalmatch 双服务名
 #          (兼容 Debian ssh / RedHat sshd)、jail.local 已存在改为备份后重写(原跳过)
 #  V3.5.9: SSH改端口/配置失败自动回滚、改端口延后删旧(防锁死)、防火墙卸载不再
@@ -191,7 +193,7 @@ print_header() {
     safe_clear
     echo ""
     box_top
-    box_title "VPS 开荒脚本 V3.6.0"
+    box_title "VPS 开荒脚本 V3.6.1"
     box_title "· · 银趴火山帮 · ·"
     box_sep
     box_title "$1"
@@ -557,8 +559,8 @@ add_key() {
         return
     fi
 
-    mkdir -p "$HOME/.ssh"
-    chmod 700 "$HOME/.ssh"
+    mkdir -p "$(dirname "$AUTH_KEYS")"
+    chmod 700 "$(dirname "$AUTH_KEYS")"
 
     # 检查是否已存在相同公钥（取类型+主体比较，忽略备注差异）
     local KEY_BODY
@@ -614,7 +616,8 @@ delete_key() {
     # 取公钥主体（类型+base64）作为匹配依据，避免尾部空格/备注差异导致删除失败
     local KEY_BODY
     KEY_BODY=$(echo "$TARGET_LINE" | awk '{print $1, $2}')
-    grep -vF "$KEY_BODY" "$AUTH_KEYS" > "${AUTH_KEYS}.tmp" && mv "${AUTH_KEYS}.tmp" "$AUTH_KEYS"
+    grep -vF "$KEY_BODY" "$AUTH_KEYS" > "${AUTH_KEYS}.tmp" || true
+    mv "${AUTH_KEYS}.tmp" "$AUTH_KEYS"
     chmod 600 "$AUTH_KEYS"
     info "公钥已删除 ✓"
 }
@@ -681,7 +684,7 @@ generate_key() {
     read -rp "  是否将公钥添加到本服务器？(Y/n，默认Y): " ADD_CONFIRM
     [ -z "${ADD_CONFIRM}" ] && ADD_CONFIRM="y"
     if echo "${ADD_CONFIRM}" | grep -qiE '^y(es)?$'; then
-        mkdir -p "$HOME/.ssh"; chmod 700 "$HOME/.ssh"
+        mkdir -p "$(dirname "$AUTH_KEYS")"; chmod 700 "$(dirname "$AUTH_KEYS")"
         local KEY_BODY
         KEY_BODY=$(echo "$PUBKEY" | awk '{print $1, $2}')
         if grep -qF "$KEY_BODY" "$AUTH_KEYS" 2>/dev/null; then
@@ -1299,7 +1302,7 @@ fail2ban_menu() {
         safe_clear
         echo ""
         box_top
-        box_title "VPS 开荒脚本 V3.6.0"
+        box_title "VPS 开荒脚本 V3.6.1"
         box_title "· · 银趴火山帮 · ·"
         box_sep
         box_title "Fail2ban 管理"
@@ -2299,7 +2302,11 @@ bbr_menu_initcwnd() {
         *) warn "无效选项"; return ;;
     esac
 
-    ip route change default via "$GW" dev "$DEV" $ONLINK initcwnd "$VAL" initrwnd "$VAL" || {
+    if [ -n "$GW" ]; then
+        ip route change default via "$GW" dev "$DEV" $ONLINK initcwnd "$VAL" initrwnd "$VAL"
+    else
+        ip route change default dev "$DEV" $ONLINK initcwnd "$VAL" initrwnd "$VAL"
+    fi || {
         error "ip route change 失败"
         echo ""
         echo -e "  ${DIM}如果你在 LXC/OpenVZ 容器内，此操作会被宿主机拒绝，这是正常现象${NC}"
@@ -2313,7 +2320,7 @@ Description=Set TCP initcwnd
 After=network.target
 [Service]
 Type=oneshot
-ExecStart=/bin/bash -c 'GW=\$(ip route | awk '"'"'/^default/{print \$3}'"'"'); DEV=\$(ip route | awk '"'"'/^default/{print \$5}'"'"'); ONLINK=\$(ip route | grep "^default" | grep -q "onlink" && echo "onlink" || echo ""); ip route change default via \$GW dev \$DEV \$ONLINK initcwnd ${VAL} initrwnd ${VAL}'
+ExecStart=/bin/bash -c 'GW=\$(ip route | awk '"'"'/^default/{print \$3}'"'"'); DEV=\$(ip route | awk '"'"'/^default/{print \$5}'"'"'); ONLINK=\$(ip route | grep "^default" | grep -q "onlink" && echo "onlink" || echo ""); if [ -n "\$GW" ]; then ip route change default via "\$GW" dev "\$DEV" \$ONLINK initcwnd ${VAL} initrwnd ${VAL}; else ip route change default dev "\$DEV" \$ONLINK initcwnd ${VAL} initrwnd ${VAL}; fi'
 RemainAfterExit=yes
 [Install]
 WantedBy=multi-user.target
@@ -4902,7 +4909,7 @@ self_check_first_run() {
     clear
     echo ""
     box_top
-    box_title "VPS 开荒脚本 V3.6.0"
+    box_title "VPS 开荒脚本 V3.6.1"
     box_title "· · 银趴火山帮 · ·"
     box_sep
     box_title "首次运行检测"
@@ -5352,12 +5359,23 @@ nft_write_and_apply() {
 
     if command -v systemctl &>/dev/null && pidof systemd &>/dev/null; then
         systemctl enable nftables &>/dev/null || true
-        systemctl restart nftables &>/dev/null
+        if ! systemctl restart nftables &>/dev/null; then
+            nft -f "$NFT_CONFIG_FILE" &>/dev/null || {
+                error "nftables 配置应用失败"
+                return 1
+            }
+        fi
     elif command -v rc-service &>/dev/null; then
         rc-update add nftables default 2>/dev/null || true
-        rc-service nftables restart &>/dev/null || nft -f "$NFT_CONFIG_FILE"
+        rc-service nftables restart &>/dev/null || nft -f "$NFT_CONFIG_FILE" &>/dev/null || {
+            error "nftables 配置应用失败"
+            return 1
+        }
     else
-        nft -f "$NFT_CONFIG_FILE"
+        nft -f "$NFT_CONFIG_FILE" &>/dev/null || {
+            error "nftables 配置应用失败"
+            return 1
+        }
     fi
     info "nftables 配置已应用 ✓"
 }
@@ -6439,7 +6457,7 @@ MODE="__MODE__"
 PROXIED="__PROXIED__"
 TTL="__TTL__"
 TOKEN_FILE="/root/.cf_token"
-LOG_FILE="/var/log/ddns.log"
+LOG_FILE="__LOG__"
 
 API_TOKEN=$(cat "$TOKEN_FILE" 2>/dev/null)
 [ -z "$API_TOKEN" ] && exit 1
@@ -6565,6 +6583,9 @@ DDNS_INNER
     sed -i "s/__MODE__/${DDNS_MODE}/g" "$DDNS_SCRIPT"
     sed -i "s/__PROXIED__/${DDNS_PROXIED}/g" "$DDNS_SCRIPT"
     sed -i "s/__TTL__/${DDNS_TTL}/g" "$DDNS_SCRIPT"
+    local DDNS_LOG_ESC
+    DDNS_LOG_ESC=$(printf '%s' "$DDNS_LOG" | sed 's/[&|\\]/\\&/g')
+    sed -i "s|__LOG__|${DDNS_LOG_ESC}|g" "$DDNS_SCRIPT"
     chmod 700 "$DDNS_SCRIPT"
 
     local CRON_JOB="*/5 * * * * ${DDNS_SCRIPT} >> ${DDNS_LOG} 2>&1"
@@ -6930,7 +6951,7 @@ main_menu() {
         volcano_art_banner
         echo ""
         box_top
-        box_title "VPS 开荒脚本 V3.6.0"
+        box_title "VPS 开荒脚本 V3.6.1"
         box_title "· · 银趴火山帮 · ·"
         box_sep
         # 收集状态数据
