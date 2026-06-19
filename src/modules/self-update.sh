@@ -223,7 +223,7 @@ self_check_first_run() {
     clear
     echo ""
     box_top
-    box_title "VPS 开荒脚本 V3.9.0"
+    box_title "VPS 开荒脚本 V3.8.1"
     box_title "· · 银趴火山帮 · ·"
     box_sep
     box_title "首次运行检测"
