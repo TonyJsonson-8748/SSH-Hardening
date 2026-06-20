@@ -39,7 +39,7 @@ main_menu() {
         volcano_art_banner
         echo ""
         box_top
-        echo -e "  ${BOLD}${CYAN}VPS 开荒脚本${NC}  ${DIM}V3.8.3 · 银趴火山帮${NC}"
+        echo -e "  ${BOLD}${CYAN}VPS 开荒脚本${NC}  ${DIM}V3.8.4 · 银趴火山帮${NC}"
         echo ""
         # 收集状态数据
         local FW_TYPE FW_STAT FW_STATE
@@ -61,11 +61,17 @@ main_menu() {
             not_installed) CADDY_LABEL="未安装" ;;
         esac
         local DDNS_ST; DDNS_ST=$(ddns_status)
-        local DDNS_LABEL
+        local DDNS_LABEL DOCKER_ST DOCKER_LABEL DOCKER_STATE
         case "$DDNS_ST" in
             running)       DDNS_LABEL="运行中" ;;
             stopped)       DDNS_LABEL="已停止" ;;
             not_installed) DDNS_LABEL="未安装" ;;
+        esac
+        DOCKER_ST=$(docker_status)
+        case "$DOCKER_ST" in
+            running) DOCKER_LABEL="运行中"; DOCKER_STATE="active" ;;
+            stopped) DOCKER_LABEL="已停止"; DOCKER_STATE="inactive" ;;
+            *) DOCKER_LABEL="未安装"; DOCKER_STATE="unknown" ;;
         esac
         local SYS_TIME SYS_TZ
         SYS_TIME=$(date '+%Y-%m-%d %H:%M:%S')
@@ -89,7 +95,8 @@ main_menu() {
         status_pair "SSH" "${CUR_PORT:-22} · ${KEYCOUNT} 公钥" "active" "认证" "$AUTH_LABEL" "$AUTH_STATE"
         status_pair "BBR" "$BBR_CC · $TC_RATE" "$BBR_STATE" "Fail2ban" "$F2B_LABEL" "$F2B_STATE"
         status_pair "防火墙" "$FW_STAT" "$FW_STATE" "Caddy" "$CADDY_LABEL" "$CADDY_STATE"
-        status_pair "DDNS" "$DDNS_LABEL" "$DDNS_STATE" "时间" "$SYS_TIME" "active"
+        status_pair "DDNS" "$DDNS_LABEL" "$DDNS_STATE" "Docker" "$DOCKER_LABEL" "$DOCKER_STATE"
+        status_pair "时间" "$SYS_TIME" "active"
         ui_hint "时区 $SYS_TZ"
         # 更新提示
         if [ -f /tmp/.vps_new_version ]; then
@@ -107,12 +114,12 @@ main_menu() {
         menu_pair "9" "Caddy 管理" "n" "NFT 转发"
         menu_pair "t" "时间与时区" "s" "Swap 管理"
         menu_pair "h" "安全与诊断" "a" "软件与重装"
-        menu_item "m" "脚本管理"
+        menu_pair "d" "Docker 管理" "m" "脚本管理"
         echo ""
         menu_item "0" "退出脚本" "$RED"
         box_bot
         echo ""
-        read -rp "$(ui_prompt '选择功能 [0-9 / n / t / s / h / a / m]: ')" CHOICE
+        read -rp "$(ui_prompt '选择功能 [0-9 / n / t / s / h / a / d / m]: ')" CHOICE
         audit_action "主菜单选择 $CHOICE" INFO
 
         case "$CHOICE" in
@@ -130,6 +137,7 @@ main_menu() {
             s|S) swap_menu ;;
             h|H) system_toolbox_menu ;;
             a|A) software_reinstall_menu ;;
+            d|D) docker_menu ;;
             m|M) self_manage_menu ;;
             0) safe_clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;
             *) warn "无效选项，请重新输入。"; sleep 1 ;;

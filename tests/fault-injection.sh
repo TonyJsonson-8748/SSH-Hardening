@@ -24,6 +24,17 @@ reinstall_download_engine "$TMP/broken-reinstall.sh" >/dev/null 2>&1 && {
     exit 1
 }
 
+# The Docker installer must reject malformed downloaded scripts.
+docker_download_installer "$TMP/broken-docker.sh" >/dev/null 2>&1 && {
+    echo "Malformed Docker installer passed validation" >&2
+    exit 1
+}
+docker() { [ "$1" = "inspect" ] && printf '<no value>\n'; }
+[ -z "$(docker_inspect_label fake-id com.docker.compose.project)" ] || {
+    echo "Missing Compose label was treated as a real value" >&2
+    exit 1
+}
+
 # A broken sshd validation must restore the previous configuration.
 SSHD_CONFIG="$TMP/sshd_config"
 LAST_SSHD_BACKUP="$TMP/sshd_config.bak"

@@ -1,4 +1,4 @@
-# VPS 开荒脚本 V3.8.3
+# VPS 开荒脚本 V3.8.4
 
 > **银趴火山帮** 出品 · SSH · BBR · DDNS · Caddy · Firewall · NFT 转发
 
@@ -30,13 +30,14 @@ bash <(curl -fsSL https://raw.githubusercontent.com/chnnic/SSH-Hardening/refs/he
    ...
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  VPS 开荒脚本  V3.8.3 · 银趴火山帮
+  VPS 开荒脚本  V3.8.4 · 银趴火山帮
 
   ◆ 系统概览
   ● SSH  22 · 1 公钥          ● 认证  仅密钥
   ● BBR  bbr · 无限速        ● Fail2ban  运行中
   ● 防火墙  ufw active       ● Caddy  运行中
-  ● DDNS  运行中             ● 时间  16:30:00
+  ● DDNS  运行中             ● Docker  运行中
+  ● 时间  16:30:00
 
   ◆ 安全与网络
     1  SSH 工具集              2  Fail2ban 管理
@@ -48,7 +49,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/chnnic/SSH-Hardening/refs/he
     9  Caddy 管理              n  NFT 转发
     t  时间与时区              s  Swap 管理
     h  安全与诊断              a  软件与重装
-    m  脚本管理
+    d  Docker 管理             m  脚本管理
     0  退出脚本
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ```
@@ -511,6 +512,7 @@ GitHub Actions 还会在 Debian、Ubuntu、Alpine、Rocky Linux 容器中加载�
 
 | 版本 | 主要变更 |
 |------|---------|
+| **V3.8.4** | 新增 Docker Engine 与 Compose 插件一键安装；新增容器查看、详情、启停、重启、日志、Shell 和删除管理；Compose 容器可拉取新镜像并按原配置重建，普通容器采用无损镜像更新检查，避免丢失启动参数 |
 | **V3.8.3** | 新增常用软件多选安装，适配 apt/dnf/yum/apk/opkg/pacman；新增使用官方重装工具的一键 DD/Linux 重装向导，包含容器拒绝、目标磁盘展示、脚本语法检查与 SHA256 展示、SSH 参数继承及固定确认词保护 |
 | **V3.8.2** | 统一剩余子页面：BBR 多级向导、Fail2ban 参数页、Swap、换源、DNS、日志、NFT 访问控制和安装向导全面接入响应式菜单、统一输入提示与返回行为 |
 | **V3.8.1** | 全面重构终端 UI：响应式宽度、窄屏单列/宽屏双列、统一状态仪表盘与操作提示、紧凑页面标题、主要模块菜单规范化，并支持 `NO_COLOR` 与非交互终端无 ANSI 输出 |
