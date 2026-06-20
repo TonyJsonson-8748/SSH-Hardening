@@ -214,16 +214,13 @@ f2b_config_params() {
     echo -e "  最大重试  (maxretry) : ${BOLD}${CUR_MAX}${NC} 次"
     echo ""
     menu_div
-    echo -e "  ${GREEN}1${NC}) 修改封禁时长   (bantime)"
-    echo -e "  ${GREEN}2${NC}) 修改时间窗口   (findtime)"
-    echo -e "  ${GREEN}3${NC}) 修改最大重试次数 (maxretry)"
-    echo -e "  ${GREEN}4${NC}) 修改监控端口    (port)"
-    echo -e "  ${GREEN}5${NC}) 快速预设"
-    echo -e "  ${RED}0${NC}) 返回"
-    echo -e "  ${RED}00${NC}) 退出脚本"
+    menu_pair "1" "封禁时长" "2" "时间窗口"
+    menu_pair "3" "最大重试次数" "4" "监控端口"
+    menu_item "5" "快速预设"
+    menu_pair "0" "返回上级" "00" "退出脚本" "$RED" "$RED"
     menu_div
     echo ""
-    read -rp "  请选择 [0-5]: " CH
+    read -rp "$(ui_prompt '选择参数 [0-5]: ')" CH
 
     case "$CH" in
         1)
@@ -260,12 +257,12 @@ f2b_config_params() {
             ;;
         5)
             echo ""
-            echo -e "  ${GREEN}1${NC}) 严格模式  — 封禁1天   窗口10分钟  最多3次"
-            echo -e "  ${GREEN}2${NC}) 标准模式  — 封禁1小时  窗口10分钟  最多5次"
-            echo -e "  ${GREEN}3${NC}) 宽松模式  — 封禁30分钟 窗口5分钟   最多10次"
-            echo -e "  ${GREEN}4${NC}) 永久封禁  — 封禁永久   窗口10分钟  最多3次"
+            menu_item "1" "严格 · 1天 / 10分钟 / 3次"
+            menu_item "2" "标准 · 1小时 / 10分钟 / 5次"
+            menu_item "3" "宽松 · 30分钟 / 5分钟 / 10次"
+            menu_item "4" "永久 · 永久 / 10分钟 / 3次" "$YELLOW"
             echo ""
-            read -rp "  请选择预设 [1-4]: " PRESET
+            read -rp "$(ui_prompt '选择预设 [1-4]: ')" PRESET
             case "$PRESET" in
                 1) f2b_set_param "bantime" "86400";  f2b_set_param "findtime" "600"; f2b_set_param "maxretry" "3" ;;
                 2) f2b_set_param "bantime" "3600";   f2b_set_param "findtime" "600"; f2b_set_param "maxretry" "5" ;;
@@ -346,12 +343,11 @@ f2b_edit_config() {
     local JAIL_LOCAL="/etc/fail2ban/jail.local"
     local JAIL_CONF="/etc/fail2ban/jail.conf"
 
-    echo -e "  ${GREEN}1${NC}) 编辑 jail.local  ${YELLOW}（推荐，用户自定义配置）${NC}"
-    echo -e "  ${GREEN}2${NC}) 查看 jail.conf    ${DIM}（系统默认配置，只读参考）${NC}"
-    echo -e "  ${RED}0${NC}) 返回"
-    echo -e "  ${RED}00${NC}) 退出脚本"
+    menu_item "1" "编辑 jail.local  ${DIM}推荐${NC}"
+    menu_item "2" "查看 jail.conf  ${DIM}只读参考${NC}"
+    menu_pair "0" "返回上级" "00" "退出脚本" "$RED" "$RED"
     echo ""
-    read -rp "  请选择 [0-2]: " CH
+    read -rp "$(ui_prompt '选择操作 [0-2]: ')" CH
 
     case "$CH" in
         1)
@@ -375,7 +371,7 @@ JAILEOF
             warn "即将用 $(get_editor) 打开 $JAIL_LOCAL"
             warn "编辑完成后保存退出（vi: :wq  nano: Ctrl+O/X）"
             echo ""
-            read -rp "  按 Enter 继续..." _
+            ui_continue
             open_editor "$JAIL_LOCAL"
             echo ""
             read -rp "  是否重启 Fail2ban 使配置生效？(Y/n，默认Y): " RESTART
@@ -430,14 +426,13 @@ fail2ban_menu() {
             echo -e "  ${DIM}Fail2ban 是一个防暴力破解工具，可自动封禁恶意 IP${NC}"
             echo ""
             menu_div
-            echo -e "  ${GREEN}1${NC}) 立即安装 Fail2ban"
-            echo -e "  ${RED}0${NC}) 返回主菜单"
-            echo -e "  ${RED}00${NC}) 退出脚本"
+            menu_item "1" "立即安装 Fail2ban"
+            menu_pair "0" "返回主菜单" "00" "退出脚本" "$RED" "$RED"
             menu_div
             echo ""
-            read -rp "  请选择 [0-1]: " CHOICE
+            read -rp "$(ui_prompt '选择操作 [0-1]: ')" CHOICE
             case "$CHOICE" in
-                1) f2b_install; echo ""; read -rp "  按 Enter 继续..." _ ;;
+                1) f2b_install; ui_continue ;;
                 0) return ;;
                 00) safe_clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;
                 *) warn "无效选项"; sleep 1 ;;
@@ -464,7 +459,7 @@ fail2ban_menu() {
         safe_clear
         echo ""
         box_top
-        box_title "VPS 开荒脚本 V3.8.1"
+        box_title "VPS 开荒脚本 V3.8.2"
         box_title "· · 银趴火山帮 · ·"
         box_sep
         box_title "Fail2ban 管理"
@@ -535,7 +530,7 @@ fail2ban_menu() {
             *) warn "无效选项"; sleep 1; continue ;;
         esac
 
-        [ "${CHOICE}" != "0" ] && { echo ""; read -rp "  按 Enter 返回..." _; }
+        [ "${CHOICE}" != "0" ] && ui_pause
     done
 }
 
@@ -573,7 +568,7 @@ f2b_unban() {
         if [ -z "$RAW" ]; then
             echo -e "  ${GREEN}当前没有封禁的 IP${NC}"
             echo ""
-            read -rp "  按 Enter 返回..." _
+            ui_pause
             return
         fi
 

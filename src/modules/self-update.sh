@@ -209,8 +209,7 @@ self_uninstall() {
     echo ""
     info "清理完成，快捷键 v 已移除"
     warn "当前会话仍可使用 alias，重新登录后完全生效"
-    echo ""
-    read -rp "  按 Enter 返回..." _
+    ui_pause
     return
 }
 
@@ -220,29 +219,20 @@ self_check_first_run() {
     [ -f /usr/local/bin/v ] && return
     [ -f "$LOCAL_SCRIPT" ] && return
 
-    clear
-    echo ""
-    box_top
-    box_title "VPS 开荒脚本 V3.8.1"
-    box_title "· · 银趴火山帮 · ·"
-    box_sep
-    box_title "首次运行检测"
-    box_bot
-    echo ""
+    print_header "首次运行设置"
     echo -e "  ${YELLOW}检测到脚本未安装到本地${NC}"
     echo -e "  安装后可随时输入 ${BOLD}v${NC} 快速启动"
     echo ""
     menu_div
-    echo -e "  ${GREEN}1${NC}) 立即安装（推荐）"
-    echo -e "  ${GREEN}0${NC}) 跳过，直接进入"
+    menu_item "1" "立即安装  ${DIM}推荐${NC}"
+    menu_item "0" "跳过并进入主菜单" "$RED"
     menu_div
     echo ""
-    read -rp "  请选择 [0-1]: " CH
+    read -rp "$(ui_prompt '选择操作 [0-1]: ')" CH
     case "$CH" in
         1)
             self_install
-            echo ""
-            read -rp "  按 Enter 继续进入主菜单..." _
+            ui_pause
             ;;
         *) ;;
     esac
@@ -287,6 +277,6 @@ self_manage_menu() {
             *) warn "无效选项"; sleep 1; continue ;;
         esac
 
-        [ "${CH}" != "0" ] && [ "${CH}" != "3" ] && { echo ""; read -rp "  按 Enter 返回..." _; }
+        [ "${CH}" != "0" ] && [ "${CH}" != "3" ] && ui_pause
     done
 }

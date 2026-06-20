@@ -94,11 +94,11 @@ generate_key() {
     print_header "生成 SSH 密钥对"
 
     echo -e "  选择密钥类型："
-    echo -e "  ${GREEN}1${NC}) Ed25519  ${YELLOW}[推荐，更安全更短]${NC}"
-    echo -e "  ${GREEN}2${NC}) RSA 4096"
-    echo -e "  ${GREEN}0${NC}) 返回"
+    menu_item "1" "Ed25519  ${DIM}推荐，更安全更短${NC}"
+    menu_item "2" "RSA 4096"
+    menu_item "0" "返回上级" "$RED"
     echo ""
-    read -rp "  请选择 [0-2]: " KEY_TYPE_CHOICE
+    read -rp "$(ui_prompt '选择密钥类型 [0-2]: ')" KEY_TYPE_CHOICE
 
     case "$KEY_TYPE_CHOICE" in
         0) return ;;
@@ -185,13 +185,13 @@ set_login_mode() {
     echo -e "  PermitRootLogin        : ${BOLD}${CURRENT_ROOT:-未设置}${NC}"
     echo ""
     menu_div
-    echo -e "  ${GREEN}1${NC}) 仅密钥登录（禁用密码）    ${YELLOW}[推荐]${NC}"
-    echo -e "  ${GREEN}2${NC}) 密码 + 密钥均可登录"
-    echo -e "  ${GREEN}3${NC}) 仅密码登录（禁用密钥）    ${RED}[不推荐]${NC}"
-    echo -e "  ${GREEN}0${NC}) 返回"
+    menu_item "1" "仅密钥登录  ${DIM}推荐${NC}"
+    menu_item "2" "密码 + 密钥登录"
+    menu_item "3" "仅密码登录  ${RED}不推荐${NC}" "$YELLOW"
+    menu_item "0" "返回上级" "$RED"
     menu_div
     echo ""
-    read -rp "  请选择 [0-3]: " MODE
+    read -rp "$(ui_prompt '选择登录方式 [0-3]: ')" MODE
     echo ""
 
     case "$MODE" in

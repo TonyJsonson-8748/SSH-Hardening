@@ -116,27 +116,27 @@ dns_menu() {
         menu_div
         echo -e "  ${BOLD}国外 DNS：${NC}"
         if [ "$HAS_V6" = "true" ]; then
-            echo -e "  ${GREEN}1${NC}) Cloudflare  v4: 1.1.1.1 / 1.0.0.1"
+            menu_item "1" "Cloudflare  ${DIM}v4 1.1.1.1 / 1.0.0.1${NC}"
             echo -e "             v6: 2606:4700:4700::1111"
-            echo -e "  ${GREEN}2${NC}) Google      v4: 8.8.8.8 / 8.8.4.4"
+            menu_item "2" "Google  ${DIM}v4 8.8.8.8 / 8.8.4.4${NC}"
             echo -e "             v6: 2001:4860:4860::8888"
-            echo -e "  ${GREEN}3${NC}) 混合推荐    CF v4 + Google v4 + 双栈 v6"
+            menu_item "3" "混合推荐  ${DIM}Cloudflare + Google 双栈${NC}"
         else
-            echo -e "  ${GREEN}1${NC}) Cloudflare  1.1.1.1 / 1.0.0.1"
-            echo -e "  ${GREEN}2${NC}) Google      8.8.8.8 / 8.8.4.4"
-            echo -e "  ${GREEN}3${NC}) 混合推荐    1.1.1.1 + 8.8.8.8"
+            menu_item "1" "Cloudflare  ${DIM}1.1.1.1 / 1.0.0.1${NC}"
+            menu_item "2" "Google  ${DIM}8.8.8.8 / 8.8.4.4${NC}"
+            menu_item "3" "混合推荐  ${DIM}1.1.1.1 + 8.8.8.8${NC}"
         fi
         menu_div
         echo -e "  ${BOLD}国内 DNS：${NC}"
         if [ "$HAS_V6" = "true" ]; then
-            echo -e "  ${GREEN}4${NC}) 阿里云      v4: 223.5.5.5 / 223.6.6.6"
+            menu_item "4" "阿里云  ${DIM}v4 223.5.5.5 / 223.6.6.6${NC}"
             echo -e "             v6: 2400:3200::1"
-            echo -e "  ${GREEN}5${NC}) 腾讯 DNSpod v4: 119.29.29.29 / 183.60.83.19"
-            echo -e "  ${GREEN}6${NC}) 114 DNS     v4: 114.114.114.114 / 114.114.115.115"
+            menu_item "5" "腾讯 DNSPod  ${DIM}119.29.29.29 / 183.60.83.19${NC}"
+            menu_item "6" "114 DNS  ${DIM}114.114.114.114 / 114.114.115.115${NC}"
         else
-            echo -e "  ${GREEN}4${NC}) 阿里云      223.5.5.5 / 223.6.6.6"
-            echo -e "  ${GREEN}5${NC}) 腾讯 DNSpod 119.29.29.29 / 183.60.83.19"
-            echo -e "  ${GREEN}6${NC}) 114 DNS     114.114.114.114 / 114.114.115.115"
+            menu_item "4" "阿里云  ${DIM}223.5.5.5 / 223.6.6.6${NC}"
+            menu_item "5" "腾讯 DNSPod  ${DIM}119.29.29.29 / 183.60.83.19${NC}"
+            menu_item "6" "114 DNS  ${DIM}114.114.114.114 / 114.114.115.115${NC}"
         fi
         menu_div
         menu_item "7" "手动编辑 DNS 配置"
@@ -157,7 +157,7 @@ dns_menu() {
                 confirm_change_preview "手动编辑 DNS" "文件：/etc/resolv.conf" "保存后将立即影响域名解析" || { warn "已取消"; continue; }
                 safety_arm dns_manual || return 1
                 chattr -i /etc/resolv.conf 2>/dev/null
-                read -rp "  按 Enter 继续..." _
+                ui_continue
                 open_editor /etc/resolv.conf
                 info "DNS 配置已保存"
                 audit_action "手动编辑DNS配置" SUCCESS
@@ -168,6 +168,6 @@ dns_menu() {
             *) warn "无效选项"; sleep 1; continue ;;
         esac
 
-        [ "${CH}" != "0" ] && { echo ""; read -rp "  按 Enter 返回..." _; }
+        [ "${CH}" != "0" ] && ui_pause
     done
 }

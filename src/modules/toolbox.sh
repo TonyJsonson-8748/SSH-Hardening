@@ -124,9 +124,9 @@ config_backup_menu() {
         done
         [ "${#FILES[@]}" -eq 0 ] && echo -e "  ${DIM}暂无备份${NC}"
         menu_div
-        echo -e "  ${GREEN}c${NC}) 创建备份   ${YELLOW}r${NC}) 恢复备份   ${RED}d${NC}) 删除备份"
-        echo -e "  ${RED}0${NC}) 返回"
-        read -rp "  请选择: " CH
+        menu_pair "c" "创建备份" "r" "恢复备份" "$GREEN" "$YELLOW"
+        menu_pair "d" "删除备份" "0" "返回上级" "$RED" "$RED"
+        read -rp "$(ui_prompt '选择操作: ')" CH
         case "$CH" in
             c|C) config_backup_create manual ;;
             r|R|d|D)
@@ -143,7 +143,7 @@ config_backup_menu() {
             0) return ;;
             *) warn "无效选项" ;;
         esac
-        echo ""; read -rp "  按 Enter 返回..." _
+        ui_pause
     done
 }
 
@@ -230,10 +230,10 @@ security_audit() {
 login_security_logs() {
     while true; do
         print_header "登录记录与安全日志"
-        echo -e "  ${GREEN}1${NC}) 最近成功登录       ${GREEN}2${NC}) 最近失败登录"
-        echo -e "  ${GREEN}3${NC}) 当前在线会话       ${GREEN}4${NC}) SSH 安全日志"
-        echo -e "  ${GREEN}5${NC}) Fail2ban 封禁状态   ${RED}0${NC}) 返回"
-        read -rp "  请选择 [0-5]: " CH
+        menu_pair "1" "最近成功登录" "2" "最近失败登录"
+        menu_pair "3" "当前在线会话" "4" "SSH 安全日志"
+        menu_pair "5" "Fail2ban 封禁状态" "0" "返回上级" "$GREEN" "$RED"
+        read -rp "$(ui_prompt '选择记录 [0-5]: ')" CH
         case "$CH" in
             1) last -ai 2>/dev/null | head -30 ;;
             2) if command -v lastb >/dev/null 2>&1; then lastb -ai 2>/dev/null | head -30; else warn "系统没有 lastb 数据"; fi ;;
@@ -244,7 +244,7 @@ login_security_logs() {
             *) warn "无效选项"; continue ;;
         esac
         audit_action "查看登录安全日志选项 $CH" SUCCESS
-        echo ""; read -rp "  按 Enter 返回..." _
+        ui_pause
     done
 }
 
@@ -322,10 +322,10 @@ system_update_manager() {
         fi
         echo -e "  包管理器：${BOLD}$PM${NC}   待更新：${BOLD}$PENDING${NC}"
         menu_div
-        echo -e "  ${GREEN}1${NC}) 刷新并检查更新     ${GREEN}2${NC}) 安装安全更新"
-        echo -e "  ${YELLOW}3${NC}) 安装全部更新       ${GREEN}4${NC}) 配置自动安全更新"
-        echo -e "  ${GREEN}5${NC}) 清理软件包缓存     ${RED}0${NC}) 返回"
-        read -rp "  请选择 [0-5]: " CH
+        menu_pair "1" "刷新并检查更新" "2" "安装安全更新"
+        menu_pair "3" "安装全部更新" "4" "自动安全更新" "$YELLOW" "$GREEN"
+        menu_pair "5" "清理软件包缓存" "0" "返回上级" "$GREEN" "$RED"
+        read -rp "$(ui_prompt '选择操作 [0-5]: ')" CH
         case "$CH" in
             1)
                 case "$PM" in
@@ -398,7 +398,7 @@ system_update_manager() {
             0) return ;;
             *) warn "无效选项"; continue ;;
         esac
-        echo ""; read -rp "  按 Enter 返回..." _
+        ui_pause
     done
 }
 

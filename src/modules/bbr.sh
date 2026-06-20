@@ -80,7 +80,7 @@ bbr_restore_sysctl() {
     echo -e "  ${YELLOW}[d]${NC} 清除全部备份"
     echo -e "  ${RED}[0]${NC} 返回"
     echo ""
-    read -rp "  请选择: " CH
+    read -rp "$(ui_prompt '选择备份编号: ')" CH
 
     case "$CH" in
         0) rm -f "$LIST_FILE"; return ;;
@@ -440,17 +440,13 @@ bbr_menu_bandwidth() {
     print_header "BBR 自动配置 — 选择带宽"
     echo -e "  内存：${BOLD}${MEM_LBL}${NC}  延迟：${BOLD}${LAT_LBL}${NC}"
     echo ""
-    echo -e "  ${GREEN}1${NC}) 100 Mbps"
-    echo -e "  ${GREEN}2${NC}) 200 Mbps"
-    echo -e "  ${GREEN}3${NC}) 500 Mbps"
-    echo -e "  ${GREEN}4${NC}) 1 Gbps   (1024 Mbps)"
-    echo -e "  ${GREEN}5${NC}) 2 Gbps   (2048 Mbps)"
-    echo -e "  ${GREEN}6${NC}) 5 Gbps   (5120 Mbps)"
-    echo -e "  ${GREEN}7${NC}) 10 Gbps  (10240 Mbps)"
-    echo -e "  ${RED}0${NC}) 返回"
-    echo -e "  ${RED}00${NC}) 退出脚本"
+    menu_pair "1" "100 Mbps" "2" "200 Mbps"
+    menu_pair "3" "500 Mbps" "4" "1 Gbps"
+    menu_pair "5" "2 Gbps" "6" "5 Gbps"
+    menu_item "7" "10 Gbps"
+    menu_pair "0" "返回上级" "00" "退出脚本" "$RED" "$RED"
     echo ""
-    read -rp "  请选择 [0-7]: " CH
+    read -rp "$(ui_prompt '选择带宽 [0-7]: ')" CH
     case "$CH" in
         1) bbr_auto_calc "$MEM_MB" "$LAT_MS" 100   "$MEM_LBL" "$LAT_LBL" "100Mbps" ;;
         2) bbr_auto_calc "$MEM_MB" "$LAT_MS" 200   "$MEM_LBL" "$LAT_LBL" "200Mbps" ;;
@@ -471,13 +467,12 @@ bbr_menu_latency() {
     print_header "BBR 自动配置 — 选择延迟"
     echo -e "  内存：${BOLD}${MEM_LBL}${NC}"
     echo ""
-    echo -e "  ${GREEN}1${NC}) 100ms 以内     （国内 / 亚洲近距离）"
-    echo -e "  ${GREEN}2${NC}) 100ms - 200ms  （跨国，如美西→中国）"
-    echo -e "  ${GREEN}3${NC}) 200ms 以上     （欧洲→中国 / 长距离）"
-    echo -e "  ${RED}0${NC}) 返回"
-    echo -e "  ${RED}00${NC}) 退出脚本"
+    menu_item "1" "100ms 以内  ${DIM}国内 / 亚洲${NC}"
+    menu_item "2" "100-200ms  ${DIM}跨国线路${NC}"
+    menu_item "3" "200ms 以上  ${DIM}跨洲长距离${NC}"
+    menu_pair "0" "返回上级" "00" "退出脚本" "$RED" "$RED"
     echo ""
-    read -rp "  请选择 [0-3]: " CH
+    read -rp "$(ui_prompt '选择延迟 [0-3]: ')" CH
     case "$CH" in
         1) bbr_menu_bandwidth "$MEM_MB" 50  "$MEM_LBL" "100ms以内" ;;
         2) bbr_menu_bandwidth "$MEM_MB" 150 "$MEM_LBL" "100-200ms" ;;
@@ -497,16 +492,12 @@ bbr_menu_auto() {
     print_header "BBR 自动配置 — 选择内存"
     echo -e "  系统检测内存：${BOLD}${SYS_MEM_MB}MB${NC}"
     echo ""
-    echo -e "  ${GREEN}1${NC}) 512 MB"
-    echo -e "  ${GREEN}2${NC}) 1 GB"
-    echo -e "  ${GREEN}3${NC}) 2 GB"
-    echo -e "  ${GREEN}4${NC}) 4 GB"
-    echo -e "  ${GREEN}5${NC}) 8 GB"
-    echo -e "  ${GREEN}6${NC}) 16 GB+"
-    echo -e "  ${RED}0${NC}) 返回"
-    echo -e "  ${RED}00${NC}) 退出脚本"
+    menu_pair "1" "512 MB" "2" "1 GB"
+    menu_pair "3" "2 GB" "4" "4 GB"
+    menu_pair "5" "8 GB" "6" "16 GB+"
+    menu_pair "0" "返回上级" "00" "退出脚本" "$RED" "$RED"
     echo ""
-    read -rp "  请选择 [0-6]: " CH
+    read -rp "$(ui_prompt '选择内存 [0-6]: ')" CH
     case "$CH" in
         1) bbr_menu_latency 512   "512MB" ;;
         2) bbr_menu_latency 1024  "1GB" ;;
@@ -533,14 +524,14 @@ bbr_menu_manual() {
     menu_div
     echo -e "  ${BOLD}请选择 VPS 用途（决定转发/conntrack/窗口参数）${NC}"
     echo ""
-    echo -e "  ${GREEN}1${NC}) 中转机      — 双向转发/大并发（如 sing-box 中转）"
-    echo -e "  ${GREEN}2${NC}) 落地机      — 跨境上行/大缓冲（落地代理出口）"
-    echo -e "  ${GREEN}3${NC}) 线路落地机  — CN2/IPLC/直连用户/低延迟优先"
-    echo -e "  ${GREEN}4${NC}) 通用 / 单机 — 普通 VPS（网页/SSH/服务）"
-    echo -e "  ${RED}0${NC}) 返回   ${RED}00${NC}) 退出脚本"
+    menu_item "1" "中转机  ${DIM}双向转发 / 大并发${NC}"
+    menu_item "2" "落地机  ${DIM}跨境上行 / 大缓冲${NC}"
+    menu_item "3" "线路落地机  ${DIM}低延迟优先${NC}"
+    menu_item "4" "通用单机  ${DIM}网页 / SSH / 服务${NC}"
+    menu_pair "0" "返回上级" "00" "退出脚本" "$RED" "$RED"
     menu_div
     echo ""
-    read -rp "  请选择 [0-4]: " SCENE
+    read -rp "$(ui_prompt '选择用途 [0-4]: ')" SCENE
     local PROFILE SCENE_LABEL
     case "$SCENE" in
         1) PROFILE="relay";        SCENE_LABEL="中转机" ;;
@@ -588,20 +579,15 @@ bbr_menu_manual() {
     echo -e "  ${YELLOW}${RECOMMEND}${NC}"
     echo ""
     menu_div
-    echo -e "  ${GREEN}1${NC}) 12 MB    — 低带宽 / 低延迟"
-    echo -e "  ${GREEN}2${NC}) 16 MB    — 小内存保守"
-    echo -e "  ${GREEN}3${NC}) 20 MB    — 中低带宽"
-    echo -e "  ${GREEN}4${NC}) 32 MB    — 1G 跨境甜点区（~150ms BDP，推荐）"
-    echo -e "  ${GREEN}5${NC}) 40 MB    — 中等带宽（1G）"
-    echo -e "  ${GREEN}6${NC}) 64 MB    — 高带宽（1G+ 跨境）"
-    echo -e "  ${GREEN}7${NC}) 128 MB   — 超高带宽（2G/高延迟）"
-    echo -e "  ${GREEN}8${NC}) 256 MB   — 万兆 / 跨洋（5G/100ms）"
-    echo -e "  ${GREEN}9${NC}) 512 MB   — 万兆 / 长距离（10G/100ms）"
-    echo -e "  ${GREEN}10${NC}) 1024 MB — 极限（10G+/200ms+，需 8G+ 内存）"
-    echo -e "  ${RED}0${NC}) 返回   ${RED}00${NC}) 退出脚本"
+    menu_pair "1" "12 MB · 低带宽" "2" "16 MB · 小内存"
+    menu_pair "3" "20 MB · 中低带宽" "4" "32 MB · 跨境推荐"
+    menu_pair "5" "40 MB · 1G" "6" "64 MB · 1G+"
+    menu_pair "7" "128 MB · 2G" "8" "256 MB · 5G"
+    menu_pair "9" "512 MB · 10G" "10" "1024 MB · 极限"
+    menu_pair "0" "返回上级" "00" "退出脚本" "$RED" "$RED"
     menu_div
     echo ""
-    read -rp "  请选择 [0-10]: " CH
+    read -rp "$(ui_prompt '选择缓冲区 [0-10]: ')" CH
 
     local RMEM WMEM BUF_LBL
     case "$CH" in
@@ -685,7 +671,7 @@ bbr_menu_tc() {
         echo ""
         echo -e "  ${DIM}如需限速，请联系 VPS 提供商在宿主机层面配置${NC}"
         echo ""
-        read -rp "  按 Enter 返回..." _
+        ui_pause
         return
     fi
 
@@ -700,18 +686,14 @@ bbr_menu_tc() {
     echo -e "  网卡：${BOLD}${DEV}${NC}  当前 qdisc：${BOLD}${QTYPE}${NC}  当前限速：${BOLD}${CUR}${NC}"
     echo ""
     menu_div
-    echo -e "  ${GREEN}1${NC}) 200 Mbps"
-    echo -e "  ${GREEN}2${NC}) 500 Mbps"
-    echo -e "  ${GREEN}3${NC}) 780 Mbps"
-    echo -e "  ${GREEN}4${NC}) 1024 Mbps (1Gbps)"
-    echo -e "  ${GREEN}5${NC}) 2048 Mbps (2Gbps)"
-    echo -e "  ${GREEN}6${NC}) 自定义输入"
-    echo -e "  ${YELLOW}7${NC}) 取消限速"
-    echo -e "  ${RED}0${NC}) 返回"
-    echo -e "  ${RED}00${NC}) 退出脚本"
+    menu_pair "1" "200 Mbps" "2" "500 Mbps"
+    menu_pair "3" "780 Mbps" "4" "1 Gbps"
+    menu_pair "5" "2 Gbps" "6" "自定义输入"
+    menu_item "7" "取消限速" "$YELLOW"
+    menu_pair "0" "返回上级" "00" "退出脚本" "$RED" "$RED"
     menu_div
     echo ""
-    read -rp "  请选择 [0-7]: " CH
+    read -rp "$(ui_prompt '选择限速 [0-7]: ')" CH
 
     local RATE=0
     case "$CH" in
@@ -785,15 +767,14 @@ bbr_menu_initcwnd() {
     echo -e "  网卡：${BOLD}${DEV}${NC}  网关：${BOLD}${GW}${NC}  当前 initcwnd：${BOLD}${CUR}${NC}"
     echo ""
     menu_div
-    echo -e "  ${GREEN}1${NC}) 10   — 默认保守"
-    echo -e "  ${GREEN}2${NC}) 50   — 跨国高延迟推荐"
-    echo -e "  ${GREEN}3${NC}) 100  — 激进（可能丢包）"
-    echo -e "  ${GREEN}4${NC}) 自定义输入"
-    echo -e "  ${RED}0${NC}) 返回"
-    echo -e "  ${RED}00${NC}) 退出脚本"
+    menu_item "1" "10 · 默认保守"
+    menu_item "2" "50 · 跨国高延迟推荐"
+    menu_item "3" "100 · 激进，可能丢包" "$YELLOW"
+    menu_item "4" "自定义输入"
+    menu_pair "0" "返回上级" "00" "退出脚本" "$RED" "$RED"
     menu_div
     echo ""
-    read -rp "  请选择 [0-4]: " CH
+    read -rp "$(ui_prompt '选择 initcwnd [0-4]: ')" CH
 
     local VAL
     case "$CH" in
@@ -963,20 +944,20 @@ bbr_smart_wizard() {
     echo ""
     menu_div
     menu_group "通用预设"
-    echo -e "  ${GREEN}1${NC}) 均衡跨境    — 默认推荐，适合大多数 VPS"
-    echo -e "  ${GREEN}2${NC}) 低延迟交互  — SSH/游戏/远程桌面"
-    echo -e "  ${GREEN}3${NC}) 高吞吐传输  — 大带宽/下载上传优先"
+    menu_item "1" "均衡跨境  ${DIM}默认推荐${NC}"
+    menu_item "2" "低延迟交互  ${DIM}SSH / 游戏 / 远程桌面${NC}"
+    menu_item "3" "高吞吐传输  ${DIM}大带宽优先${NC}"
     echo ""
     menu_group "场景化预设"
-    echo -e "  ${GREEN}4${NC}) 中转机      — 双向转发/大并发（如 sing-box 中转）"
-    echo -e "  ${GREEN}5${NC}) 落地机      — 跨境上行/大缓冲（落地代理出口）"
-    echo -e "  ${GREEN}6${NC}) 线路落地机  — CN2/IPLC/直连用户/低延迟优先"
+    menu_item "4" "中转机  ${DIM}双向转发 / 大并发${NC}"
+    menu_item "5" "落地机  ${DIM}跨境上行 / 大缓冲${NC}"
+    menu_item "6" "线路落地机  ${DIM}低延迟优先${NC}"
     echo ""
-    echo -e "  ${GREEN}7${NC}) 自动推荐    — 根据当前内存智能选择"
-    echo -e "  ${RED}0${NC}) 返回         ${RED}00${NC}) 退出脚本"
+    menu_item "7" "自动推荐  ${DIM}根据内存智能选择${NC}"
+    menu_pair "0" "返回上级" "00" "退出脚本" "$RED" "$RED"
     menu_div
     echo ""
-    read -rp "  请选择 [0-7]: " CH
+    read -rp "$(ui_prompt '选择预设 [0-7]: ')" CH
 
     local PROFILE=""
     case "$CH" in
@@ -1160,6 +1141,6 @@ bbr_menu() {
             *) warn "无效选项"; sleep 1; continue ;;
         esac
 
-        [ "${CH}" != "0" ] && { echo ""; read -rp "  按 Enter 返回..." _; }
+        [ "${CH}" != "0" ] && ui_pause
     done
 }

@@ -249,7 +249,7 @@ ufw_menu() {
 
         case "$CH" in 1|3|4|5|6|7|8) safety_confirm ;; esac
 
-        [ "${CH}" != "0" ] && { echo ""; read -rp "  按 Enter 返回..." _; }
+        [ "${CH}" != "0" ] && ui_pause
     done
 }
 
@@ -330,7 +330,7 @@ fwd_del_ip() {
         if [ -z "$RULES" ]; then
             echo -e "  ${YELLOW}暂无 IP 规则${NC}"
             echo ""
-            read -rp "  按 Enter 返回..." _
+            ui_pause
             return
         fi
         local i=1
@@ -434,7 +434,7 @@ fwd_menu() {
 
         case "$CH" in 1|3|4|5|6|7|8) safety_confirm ;; esac
 
-        [ "${CH}" != "0" ] && { echo ""; read -rp "  按 Enter 返回..." _; }
+        [ "${CH}" != "0" ] && ui_pause
     done
 }
 
@@ -451,16 +451,15 @@ firewall_menu() {
             echo ""
             menu_div
             echo -e "  请选择要安装的防火墙："
-            echo -e "  ${GREEN}1${NC}) ufw       （推荐，Ubuntu/Debian 常用）"
-            echo -e "  ${GREEN}2${NC}) firewalld （CentOS/Rocky/Fedora 常用）"
-            echo -e "  ${RED}0${NC}) 返回主菜单"
-            echo -e "  ${RED}00${NC}) 退出脚本"
+            menu_item "1" "ufw  ${DIM}Ubuntu / Debian 推荐${NC}"
+            menu_item "2" "firewalld  ${DIM}Rocky / Fedora 推荐${NC}"
+            menu_pair "0" "返回主菜单" "00" "退出脚本" "$RED" "$RED"
             menu_div
             echo ""
-            read -rp "  请选择 [0-2]: " CH
+            read -rp "$(ui_prompt '选择防火墙 [0-2]: ')" CH
             case "$CH" in
-                1) fw_install "ufw";       echo ""; read -rp "  按 Enter 继续..." _ ;;
-                2) fw_install "firewalld"; echo ""; read -rp "  按 Enter 继续..." _ ;;
+                1) fw_install "ufw";       ui_continue ;;
+                2) fw_install "firewalld"; ui_continue ;;
                 0) return ;;
                 00) safe_clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;
                 *) warn "无效选项"; sleep 1 ;;

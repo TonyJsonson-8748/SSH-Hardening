@@ -220,6 +220,6 @@ ip_config_menu() {
             *) warn "无效选项"; sleep 1; continue ;;
         esac
 
-        [ "${CH}" != "0" ] && { echo ""; read -rp "  按 Enter 返回..." _; }
+        [ "${CH}" != "0" ] && ui_pause
     done
 }

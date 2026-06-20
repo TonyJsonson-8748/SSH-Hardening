@@ -417,12 +417,11 @@ ddns_tg_config() {
     echo -e "  ${DIM}④ 从返回的 chat.id 字段获取 Chat ID${NC}"
     menu_div
     echo ""
-    echo -e "  ${GREEN}1${NC}) 配置 Telegram 通知"
-    echo -e "  ${GREEN}2${NC}) 发送测试消息"
-    [ -f "$DDNS_TG_FILE" ] && echo -e "  ${YELLOW}3${NC}) 关闭 Telegram 通知"
-    echo -e "  ${RED}0${NC}) 返回"
+    menu_pair "1" "配置 Telegram 通知" "2" "发送测试消息"
+    [ -f "$DDNS_TG_FILE" ] && menu_item "3" "关闭 Telegram 通知" "$YELLOW"
+    menu_item "0" "返回上级" "$RED"
     echo ""
-    read -rp "  请选择: " CH
+    read -rp "$(ui_prompt '选择操作: ')" CH
 
     case "$CH" in
         1)
@@ -502,11 +501,11 @@ ddns_view_logs() {
         done
         echo ""
         menu_div
-        echo -e "  ${GREEN}1${NC}) 实时跟踪（Ctrl+C 返回）"
-        echo -e "  ${GREEN}2${NC}) 查看完整日志（UTF-8）"
-        echo -e "  ${RED}0${NC}) 返回"
+        menu_item "1" "实时跟踪  ${DIM}Ctrl+C 返回${NC}"
+        menu_item "2" "查看完整日志"
+        menu_item "0" "返回上级" "$RED"
         echo ""
-        read -rp "  请选择: " CH
+        read -rp "$(ui_prompt '选择查看方式: ')" CH
         case "$CH" in
             1)
                 # 设置 trap 后再 tail -f；trap 仅在 tail 进程内生效

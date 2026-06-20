@@ -73,17 +73,16 @@ mirror_menu() {
 
         case "$OS_ID" in
             ubuntu)
-                echo -e "  ${GREEN}1${NC}) 中国大陆【阿里云】    mirrors.aliyun.com"
-                echo -e "  ${GREEN}2${NC}) 中国大陆【腾讯云】    mirrors.tencent.com"
-                echo -e "  ${GREEN}3${NC}) 中国大陆【清华】      mirrors.tuna.tsinghua.edu.cn"
-                echo -e "  ${GREEN}4${NC}) 中国大陆【中科大】    mirrors.ustc.edu.cn"
-                echo -e "  ${GREEN}5${NC}) 海外地区【官方源】    archive.ubuntu.com"
+                menu_item "1" "阿里云  ${DIM}mirrors.aliyun.com${NC}"
+                menu_item "2" "腾讯云  ${DIM}mirrors.tencent.com${NC}"
+                menu_item "3" "清华  ${DIM}mirrors.tuna.tsinghua.edu.cn${NC}"
+                menu_item "4" "中科大  ${DIM}mirrors.ustc.edu.cn${NC}"
+                menu_item "5" "Ubuntu 官方源  ${DIM}海外${NC}"
                 menu_div
-                echo -e "  ${RED}0${NC}) 返回"
-                echo -e "  ${RED}00${NC}) 退出脚本"
+                menu_pair "0" "返回主菜单" "00" "退出脚本" "$RED" "$RED"
                 menu_div
                 echo ""
-                read -rp "  请选择 [0-5]: " CH
+                read -rp "$(ui_prompt '选择软件源 [0-5]: ')" CH
                 case "$CH" in
                     1) mirror_apply_ubuntu "https://mirrors.aliyun.com/ubuntu" ;;
                     2) mirror_apply_ubuntu "https://mirrors.tencent.com/ubuntu" ;;
@@ -96,17 +95,16 @@ mirror_menu() {
                 esac
                 ;;
             debian)
-                echo -e "  ${GREEN}1${NC}) 中国大陆【阿里云】    mirrors.aliyun.com"
-                echo -e "  ${GREEN}2${NC}) 中国大陆【腾讯云】    mirrors.tencent.com"
-                echo -e "  ${GREEN}3${NC}) 中国大陆【清华】      mirrors.tuna.tsinghua.edu.cn"
-                echo -e "  ${GREEN}4${NC}) 中国大陆【中科大】    mirrors.ustc.edu.cn"
-                echo -e "  ${GREEN}5${NC}) 海外地区【官方源】    deb.debian.org"
+                menu_item "1" "阿里云  ${DIM}mirrors.aliyun.com${NC}"
+                menu_item "2" "腾讯云  ${DIM}mirrors.tencent.com${NC}"
+                menu_item "3" "清华  ${DIM}mirrors.tuna.tsinghua.edu.cn${NC}"
+                menu_item "4" "中科大  ${DIM}mirrors.ustc.edu.cn${NC}"
+                menu_item "5" "Debian 官方源  ${DIM}海外${NC}"
                 menu_div
-                echo -e "  ${RED}0${NC}) 返回"
-                echo -e "  ${RED}00${NC}) 退出脚本"
+                menu_pair "0" "返回主菜单" "00" "退出脚本" "$RED" "$RED"
                 menu_div
                 echo ""
-                read -rp "  请选择 [0-5]: " CH
+                read -rp "$(ui_prompt '选择软件源 [0-5]: ')" CH
                 case "$CH" in
                     1) mirror_apply_debian "https://mirrors.aliyun.com/debian" ;;
                     2) mirror_apply_debian "https://mirrors.tencent.com/debian" ;;
@@ -119,15 +117,14 @@ mirror_menu() {
                 esac
                 ;;
             centos|rocky|rhel|almalinux)
-                echo -e "  ${GREEN}1${NC}) 中国大陆【阿里云】"
-                echo -e "  ${GREEN}2${NC}) 中国大陆【清华】"
-                echo -e "  ${GREEN}3${NC}) 海外地区【默认】"
+                menu_item "1" "阿里云"
+                menu_item "2" "清华"
+                menu_item "3" "系统默认源"
                 menu_div
-                echo -e "  ${RED}0${NC}) 返回"
-                echo -e "  ${RED}00${NC}) 退出脚本"
+                menu_pair "0" "返回主菜单" "00" "退出脚本" "$RED" "$RED"
                 menu_div
                 echo ""
-                read -rp "  请选择 [0-3]: " CH
+                read -rp "$(ui_prompt '选择软件源 [0-3]: ')" CH
                 case "$CH" in
                     1) mirror_apply_centos "cn" ;;
                     2) mirror_apply_centos "edu" ;;
@@ -141,11 +138,11 @@ mirror_menu() {
                 warn "暂不支持自动换源的系统：${OS_ID}"
                 warn "请手动修改 /etc/apt/sources.list 或对应源文件"
                 echo ""
-                read -rp "  按 Enter 返回..." _
+                ui_pause
                 return
                 ;;
         esac
 
-        [ "${CH:-x}" != "0" ] && { echo ""; read -rp "  按 Enter 返回..." _; }
+        [ "${CH:-x}" != "0" ] && ui_pause
     done
 }

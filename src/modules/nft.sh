@@ -509,8 +509,8 @@ nft_add_rule() {
         local rule_mode="single"
     else
         echo ""
-        echo -e "  ${GREEN}1${NC}) 1:1 映射（目标端口段=监听端口段）"
-        echo -e "  ${GREEN}2${NC}) 端口段偏移（目标段从指定起始端口开始）"
+        menu_item "1" "1:1 映射  ${DIM}目标端口段等于监听端口段${NC}"
+        menu_item "2" "端口段偏移  ${DIM}指定目标起始端口${NC}"
         read -rp "  选择映射模式 [1/2]，默认 1: " mc
         [ -z "$mc" ] && mc=1
         local count=$((le - ls + 1))
@@ -625,8 +625,8 @@ nft_edit_rule() {
             range_offset) cur_mode_label="端口段偏移" ;;
         esac
         echo -e "  当前映射模式：${BOLD}${cur_mode_label}${NC}"
-        echo -e "  ${GREEN}1${NC}) 1:1 映射（目标段=监听段）"
-        echo -e "  ${GREEN}2${NC}) 端口段偏移"
+        menu_item "1" "1:1 映射"
+        menu_item "2" "端口段偏移"
         local default_mc=1
         [ "$OLD_MODE" = "range_offset" ] && default_mc=2
         read -rp "  选择映射模式 [1/2]，默认 ${default_mc}: " mc
@@ -902,11 +902,11 @@ nft_access_menu() {
         echo -e "  ${DIM}黑名单：拒绝名单内 IP 访问转发端口${NC}"
         echo -e "  ${DIM}仅影响 NFT 转发端口，不影响 SSH 等其他服务${NC}"
         menu_div
-        echo -e "  ${GREEN}1${NC}) 启用白名单    ${GREEN}2${NC}) 启用黑名单"
-        echo -e "  ${YELLOW}3${NC}) 关闭访问控制"
-        echo -e "  ${RED}0${NC}) 返回   ${RED}00${NC}) 退出脚本"
+        menu_pair "1" "启用白名单" "2" "启用黑名单"
+        menu_item "3" "关闭访问控制" "$YELLOW"
+        menu_pair "0" "返回上级" "00" "退出脚本" "$RED" "$RED"
         echo ""
-        read -rp "  请选择: " ch
+        read -rp "$(ui_prompt '选择模式: ')" ch
 
         case "$ch" in
             1)
@@ -943,7 +943,7 @@ nft_access_menu() {
             *) warn "无效选项"; sleep 1; continue ;;
         esac
         echo ""
-        read -rp "  按 Enter 继续..." _
+        ui_continue
     done
 }
 
@@ -1029,9 +1029,8 @@ iptpf_add() {
     [ "$src" = "$dst" ] && { error "源端口和目标端口不能相同"; return; }
 
     echo ""
-    echo -e "  ${GREEN}1${NC}) TCP"
-    echo -e "  ${GREEN}2${NC}) UDP"
-    echo -e "  ${GREEN}3${NC}) TCP + UDP"
+    menu_pair "1" "TCP" "2" "UDP"
+    menu_item "3" "TCP + UDP"
     read -rp "  协议 [1/2/3]，默认 3: " pc
     [ -z "$pc" ] && pc=3
 
@@ -1121,12 +1120,11 @@ iptpf_menu() {
         fi
 
         menu_div
-        echo -e "  ${GREEN}1${NC}) 添加本地端口转发"
-        echo -e "  ${YELLOW}2${NC}) 删除指定规则"
-        echo -e "  ${YELLOW}3${NC}) 清空所有规则"
-        echo -e "  ${RED}0${NC}) 返回   ${RED}00${NC}) 退出脚本"
+        menu_item "1" "添加本地端口转发"
+        menu_pair "2" "删除指定规则" "3" "清空所有规则" "$YELLOW" "$YELLOW"
+        menu_pair "0" "返回上级" "00" "退出脚本" "$RED" "$RED"
         echo ""
-        read -rp "  请选择: " ch
+        read -rp "$(ui_prompt '选择操作: ')" ch
 
         case "$ch" in
             1) iptpf_add ;;
@@ -1137,7 +1135,7 @@ iptpf_menu() {
             *) warn "无效选项"; sleep 1; continue ;;
         esac
         echo ""
-        read -rp "  按 Enter 继续..." _
+        ui_continue
     done
 }
 
@@ -1250,6 +1248,6 @@ nft_menu() {
             esac
         fi
         echo ""
-        read -rp "  按 Enter 继续..." _
+        ui_continue
     done
 }

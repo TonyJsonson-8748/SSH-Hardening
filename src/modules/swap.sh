@@ -62,16 +62,13 @@ swap_create() {
     echo -e "  推荐大小：${GREEN}${REC_SIZE}MB${NC}（基于当前内存 ${MEM_MB}MB）"
     echo ""
     menu_div
-    echo -e "  ${GREEN}1${NC}) 512MB"
-    echo -e "  ${GREEN}2${NC}) 1GB   (1024MB)"
-    echo -e "  ${GREEN}3${NC}) 2GB   (2048MB)  ${YELLOW}[推荐]${NC}"
-    echo -e "  ${GREEN}4${NC}) 4GB   (4096MB)"
-    echo -e "  ${GREEN}5${NC}) 自定义大小（MB）"
-    echo -e "  ${RED}0${NC}) 返回"
-    echo -e "  ${RED}00${NC}) 退出脚本"
+    menu_pair "1" "512 MB" "2" "1 GB"
+    menu_pair "3" "2 GB · 推荐" "4" "4 GB"
+    menu_item "5" "自定义大小"
+    menu_pair "0" "返回上级" "00" "退出脚本" "$RED" "$RED"
     menu_div
     echo ""
-    read -rp "  请选择 [0-5]: " CH
+    read -rp "$(ui_prompt '选择大小 [0-5]: ')" CH
 
     local SIZE_MB
     case "$CH" in
@@ -201,14 +198,13 @@ swap_set_swappiness() {
     echo -e "  当前 swappiness：${BOLD}${CUR}${NC}"
     echo ""
     echo -e "  ${DIM}推荐值：${NC}"
-    echo -e "  ${GREEN}1${NC}) 10   — 服务器推荐（尽量用物理内存）"
-    echo -e "  ${GREEN}2${NC}) 30   — 折中"
-    echo -e "  ${GREEN}3${NC}) 60   — 系统默认"
-    echo -e "  ${GREEN}4${NC}) 自定义（0-100）"
-    echo -e "  ${RED}0${NC}) 返回"
-    echo -e "  ${RED}00${NC}) 退出脚本"
+    menu_item "1" "10 · 服务器推荐"
+    menu_item "2" "30 · 折中"
+    menu_item "3" "60 · 系统默认"
+    menu_item "4" "自定义 0-100"
+    menu_pair "0" "返回上级" "00" "退出脚本" "$RED" "$RED"
     echo ""
-    read -rp "  请选择 [0-4]: " CH
+    read -rp "$(ui_prompt '选择 Swappiness [0-4]: ')" CH
 
     local VAL
     case "$CH" in
@@ -262,6 +258,6 @@ swap_menu() {
             *) warn "无效选项"; sleep 1; continue ;;
         esac
 
-        [ "${CH}" != "0" ] && { echo ""; read -rp "  按 Enter 返回..." _; }
+        [ "${CH}" != "0" ] && ui_pause
     done
 }

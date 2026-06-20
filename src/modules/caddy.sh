@@ -452,10 +452,10 @@ caddy_view_logs() {
                 echo -e "  $line"
             done
             echo ""
-            echo -e "  ${GREEN}1${NC}) 开启实时跟踪（Ctrl+C 停止返回菜单）"
-            echo -e "  ${RED}0${NC}) 返回"
+            menu_item "1" "开启实时跟踪  ${DIM}Ctrl+C 返回${NC}"
+            menu_item "0" "返回上级" "$RED"
             echo ""
-            read -rp "  请选择: " _CH
+            read -rp "$(ui_prompt '选择操作: ')" _CH
             if [ "$_CH" = "1" ]; then
                 trap 'echo ""; info "已退出实时跟踪"; trap - INT' INT
                 journalctl -u caddy -f 2>/dev/null
@@ -507,10 +507,10 @@ except: print('')" 2>/dev/null)
     done
     echo ""
     menu_div
-    echo -e "  ${GREEN}1${NC}) 开启实时跟踪（Ctrl+C 停止返回菜单）"
-    echo -e "  ${RED}0${NC}) 返回"
+    menu_item "1" "开启实时跟踪  ${DIM}Ctrl+C 返回${NC}"
+    menu_item "0" "返回上级" "$RED"
     echo ""
-    read -rp "  请选择: " _CH
+    read -rp "$(ui_prompt '选择操作: ')" _CH
     if [ "$_CH" = "1" ]; then
         trap 'echo ""; info "已退出实时跟踪"; trap - INT' INT
         tail -f "$LOG_FILE" 2>/dev/null | while IFS= read -r line; do echo -e "  $line"; done
@@ -525,7 +525,7 @@ caddy_edit_raw() {
     echo ""
     warn "$(get_editor) 打开 Caddyfile，保存退出后自动验证并重载"
     echo ""
-    read -rp "  按 Enter 开始编辑..." _
+    ui_continue
     [ -f "$CADDYFILE" ] || { mkdir -p /etc/caddy; touch "$CADDYFILE"; }
     open_editor "$CADDYFILE"
     echo ""
@@ -551,14 +551,13 @@ caddy_menu() {
             echo -e "  ${DIM}Caddy 是一个自动 HTTPS 的现代 Web 服务器，支持反向代理和静态托管${NC}"
             echo ""
             menu_div
-            echo -e "  ${GREEN}1${NC}) 立即安装 Caddy"
-            echo -e "  ${RED}0${NC}) 返回"
-            echo -e "  ${RED}00${NC}) 退出脚本"
+            menu_item "1" "立即安装 Caddy"
+            menu_pair "0" "返回主菜单" "00" "退出脚本" "$RED" "$RED"
             menu_div
             echo ""
-            read -rp "  请选择 [0-1]: " CH
+            read -rp "$(ui_prompt '选择操作 [0-1]: ')" CH
             case "$CH" in
-                1) caddy_install; echo ""; read -rp "  按 Enter 继续..." _ ;;
+                1) caddy_install; ui_continue ;;
                 0) return ;;
                 00) safe_clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;
                 *) warn "无效选项"; sleep 1 ;;
@@ -620,6 +619,6 @@ caddy_menu() {
             *) warn "无效选项"; sleep 1; continue ;;
         esac
 
-        [ "${CH}" != "0" ] && { echo ""; read -rp "  按 Enter 返回..." _; }
+        [ "${CH}" != "0" ] && ui_pause
     done
 }

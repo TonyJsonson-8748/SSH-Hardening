@@ -1,4 +1,4 @@
-# VPS 开荒脚本 V3.8.1
+# VPS 开荒脚本 V3.8.2
 
 > **银趴火山帮** 出品 · SSH · BBR · DDNS · Caddy · Firewall · NFT 转发
 
@@ -30,7 +30,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/chnnic/SSH-Hardening/refs/he
    ...
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  VPS 开荒脚本  V3.8.1 · 银趴火山帮
+  VPS 开荒脚本  V3.8.2 · 银趴火山帮
 
   ◆ 系统概览
   ● SSH  22 · 1 公钥          ● 认证  仅密钥
@@ -484,6 +484,7 @@ GitHub Actions 还会在 Debian、Ubuntu、Alpine、Rocky Linux 容器中加载�
 
 | 版本 | 主要变更 |
 |------|---------|
+| **V3.8.2** | 统一剩余子页面：BBR 多级向导、Fail2ban 参数页、Swap、换源、DNS、日志、NFT 访问控制和安装向导全面接入响应式菜单、统一输入提示与返回行为 |
 | **V3.8.1** | 全面重构终端 UI：响应式宽度、窄屏单列/宽屏双列、统一状态仪表盘与操作提示、紧凑页面标题、主要模块菜单规范化，并支持 `NO_COLOR` 与非交互终端无 ANSI 输出 |
 | **V3.8.0** | 源码拆分为 core 和功能模块，由 `build.sh` 生成单文件发行版；新增 Debian/Ubuntu/Alpine/Rocky 冒烟测试与故障注入测试；新增备份保留策略、配置变更预览、资源健康检查和系统更新管理 |
 | **V3.7.0** | 新增安全体检、登录安全日志、网络诊断、统一配置备份恢复、操作审计；SSH/防火墙/DNS/IP 修改加入 180 秒防断联回滚；DNS 自动适配 resolved/NetworkManager/resolvconf；脚本更新增加 SHA256 校验、旧版本留存和一键回滚 |
