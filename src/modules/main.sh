@@ -39,7 +39,7 @@ main_menu() {
         volcano_art_banner
         echo ""
         box_top
-        echo -e "  ${BOLD}${CYAN}VPS 开荒脚本${NC}  ${DIM}V3.8.2 · 银趴火山帮${NC}"
+        echo -e "  ${BOLD}${CYAN}VPS 开荒脚本${NC}  ${DIM}V3.8.3 · 银趴火山帮${NC}"
         echo ""
         # 收集状态数据
         local FW_TYPE FW_STAT FW_STATE
@@ -106,12 +106,13 @@ main_menu() {
         menu_pair "7" "系统换源" "8" "IPv4 / IPv6"
         menu_pair "9" "Caddy 管理" "n" "NFT 转发"
         menu_pair "t" "时间与时区" "s" "Swap 管理"
-        menu_pair "h" "安全与诊断" "m" "脚本管理"
+        menu_pair "h" "安全与诊断" "a" "软件与重装"
+        menu_item "m" "脚本管理"
         echo ""
         menu_item "0" "退出脚本" "$RED"
         box_bot
         echo ""
-        read -rp "$(ui_prompt '选择功能 [0-9 / n / t / s / h / m]: ')" CHOICE
+        read -rp "$(ui_prompt '选择功能 [0-9 / n / t / s / h / a / m]: ')" CHOICE
         audit_action "主菜单选择 $CHOICE" INFO
 
         case "$CHOICE" in
@@ -128,6 +129,7 @@ main_menu() {
             t|T) timesync_menu ;;
             s|S) swap_menu ;;
             h|H) system_toolbox_menu ;;
+            a|A) software_reinstall_menu ;;
             m|M) self_manage_menu ;;
             0) safe_clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;
             *) warn "无效选项，请重新输入。"; sleep 1 ;;

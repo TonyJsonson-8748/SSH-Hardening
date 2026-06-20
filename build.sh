@@ -19,6 +19,7 @@ PARTS=(
     src/modules/time.sh
     src/modules/swap.sh
     src/modules/toolbox.sh
+    src/modules/software-reinstall.sh
     src/modules/self-update.sh
     src/modules/nft.sh
     src/modules/ddns.sh

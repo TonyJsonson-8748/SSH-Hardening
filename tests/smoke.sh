@@ -12,6 +12,13 @@ for fn in main_menu ssh_tools_menu fail2ban_menu bbr_menu firewall_menu dns_menu
     declare -F "$fn" >/dev/null || { echo "Missing function: $fn" >&2; exit 1; }
 done
 
+for fn in common_software_menu system_reinstall_menu software_reinstall_menu software_group_packages; do
+    declare -F "$fn" >/dev/null || { echo "Missing function: $fn" >&2; exit 1; }
+done
+
+[[ "$(software_group_packages apt base)" = *curl* ]] || { echo "APT base package mapping is incomplete" >&2; exit 1; }
+[[ "$(software_group_packages apk network)" = *mtr* ]] || { echo "APK network package mapping is incomplete" >&2; exit 1; }
+
 OS=$(detect_os)
 [ -n "$OS" ] || { echo "OS detection returned empty" >&2; exit 1; }
 

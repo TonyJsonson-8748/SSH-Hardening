@@ -1,4 +1,4 @@
-# VPS 开荒脚本 V3.8.2
+# VPS 开荒脚本 V3.8.3
 
 > **银趴火山帮** 出品 · SSH · BBR · DDNS · Caddy · Firewall · NFT 转发
 
@@ -30,7 +30,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/chnnic/SSH-Hardening/refs/he
    ...
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  VPS 开荒脚本  V3.8.2 · 银趴火山帮
+  VPS 开荒脚本  V3.8.3 · 银趴火山帮
 
   ◆ 系统概览
   ● SSH  22 · 1 公钥          ● 认证  仅密钥
@@ -47,7 +47,8 @@ bash <(curl -fsSL https://raw.githubusercontent.com/chnnic/SSH-Hardening/refs/he
     7  系统换源                8  IPv4 / IPv6
     9  Caddy 管理              n  NFT 转发
     t  时间与时区              s  Swap 管理
-    h  安全与诊断              m  脚本管理
+    h  安全与诊断              a  软件与重装
+    m  脚本管理
     0  退出脚本
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ```
@@ -383,6 +384,32 @@ DNS 设置会自动识别 `systemd-resolved`、NetworkManager、resolvconf 或�
 
 ---
 
+### a. 软件与系统重装
+
+**常用软件安装：**
+
+| 分类 | 主要软件 |
+|------|----------|
+| 基础工具 | curl、wget、git、jq、压缩工具、编辑器、tmux、screen |
+| 网络诊断 | iproute、DNS 工具、mtr、traceroute、tcpdump、socat、nmap |
+| 系统监控 | htop、iftop、iotop、sysstat、lsof、ncdu |
+| 开发环境 | 编译工具、Python、pip |
+
+支持 apt、dnf、yum、apk、opkg 和 pacman，可同时选择多个分类；软件包按发行版映射并逐个安装，单个软件缺失不会中断整组。
+
+**一键 DD / 系统重装：**
+
+- 支持 Debian 12/13、Ubuntu 22.04/24.04、Alpine 3.20/3.22、Rocky Linux 9
+- 支持自定义 RAW/VHD 镜像直链
+- 使用 [`bin456789/reinstall`](https://github.com/bin456789/reinstall) 官方工具，下载后先执行 Bash 语法检查并显示计算出的 SHA256，便于审计
+- 自动继承当前 SSH 端口；存在公钥时优先将首个公钥写入新系统
+- 拒绝 OpenVZ、LXC、Docker 等容器环境
+- 执行前显示根分区、系统磁盘和虚拟化类型，并要求输入 `ERASE-ALL-DATA`
+
+> 系统重装会清空整块系统盘。执行前必须确认商家控制台/VNC可用，并在异地保存所有必要数据。第三方重装工具会在执行时从其官方仓库及系统镜像源继续下载资源。
+
+---
+
 ### m. 脚本管理
 
 | 功能 | 说明 |
@@ -484,6 +511,7 @@ GitHub Actions 还会在 Debian、Ubuntu、Alpine、Rocky Linux 容器中加载�
 
 | 版本 | 主要变更 |
 |------|---------|
+| **V3.8.3** | 新增常用软件多选安装，适配 apt/dnf/yum/apk/opkg/pacman；新增使用官方重装工具的一键 DD/Linux 重装向导，包含容器拒绝、目标磁盘展示、脚本语法检查与 SHA256 展示、SSH 参数继承及固定确认词保护 |
 | **V3.8.2** | 统一剩余子页面：BBR 多级向导、Fail2ban 参数页、Swap、换源、DNS、日志、NFT 访问控制和安装向导全面接入响应式菜单、统一输入提示与返回行为 |
 | **V3.8.1** | 全面重构终端 UI：响应式宽度、窄屏单列/宽屏双列、统一状态仪表盘与操作提示、紧凑页面标题、主要模块菜单规范化，并支持 `NO_COLOR` 与非交互终端无 ANSI 输出 |
 | **V3.8.0** | 源码拆分为 core 和功能模块，由 `build.sh` 生成单文件发行版；新增 Debian/Ubuntu/Alpine/Rocky 冒烟测试与故障注入测试；新增备份保留策略、配置变更预览、资源健康检查和系统更新管理 |

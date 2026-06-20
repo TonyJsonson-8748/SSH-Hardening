@@ -11,6 +11,19 @@ source "$ROOT/SSH-Hardening.sh"
 confirm_change_preview "test" "reject" <<< "n" >/dev/null 2>&1 && { echo "Preview accepted rejection" >&2; exit 1; }
 confirm_change_preview "test" "accept" <<< "y" >/dev/null 2>&1 || { echo "Preview rejected confirmation" >&2; exit 1; }
 
+# Reinstall must reject container environments and malformed downloads.
+systemd-detect-virt() { echo lxc; }
+reinstall_is_container || { echo "Container detection did not reject LXC" >&2; exit 1; }
+curl() {
+    local OUT="" PREV="" arg
+    for arg in "$@"; do [ "$PREV" = "-o" ] && OUT="$arg"; PREV="$arg"; done
+    printf 'if broken\n' > "$OUT"
+}
+reinstall_download_engine "$TMP/broken-reinstall.sh" >/dev/null 2>&1 && {
+    echo "Malformed reinstall engine passed validation" >&2
+    exit 1
+}
+
 # A broken sshd validation must restore the previous configuration.
 SSHD_CONFIG="$TMP/sshd_config"
 LAST_SSHD_BACKUP="$TMP/sshd_config.bak"
