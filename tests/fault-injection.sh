@@ -35,6 +35,15 @@ docker() { [ "$1" = "inspect" ] && printf '<no value>\n'; }
     exit 1
 }
 
+[ "$(docker_compose_basename 'https://example.com/path/app.yml?token=1')" = "app.yml" ] || {
+    echo "Compose basename parsing failed" >&2
+    exit 1
+}
+[ "$(docker_compose_basename 'https://example.com/path/unknown')" = "compose.yaml" ] || {
+    echo "Compose default filename parsing failed" >&2
+    exit 1
+}
+
 # A broken sshd validation must restore the previous configuration.
 SSHD_CONFIG="$TMP/sshd_config"
 LAST_SSHD_BACKUP="$TMP/sshd_config.bak"

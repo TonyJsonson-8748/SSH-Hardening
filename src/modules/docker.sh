@@ -28,6 +28,18 @@ docker_download_installer() {
     chmod 700 "$DEST"
 }
 
+docker_download_file() {
+    local URL="$1" DEST="$2"
+    if command -v curl >/dev/null 2>&1; then
+        curl -fL --retry 3 --connect-timeout 10 "$URL" -o "$DEST"
+    elif command -v wget >/dev/null 2>&1; then
+        wget -O "$DEST" "$URL"
+    else
+        error "需要先安装 curl 或 wget"
+        return 1
+    fi
+}
+
 docker_install() {
     local PM TMP SUDO_USER_NAME="${SUDO_USER:-}"
     if docker_is_ready; then
@@ -119,6 +131,60 @@ docker_compose_available() {
     docker compose version >/dev/null 2>&1
 }
 
+docker_compose_basename() {
+    local URL="$1" FILE
+    FILE=${URL%%\?*}
+    FILE=${FILE##*/}
+    case "$FILE" in
+        *.yml|*.yaml) printf '%s\n' "$FILE" ;;
+        *) printf '%s\n' "compose.yaml" ;;
+    esac
+}
+
+docker_compose_fetch_and_deploy() {
+    local URL DEST_DIR FILE TMP PREVIEW
+    docker_require_ready || return
+    docker_compose_available || { error "缺少 Docker Compose 插件"; return 1; }
+    read -rp "$(ui_prompt '输入 Compose 文件 URL: ')" URL
+    echo "$URL" | grep -qE '^https?://[^[:space:]]+$' || { error "URL 格式无效"; return 1; }
+    read -rp "$(ui_prompt '输入部署目录（默认 /opt/docker-compose）: ')" DEST_DIR
+    DEST_DIR=${DEST_DIR:-/opt/docker-compose}
+    mkdir -p "$DEST_DIR" || { error "无法创建目录：$DEST_DIR"; return 1; }
+    FILE=$(docker_compose_basename "$URL")
+    TMP=$(mktemp "${TMPDIR:-/tmp}/compose-file.XXXXXX") || return 1
+    info "正在下载 Compose 文件..."
+    if ! docker_download_file "$URL" "$TMP"; then
+        rm -f "$TMP"
+        return 1
+    fi
+    if ! docker compose -f "$TMP" config >/dev/null 2>&1; then
+        rm -f "$TMP"
+        error "Compose 文件校验失败"
+        return 1
+    fi
+    PREVIEW=$(sed -n '1,120p' "$TMP")
+    echo ""
+    echo "$PREVIEW" | sed 's/^/  /'
+    echo ""
+    if ! confirm_change_preview "部署 Compose 文件" "来源：$URL" "目标目录：$DEST_DIR" "保存为：$FILE"; then
+        rm -f "$TMP"
+        return
+    fi
+    if ! cp "$TMP" "$DEST_DIR/$FILE"; then
+        rm -f "$TMP"
+        return 1
+    fi
+    rm -f "$TMP"
+    if (cd "$DEST_DIR" && docker compose -f "$FILE" up -d --pull always); then
+        info "Compose 项目已部署：$DEST_DIR/$FILE"
+        audit_action "拉取并部署 Compose 文件：$URL -> $DEST_DIR/$FILE" SUCCESS
+    else
+        error "Compose 部署失败，请检查文件内容与镜像可用性"
+        audit_action "拉取并部署 Compose 文件：$URL -> $DEST_DIR/$FILE" FAILED
+        return 1
+    fi
+}
+
 docker_inspect_label() {
     local VALUE
     VALUE=$(docker inspect --format "{{index .Config.Labels \"$2\"}}" "$1" 2>/dev/null || true)
@@ -156,8 +222,13 @@ docker_upgrade_container() {
     IMAGE=$(docker inspect --format '{{.Config.Image}}' "$ID" 2>/dev/null)
     [ -n "$IMAGE" ] || { error "无法读取容器镜像"; return 1; }
     OLD_IMAGE=$(docker inspect --format '{{.Image}}' "$ID" 2>/dev/null)
-    confirm_change_preview "检查普通容器 $NAME 的镜像更新" "镜像：$IMAGE" "仅拉取镜像，不删除或重建现有容器" || return
-    docker pull "$IMAGE" || { error "镜像拉取失败"; return 1; }
+    if ! confirm_change_preview "检查普通容器 $NAME 的镜像更新" "镜像：$IMAGE" "仅拉取镜像，不删除或重建现有容器"; then
+        return
+    fi
+    if ! docker pull "$IMAGE"; then
+        error "镜像拉取失败"
+        return 1
+    fi
     NEW_IMAGE=$(docker image inspect --format '{{.Id}}' "$IMAGE" 2>/dev/null)
     if [ "$OLD_IMAGE" = "$NEW_IMAGE" ]; then
         info "容器已使用当前最新镜像"
@@ -183,8 +254,9 @@ docker_container_action() {
             ;;
         upgrade) docker_upgrade_container "$DOCKER_SELECTED_ID" "$DOCKER_SELECTED_NAME" ;;
         remove)
-            confirm_change_preview "删除容器 $DOCKER_SELECTED_NAME" "容器数据卷不会自动删除" || return
-            docker rm -f "$DOCKER_SELECTED_ID" && info "容器已删除"
+            if confirm_change_preview "删除容器 $DOCKER_SELECTED_NAME" "容器数据卷不会自动删除"; then
+                docker rm -f "$DOCKER_SELECTED_ID" && info "容器已删除"
+            fi
             ;;
     esac
     ui_pause
@@ -207,9 +279,10 @@ docker_menu() {
         menu_pair "5" "停止容器" "6" "重启容器"
         menu_pair "7" "查看最近日志" "8" "进入容器 Shell"
         menu_pair "9" "升级容器镜像" "d" "删除容器" "$CYAN" "$YELLOW"
+        menu_item "10" "拉取 Compose 文件并部署" "$BLUE"
         menu_pair "0" "返回主菜单" "00" "退出脚本" "$RED" "$RED"
         menu_div; echo ""
-        read -rp "$(ui_prompt '选择功能 [0-9 / d]: ')" CH
+        read -rp "$(ui_prompt '选择功能 [0-10 / d]: ')" CH
         case "$CH" in
             1) docker_install; ui_pause ;;
             2) docker_require_ready && docker_list_containers; ui_pause ;;
@@ -220,6 +293,7 @@ docker_menu() {
             7) docker_container_action logs ;;
             8) docker_container_action shell ;;
             9) docker_container_action upgrade ;;
+            10) docker_compose_fetch_and_deploy; ui_pause ;;
             d|D) docker_container_action remove ;;
             0) return ;;
             00) exit 0 ;;

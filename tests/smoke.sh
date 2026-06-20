@@ -12,7 +12,7 @@ for fn in main_menu ssh_tools_menu fail2ban_menu bbr_menu firewall_menu dns_menu
     declare -F "$fn" >/dev/null || { echo "Missing function: $fn" >&2; exit 1; }
 done
 
-for fn in docker_install docker_status docker_select_container docker_upgrade_container docker_container_action docker_inspect_label; do
+for fn in docker_install docker_status docker_select_container docker_upgrade_container docker_container_action docker_inspect_label docker_download_file docker_compose_basename docker_compose_fetch_and_deploy; do
     declare -F "$fn" >/dev/null || { echo "Missing Docker function: $fn" >&2; exit 1; }
 done
 
