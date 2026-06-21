@@ -67,14 +67,33 @@ self_update() {
     local TMP_FILE CHECKSUM_FILE; TMP_FILE="/tmp/vps_update_$$.sh"; CHECKSUM_FILE="/tmp/vps_update_$$.sha256"
 
     info "正在下载最新版本..."
-    local TRY EXPECTED_HASH ACTUAL_HASH DOWNLOAD_OK
+    local TRY EXPECTED_HASH ACTUAL_HASH DOWNLOAD_OK SCRIPT_FETCH_URL CHECKSUM_FETCH_URL TS
     DOWNLOAD_OK=0
-    for TRY in 1 2 3; do
+    for TRY in 1 2 3 4; do
+        TS=$(date +%s)
+        case "$TRY" in
+            1)
+                SCRIPT_FETCH_URL="$SCRIPT_URL"
+                CHECKSUM_FETCH_URL="$CHECKSUM_URL"
+                ;;
+            2)
+                SCRIPT_FETCH_URL="$SCRIPT_URL?ts=$TS"
+                CHECKSUM_FETCH_URL="$CHECKSUM_URL?ts=$TS"
+                ;;
+            3)
+                SCRIPT_FETCH_URL="https://github.com/chnnic/SSH-Hardening/raw/refs/heads/main/SSH-Hardening.sh"
+                CHECKSUM_FETCH_URL="https://github.com/chnnic/SSH-Hardening/raw/refs/heads/main/SSH-Hardening.sh.sha256"
+                ;;
+            *)
+                SCRIPT_FETCH_URL="https://cdn.jsdelivr.net/gh/chnnic/SSH-Hardening@main/SSH-Hardening.sh"
+                CHECKSUM_FETCH_URL="https://cdn.jsdelivr.net/gh/chnnic/SSH-Hardening@main/SSH-Hardening.sh.sha256"
+                ;;
+        esac
         rm -f "$TMP_FILE" "$CHECKSUM_FILE"
         if curl -fsSL --retry 2 --retry-delay 1 -H 'Cache-Control: no-cache' -H 'Pragma: no-cache' \
-            "$SCRIPT_URL?ts=$(date +%s%N)" -o "$TMP_FILE" 2>/dev/null \
+            "$SCRIPT_FETCH_URL" -o "$TMP_FILE" 2>/dev/null \
             && curl -fsSL --retry 2 --retry-delay 1 -H 'Cache-Control: no-cache' -H 'Pragma: no-cache' \
-            "$CHECKSUM_URL?ts=$(date +%s%N)" -o "$CHECKSUM_FILE" 2>/dev/null; then
+            "$CHECKSUM_FETCH_URL" -o "$CHECKSUM_FILE" 2>/dev/null; then
             EXPECTED_HASH=$(awk 'NR==1 {print $1}' "$CHECKSUM_FILE")
             ACTUAL_HASH=$(file_sha256 "$TMP_FILE" 2>/dev/null || true)
             if [ -n "$ACTUAL_HASH" ] && [ "$ACTUAL_HASH" = "$EXPECTED_HASH" ]; then
@@ -82,7 +101,10 @@ self_update() {
                 break
             fi
         fi
-        warn "下载或校验未通过，正在重试（${TRY}/3）"
+        warn "下载或校验未通过，正在重试（${TRY}/4）"
+        if [ -n "${ACTUAL_HASH:-}" ] || [ -n "${EXPECTED_HASH:-}" ]; then
+            echo -e "  ${DIM}期望：${EXPECTED_HASH:-未知}  实际：${ACTUAL_HASH:-未知}${NC}"
+        fi
         sleep 1
     done
     rm -f "$CHECKSUM_FILE"
@@ -90,6 +112,7 @@ self_update() {
         rm -f "$TMP_FILE"
         error "SHA256 校验失败，已拒绝更新"
         echo -e "  ${DIM}可先手动验证：curl -fsSL '${SCRIPT_URL}' -o /tmp/SSH-Hardening.sh && sha256sum /tmp/SSH-Hardening.sh${NC}"
+        echo -e "  ${DIM}若 VPS 网络缓存异常，可临时手动覆盖：curl -fsSL '${SCRIPT_URL}' -o ${LOCAL_SCRIPT} && chmod +x ${LOCAL_SCRIPT}${NC}"
         audit_action "脚本更新SHA256校验失败" FAILED
         return
     fi

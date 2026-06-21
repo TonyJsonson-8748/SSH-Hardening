@@ -529,7 +529,7 @@ EOF
     RX_GB=$(monitor_traffic_used_gb "$RX")
     TX_GB=$(monitor_traffic_used_gb "$TX")
     TOTAL_GB=$(monitor_traffic_used_gb "$TOTAL")
-    printf '下行 <code>%s GB</code> / 上行 <code>%s GB</code> / 合计 <code>%s GB</code>' "$RX_GB" "$TX_GB" "$TOTAL_GB"
+    printf '↓%sG ↑%sG ↓↑%sG' "$RX_GB" "$TX_GB" "$TOTAL_GB"
 }
 
 monitor_traffic_current_cycle_used_bytes() {
@@ -577,8 +577,8 @@ monitor_alert_daily_report() {
     TODAY=$(date +%F)
     monitor_traffic_ensure_baseline
     monitor_traffic_cycle_ensure_baseline
-    DAILY_TEXT=$(monitor_traffic_usage_text daily)
-    CYCLE_TEXT=$(monitor_traffic_usage_text cycle)
+    DAILY_TEXT=$(monitor_traffic_usage_text daily html)
+    CYCLE_TEXT=$(monitor_traffic_usage_text cycle html)
     CYCLE_START="${MON_TRAFFIC_CYCLE_BASELINE_DATE:-$(monitor_traffic_current_cycle_start "${MON_TRAFFIC_RESET_DAY:-1}" "$TODAY")}"
     NEXT="${MON_RENEW_NEXT_DATE:-未设置}"
     if [ -n "${MON_RENEW_NEXT_DATE:-}" ]; then
@@ -780,7 +780,7 @@ monitor_alert_test_snapshot() {
     local HOST DISK_PCT MEM_PCT LOAD1 CPU_COUNT LOAD_WARN_VALUE DAILY_TEXT SSH_STATE F2B_STATE DOCKER_STATE CADDY_STATE
     HOST=$(monitor_alert_host_label)
     monitor_traffic_ensure_baseline
-    DAILY_TEXT=$(monitor_traffic_usage_text daily)
+    DAILY_TEXT=$(monitor_traffic_usage_text daily html)
     DISK_PCT=$(df -P / 2>/dev/null | awk 'NR==2 {gsub("%","",$5); print $5+0}')
     MEM_PCT=$(awk '/^MemTotal:/ {t=$2} /^MemAvailable:/ {a=$2} END {if (t>0) printf "%.0f", (t-a)*100/t; else print 0}' /proc/meminfo 2>/dev/null)
     LOAD1=$(awk '{print $1}' /proc/loadavg 2>/dev/null || echo 0)
@@ -817,7 +817,7 @@ monitor_alert_traffic_check() {
 $(monitor_traffic_usage_triplet daily)
 EOF
     USED_GB=$(monitor_traffic_used_gb "$USED_BYTES")
-    DAILY_TEXT=$(monitor_traffic_usage_text daily)
+    DAILY_TEXT=$(monitor_traffic_usage_text daily html)
     LIMIT_GB="${MON_TRAFFIC_LIMIT_GB:-50}"
     if awk "BEGIN{exit !($USED_GB >= $LIMIT_GB)}"; then
         local SIG CUR_TS
