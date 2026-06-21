@@ -175,6 +175,71 @@ self_rollback() {
     exec "$LOCAL_SCRIPT"
 }
 
+self_offline_bundle_create() {
+    print_header "离线安装包"
+    local SRC TMPDIR BUNDLE ARCHIVE HASH
+    SRC="${LOCAL_SCRIPT:-}"
+    [ -f "$SRC" ] || SRC=$(resolve_self_path)
+    [ -f "$SRC" ] || { error "找不到可打包的脚本"; return 1; }
+    TMPDIR=$(mktemp -d "${TMPDIR:-/tmp}/vps-offline.XXXXXX") || return 1
+    ARCHIVE="$TMPDIR/SSH-Hardening.sh"
+    cp "$SRC" "$ARCHIVE" || { rm -rf "$TMPDIR"; error "复制脚本失败"; return 1; }
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum "$ARCHIVE" > "$TMPDIR/SSH-Hardening.sh.sha256"
+    elif command -v shasum >/dev/null 2>&1; then
+        shasum -a 256 "$ARCHIVE" > "$TMPDIR/SSH-Hardening.sh.sha256"
+    else
+        rm -rf "$TMPDIR"; error "缺少 SHA256 工具"; return 1
+    fi
+    BUNDLE="$VPS_DATA_DIR/offline/SSH-Hardening_offline_$(date +%Y%m%d_%H%M%S).tar.gz"
+    mkdir -p "$VPS_DATA_DIR/offline" 2>/dev/null || { rm -rf "$TMPDIR"; error "无法创建离线包目录"; return 1; }
+    tar -czf "$BUNDLE" -C "$TMPDIR" SSH-Hardening.sh SSH-Hardening.sh.sha256 || { rm -rf "$TMPDIR"; error "打包失败"; return 1; }
+    rm -rf "$TMPDIR"
+    chmod 600 "$BUNDLE" 2>/dev/null || true
+    audit_action "生成离线安装包 $(basename "$BUNDLE")" SUCCESS
+    info "离线安装包已生成：$BUNDLE"
+    printf '%s\n' "$BUNDLE"
+}
+
+self_offline_bundle_install() {
+    local PACKAGE="$1" TMPDIR FILE SHA_FILE EXPECTED ACTUAL DEST SRC_FILE
+    [ -f "$PACKAGE" ] || { error "离线包不存在"; return 1; }
+    TMPDIR=$(mktemp -d "${TMPDIR:-/tmp}/vps-offline-install.XXXXXX") || return 1
+    case "$PACKAGE" in
+        *.tar.gz|*.tgz)
+            tar -xzf "$PACKAGE" -C "$TMPDIR" || { rm -rf "$TMPDIR"; error "解包失败"; return 1; }
+            FILE=$(find "$TMPDIR" -maxdepth 1 -type f \( -name 'SSH-Hardening.sh' -o -name 'vps-tools.sh' -o -name '*.sh' \) | head -1)
+            [ -n "$FILE" ] || FILE=$(find "$TMPDIR" -maxdepth 1 -type f ! -name '*.sha256' | head -1)
+            SHA_FILE=$(find "$TMPDIR" -maxdepth 1 -type f -name '*.sha256' | head -1)
+            [ -n "$FILE" ] || { rm -rf "$TMPDIR"; error "离线包中没有脚本文件"; return 1; }
+            if [ -n "$SHA_FILE" ]; then
+                EXPECTED=$(awk 'NR==1{print $1}' "$SHA_FILE")
+                ACTUAL=$(file_sha256 "$FILE" 2>/dev/null || true)
+                [ -n "$ACTUAL" ] && [ "$ACTUAL" = "$EXPECTED" ] || { rm -rf "$TMPDIR"; error "离线包校验失败"; return 1; }
+            fi
+            SRC_FILE="$FILE"
+            ;;
+        *.sh)
+            SRC_FILE="$PACKAGE"
+            bash -n "$SRC_FILE" 2>/dev/null || { rm -rf "$TMPDIR"; error "脚本语法校验失败"; return 1; }
+            ;;
+        *)
+            rm -rf "$TMPDIR"
+            error "仅支持 .sh / .tar.gz / .tgz 离线包"
+            return 1
+            ;;
+    esac
+    DEST="${LOCAL_SCRIPT:-/usr/local/bin/vps-tools}"
+    mkdir -p "$(dirname "$DEST")" 2>/dev/null || { rm -rf "$TMPDIR"; error "无法创建安装目录"; return 1; }
+    cp "$SRC_FILE" "$DEST" || { rm -rf "$TMPDIR"; error "安装失败"; return 1; }
+    chmod 700 "$DEST" 2>/dev/null || true
+    ln -sf "$DEST" /usr/local/bin/v 2>/dev/null || true
+    ln -sf "$DEST" /usr/local/bin/V 2>/dev/null || true
+    audit_action "离线安装脚本 $(basename "$PACKAGE")" SUCCESS
+    info "离线安装完成：$DEST"
+    rm -rf "$TMPDIR"
+}
+
 # ── 脚本管理菜单 ──────────────────────────────────────────
 # ── 删除本地脚本和快捷键 ─────────────────────────────────
 self_uninstall() {
@@ -262,16 +327,38 @@ self_manage_menu() {
         menu_div
         menu_pair "1" "安装并设置快捷键" "2" "更新到最新版"
         menu_pair "3" "卸载本地脚本" "4" "回滚历史版本" "$YELLOW" "$YELLOW"
+        menu_pair "5" "离线安装包" "0" "返回主菜单" "$CYAN" "$RED"
         menu_pair "0" "返回主菜单" "00" "退出脚本" "$RED" "$RED"
         menu_div
         echo ""
-        read -rp "$(ui_prompt '选择操作 [0-4]: ')" CH
+        read -rp "$(ui_prompt '选择操作 [0-5]: ')" CH
 
         case "$CH" in
             1) self_install ;;
             2) self_update ;;
             3) self_uninstall ;;
             4) self_rollback ;;
+            5)
+                while true; do
+                    print_header "离线安装包"
+                    menu_item "1" "生成离线安装包" "$GREEN"
+                    menu_item "2" "安装本地离线包" "$YELLOW"
+                    menu_item "0" "返回上级" "$RED"
+                    menu_div; echo ""
+                    read -rp "$(ui_prompt '选择操作 [0-2]: ')" OCH
+                    case "$OCH" in
+                        1) self_offline_bundle_create; ui_pause ;;
+                        2)
+                            local PKG
+                            read -rp "$(ui_prompt '输入离线包路径 (.sh/.tar.gz): ')" PKG
+                            [ -n "$PKG" ] && self_offline_bundle_install "$PKG"
+                            ui_pause
+                            ;;
+                        0) break ;;
+                        *) warn "无效选项"; sleep 1 ;;
+                    esac
+                done
+                ;;
             0) return ;;
             00) safe_clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;
             *) warn "无效选项"; sleep 1; continue ;;

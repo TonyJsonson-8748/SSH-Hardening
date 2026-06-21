@@ -237,6 +237,149 @@ rollback_center_menu() {
     done
 }
 
+monitor_alert_cfg() { echo "/root/.vps-monitor"; }
+monitor_alert_script() { echo "/root/vps-monitor-alert.sh"; }
+monitor_alert_state() { echo "/root/.vps-monitor.state"; }
+
+monitor_alert_cfg_get() {
+    local KEY="$1" CFG; CFG=$(monitor_alert_cfg)
+    [ -f "$CFG" ] || return 1
+    grep "^${KEY}=" "$CFG" 2>/dev/null | head -1 | cut -d= -f2-
+}
+
+monitor_alert_notify() {
+    local TITLE="$1" BODY="$2" BOT CHAT
+    BOT=$(monitor_alert_cfg_get BOT_TOKEN)
+    CHAT=$(monitor_alert_cfg_get CHAT_ID)
+    [ -n "$BOT" ] && [ -n "$CHAT" ] || return 0
+    curl -s --max-time 15 "https://api.telegram.org/bot${BOT}/sendMessage" \
+        --data-urlencode "chat_id=${CHAT}" \
+        --data-urlencode "text=${TITLE}\n${BODY}" \
+        -d "parse_mode=HTML" >/dev/null 2>&1 || true
+}
+
+monitor_alert_service_state() {
+    local SVC="$1"
+    if command -v systemctl >/dev/null 2>&1 && pidof systemd >/dev/null 2>&1; then
+        systemctl is-active --quiet "$SVC" 2>/dev/null && echo running || echo stopped
+    elif command -v rc-service >/dev/null 2>&1; then
+        rc-service "$SVC" status >/dev/null 2>&1 && echo running || echo stopped
+    else
+        echo unknown
+    fi
+}
+
+monitor_alert_check() {
+    local CFG; CFG=$(monitor_alert_cfg)
+    [ -f "$CFG" ] || return 0
+    # shellcheck source=/dev/null
+    . "$CFG"
+    [ "${ENABLED:-no}" = "yes" ] || return 0
+
+    local HOST DISK_PCT MEM_PCT LOAD1 CPU_COUNT ISSUES="" SIG CUR_TS LAST_SIG LAST_TS
+    HOST=$(hostname 2>/dev/null || echo unknown)
+    DISK_PCT=$(df -P / 2>/dev/null | awk 'NR==2 {gsub("%","",$5); print $5+0}')
+    MEM_PCT=$(awk '/^MemTotal:/ {t=$2} /^MemAvailable:/ {a=$2} END {if (t>0) printf "%.0f", (t-a)*100/t; else print 0}' /proc/meminfo 2>/dev/null)
+    LOAD1=$(awk '{print $1}' /proc/loadavg 2>/dev/null || echo 0)
+    CPU_COUNT=$(getconf _NPROCESSORS_ONLN 2>/dev/null || nproc 2>/dev/null || echo 1)
+    CUR_TS=$(date +%s)
+    local DISK_WARN="${DISK_WARN:-85}" MEM_WARN="${MEM_WARN:-85}" LOAD_WARN="${LOAD_WARN:-$(awk "BEGIN{printf \"%.1f\", $CPU_COUNT*1.5}")}"
+
+    if [ "${DISK_PCT:-0}" -ge "$DISK_WARN" ]; then ISSUES="${ISSUES}磁盘 ${DISK_PCT}%  "; fi
+    if [ "${MEM_PCT:-0}" -ge "$MEM_WARN" ]; then ISSUES="${ISSUES}内存 ${MEM_PCT}%  "; fi
+    if awk "BEGIN{exit !($LOAD1 >= $LOAD_WARN)}"; then ISSUES="${ISSUES}负载 ${LOAD1}  "; fi
+
+    if [ "$(monitor_alert_service_state ssh)" != running ]; then ISSUES="${ISSUES}SSH 服务异常  "; fi
+    if command -v fail2ban-client >/dev/null 2>&1 && [ "$(f2b_status 2>/dev/null || echo stopped)" != running ]; then ISSUES="${ISSUES}Fail2ban 异常  "; fi
+    if command -v docker >/dev/null 2>&1 && [ "$(docker_status 2>/dev/null || echo not_installed)" = stopped ]; then ISSUES="${ISSUES}Docker 服务异常  "; fi
+    if command -v caddy >/dev/null 2>&1 && [ "$(caddy_status 2>/dev/null || echo not_installed)" = stopped ]; then ISSUES="${ISSUES}Caddy 服务异常  "; fi
+    [ -n "${ISSUES// }" ] || return 0
+
+    SIG=$(printf '%s|%s|%s' "$HOST" "$ISSUES" "$DISK_PCT" | sha256sum 2>/dev/null | awk '{print $1}')
+    LAST_SIG=""; LAST_TS=0
+    [ -f "$(monitor_alert_state)" ] && { LAST_SIG=$(awk -F= '/^SIG=/{print $2}' "$(monitor_alert_state)" 2>/dev/null); LAST_TS=$(awk -F= '/^TS=/{print $2}' "$(monitor_alert_state)" 2>/dev/null); }
+    if [ "$SIG" = "$LAST_SIG" ] && [ $((CUR_TS - LAST_TS)) -lt 1800 ]; then
+        return 0
+    fi
+
+    local MSG
+    MSG="监控告警\n主机：${HOST}\n时间：$(date '+%Y-%m-%d %H:%M:%S')\n磁盘：${DISK_PCT}%\n内存：${MEM_PCT}%\n负载：${LOAD1}\n异常：${ISSUES}"
+    monitor_alert_notify "⚠️ <b>VPS 监控告警</b>" "$MSG"
+    printf 'SIG=%s\nTS=%s\n' "$SIG" "$CUR_TS" > "$(monitor_alert_state)" 2>/dev/null || true
+    audit_action "发送监控告警：$ISSUES" SUCCESS
+}
+
+monitor_alert_config_menu() {
+    local CFG; CFG=$(monitor_alert_cfg)
+    mkdir -p "$(dirname "$CFG")" 2>/dev/null || true
+    local DISK_WARN MEM_WARN LOAD_WARN ENABLED BOT_TOKEN CHAT_ID
+    DISK_WARN=$(monitor_alert_cfg_get DISK_WARN); DISK_WARN=${DISK_WARN:-85}
+    MEM_WARN=$(monitor_alert_cfg_get MEM_WARN); MEM_WARN=${MEM_WARN:-85}
+    LOAD_WARN=$(monitor_alert_cfg_get LOAD_WARN); LOAD_WARN=${LOAD_WARN:-}
+    ENABLED=$(monitor_alert_cfg_get ENABLED); ENABLED=${ENABLED:-no}
+    BOT_TOKEN=$(monitor_alert_cfg_get BOT_TOKEN)
+    CHAT_ID=$(monitor_alert_cfg_get CHAT_ID)
+    print_header "监控告警配置"
+    echo -e "  状态：${BOLD}$([ "$ENABLED" = yes ] && echo '已启用' || echo '未启用')${NC}"
+    echo -e "  磁盘阈值：${BOLD}${DISK_WARN}%${NC}"
+    echo -e "  内存阈值：${BOLD}${MEM_WARN}%${NC}"
+    echo -e "  负载阈值：${BOLD}${LOAD_WARN:-自动}${NC}"
+    echo -e "  通知：${BOLD}$([ -n "$BOT_TOKEN" ] && echo '已配置' || echo '未配置')${NC}"
+    echo ""
+    menu_div
+    menu_item "1" "配置 Telegram 通知" "$GREEN"
+    menu_item "2" "设置告警阈值" "$YELLOW"
+    menu_item "3" "发送测试告警" "$CYAN"
+    menu_item "4" "启用定时告警" "$GREEN"
+    menu_item "5" "关闭定时告警" "$RED"
+    menu_item "0" "返回上级" "$RED"
+    menu_div; echo ""
+    read -rp "$(ui_prompt '选择操作 [0-5]: ')" CH
+    case "$CH" in
+        1)
+            read -rp "$(ui_prompt 'Bot Token: ')" BOT_TOKEN
+            read -rp "$(ui_prompt 'Chat ID: ')" CHAT_ID
+            [ -n "$BOT_TOKEN" ] && [ -n "$CHAT_ID" ] || { warn "已取消"; return; }
+            printf 'ENABLED=%s\nDISK_WARN=%s\nMEM_WARN=%s\nLOAD_WARN=%s\nBOT_TOKEN=%s\nCHAT_ID=%s\n' \
+                "${ENABLED:-no}" "${DISK_WARN:-85}" "${MEM_WARN:-85}" "${LOAD_WARN:-}" "$BOT_TOKEN" "$CHAT_ID" > "$CFG"
+            chmod 600 "$CFG" 2>/dev/null || true
+            info "Telegram 已配置"
+            ;;
+        2)
+            read -rp "$(ui_prompt "磁盘阈值 [${DISK_WARN}%]: ")" DISK_WARN_IN
+            read -rp "$(ui_prompt "内存阈值 [${MEM_WARN}%]: ")" MEM_WARN_IN
+            read -rp "$(ui_prompt "负载阈值（空=自动） [${LOAD_WARN:-自动}]: ")" LOAD_WARN_IN
+            [ -n "$DISK_WARN_IN" ] && DISK_WARN="$DISK_WARN_IN"
+            [ -n "$MEM_WARN_IN" ] && MEM_WARN="$MEM_WARN_IN"
+            [ -n "$LOAD_WARN_IN" ] && LOAD_WARN="$LOAD_WARN_IN"
+            printf 'ENABLED=%s\nDISK_WARN=%s\nMEM_WARN=%s\nLOAD_WARN=%s\nBOT_TOKEN=%s\nCHAT_ID=%s\n' \
+                "${ENABLED:-no}" "$DISK_WARN" "$MEM_WARN" "$LOAD_WARN" "${BOT_TOKEN:-}" "${CHAT_ID:-}" > "$CFG"
+            chmod 600 "$CFG" 2>/dev/null || true
+            info "阈值已保存"
+            ;;
+        3)
+            monitor_alert_notify "⚠️ <b>VPS 监控测试</b>" "这是一条测试告警：$(date '+%Y-%m-%d %H:%M:%S')"
+            info "测试消息已发送（如已配置 Telegram）"
+            ;;
+        4)
+            [ -f "$CFG" ] || { printf 'ENABLED=yes\nDISK_WARN=85\nMEM_WARN=85\nLOAD_WARN=\nBOT_TOKEN=\nCHAT_ID=\n' > "$CFG"; chmod 600 "$CFG"; }
+            sed -i 's/^ENABLED=.*/ENABLED=yes/' "$CFG"
+            local SVC_PATH
+            SVC_PATH="${LOCAL_SCRIPT:-$0}"
+            (crontab -l 2>/dev/null | grep -v 'vps-monitor-alert'; echo "*/10 * * * * ${SVC_PATH} --monitor-alert >> /var/log/vps-monitor.log 2>&1 # vps-monitor-alert") | crontab -
+            ddns_ensure_cron >/dev/null 2>&1 || true
+            info "已启用定时告警"
+            ;;
+        5)
+            [ -f "$CFG" ] && sed -i 's/^ENABLED=.*/ENABLED=no/' "$CFG"
+            (crontab -l 2>/dev/null | grep -v 'vps-monitor-alert') | crontab -
+            info "已关闭定时告警"
+            ;;
+        0) return ;;
+        *) warn "无效选项" ;;
+    esac
+}
+
 safety_arm() {
     local LABEL="$1" SNAP SCRIPT UFW_STATE="inactive" FIREWALLD_STATE="inactive"
     SNAP=$(config_backup_create "safety_${LABEL}" true) || return 1
@@ -499,11 +642,12 @@ system_toolbox_menu() {
         menu_pair "3" "网络诊断" "4" "配置备份与恢复"
         menu_pair "5" "脚本操作记录" "6" "系统资源健康"
         menu_pair "7" "系统更新管理" "8" "配置导出 / 导入"
-        menu_pair "9" "统一回滚中心" "0" "返回主菜单" "$CYAN" "$RED"
+        menu_pair "9" "统一回滚中心" "10" "监控告警中心" "$CYAN" "$CYAN"
+        menu_item "0" "返回主菜单" "$RED"
         menu_div
         ui_hint "SSH、防火墙、DNS 和 IP 修改均有防断联保护"
         echo ""
-        read -rp "$(ui_prompt '选择工具 [0-9]: ')" CH
+        read -rp "$(ui_prompt '选择工具 [0-10]: ')" CH
         case "$CH" in
             1) security_audit ;;
             2) login_security_logs; continue ;;
@@ -514,6 +658,7 @@ system_toolbox_menu() {
             7) system_update_manager; continue ;;
             8) config_transfer_menu; continue ;;
             9) rollback_center_menu; continue ;;
+            10) monitor_alert_config_menu ;;
             0) return ;;
             *) warn "无效选项"; sleep 1; continue ;;
         esac

@@ -83,6 +83,23 @@ config_export_archive "$EXPORT_PATH" test >/dev/null || { echo "Export helper fa
 config_import_archive() { [ "$1" = "$EXPORT_PATH" ]; }
 config_import_archive "$EXPORT_PATH" >/dev/null || { echo "Import helper failed" >&2; exit 1; }
 
+# Offline bundle creation must package a local script and offline install must place it at the target path.
+LOCAL_SCRIPT="$TMP/local-script"
+cat > "$LOCAL_SCRIPT" <<'EOF'
+#!/bin/bash
+echo offline
+EOF
+chmod 700 "$LOCAL_SCRIPT"
+if ! self_offline_bundle_create >/dev/null; then
+    echo "Offline bundle creation failed" >&2
+    exit 1
+fi
+OFFLINE_BUNDLE=$(find "$VPS_DATA_DIR/offline" -type f -name '*.tar.gz' | head -1)
+[ -f "$OFFLINE_BUNDLE" ] || { echo "Offline bundle was not created" >&2; exit 1; }
+LOCAL_SCRIPT="$TMP/installed-script.sh"
+self_offline_bundle_install "$OFFLINE_BUNDLE" >/dev/null || { echo "Offline install failed" >&2; exit 1; }
+[ -f "$LOCAL_SCRIPT" ] || { echo "Offline install did not place script" >&2; exit 1; }
+
 # The real updater must reject a mismatched checksum without replacing the local script.
 LOCAL_SCRIPT="$TMP/local-script"
 export SCRIPT_URL="mock://script"
