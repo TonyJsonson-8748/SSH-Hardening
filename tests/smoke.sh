@@ -39,6 +39,8 @@ monitor_traffic_set_cycle_usage_split_gb 10 20
 MON_TRAFFIC_CYCLE_BASELINE_RX_BYTES=${MON_TRAFFIC_CYCLE_BASELINE_RX_BYTES:?}
 MON_TRAFFIC_CYCLE_BASELINE_TX_BYTES=${MON_TRAFFIC_CYCLE_BASELINE_TX_BYTES:?}
 [[ "$(monitor_traffic_usage_triplet cycle)" = "10737418240 21474836480 32212254720" ]] || { echo "Split traffic calibration failed" >&2; exit 1; }
+monitor_traffic_set_cycle_usage_split_gb 1000 1000
+[[ "$(monitor_traffic_usage_triplet cycle)" = "1073741824000 1073741824000 2147483648000" ]] || { echo "Large split traffic calibration failed" >&2; exit 1; }
 
 OS=$(detect_os)
 [ -n "$OS" ] || { echo "OS detection returned empty" >&2; exit 1; }
