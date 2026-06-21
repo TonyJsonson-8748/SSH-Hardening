@@ -5224,6 +5224,165 @@ monitor_alert_cfg_get() {
     grep "^${KEY}=" "$CFG" 2>/dev/null | head -1 | cut -d= -f2-
 }
 
+monitor_alert_state_get() {
+    local KEY="$1" STATE
+    STATE=$(monitor_alert_state)
+    [ -f "$STATE" ] || return 1
+    grep "^${KEY}=" "$STATE" 2>/dev/null | head -1 | cut -d= -f2-
+}
+
+monitor_alert_state_set() {
+    local KEY="$1" VALUE="$2" STATE TMP
+    STATE=$(monitor_alert_state)
+    mkdir -p "$(dirname "$STATE")" 2>/dev/null || true
+    TMP=$(mktemp "${TMPDIR:-/tmp}/vps-monitor-state.XXXXXX") || return 1
+    [ -f "$STATE" ] && grep -v "^${KEY}=" "$STATE" > "$TMP" 2>/dev/null || true
+    printf '%s=%s\n' "$KEY" "$VALUE" >> "$TMP"
+    mv "$TMP" "$STATE"
+    chmod 600 "$STATE" 2>/dev/null || true
+}
+
+monitor_alert_load_cfg() {
+    MON_ENABLED=$(monitor_alert_cfg_get ENABLED); MON_ENABLED=${MON_ENABLED:-no}
+    MON_DISK_WARN=$(monitor_alert_cfg_get DISK_WARN); MON_DISK_WARN=${MON_DISK_WARN:-85}
+    MON_MEM_WARN=$(monitor_alert_cfg_get MEM_WARN); MON_MEM_WARN=${MON_MEM_WARN:-85}
+    MON_LOAD_WARN=$(monitor_alert_cfg_get LOAD_WARN); MON_LOAD_WARN=${MON_LOAD_WARN:-}
+    MON_BOT_TOKEN=$(monitor_alert_cfg_get BOT_TOKEN)
+    MON_CHAT_ID=$(monitor_alert_cfg_get CHAT_ID)
+    MON_TRAFFIC_ENABLED=$(monitor_alert_cfg_get TRAFFIC_ENABLED); MON_TRAFFIC_ENABLED=${MON_TRAFFIC_ENABLED:-no}
+    MON_TRAFFIC_LIMIT_GB=$(monitor_alert_cfg_get TRAFFIC_LIMIT_GB); MON_TRAFFIC_LIMIT_GB=${MON_TRAFFIC_LIMIT_GB:-50}
+    MON_TRAFFIC_BASELINE_DATE=$(monitor_alert_cfg_get TRAFFIC_BASELINE_DATE)
+    MON_TRAFFIC_BASELINE_BYTES=$(monitor_alert_cfg_get TRAFFIC_BASELINE_BYTES); MON_TRAFFIC_BASELINE_BYTES=${MON_TRAFFIC_BASELINE_BYTES:-0}
+    MON_RENEW_ENABLED=$(monitor_alert_cfg_get RENEW_ENABLED); MON_RENEW_ENABLED=${MON_RENEW_ENABLED:-no}
+    MON_RENEW_MODE=$(monitor_alert_cfg_get RENEW_MODE); MON_RENEW_MODE=${MON_RENEW_MODE:-interval}
+    MON_RENEW_NEXT_DATE=$(monitor_alert_cfg_get RENEW_NEXT_DATE)
+    MON_RENEW_INTERVAL_DAYS=$(monitor_alert_cfg_get RENEW_INTERVAL_DAYS); MON_RENEW_INTERVAL_DAYS=${MON_RENEW_INTERVAL_DAYS:-365}
+    MON_RENEW_MONTH_DAY=$(monitor_alert_cfg_get RENEW_MONTH_DAY); MON_RENEW_MONTH_DAY=${MON_RENEW_MONTH_DAY:-1}
+    MON_RENEW_NOTICE_DAYS=$(monitor_alert_cfg_get RENEW_NOTICE_DAYS); MON_RENEW_NOTICE_DAYS=${MON_RENEW_NOTICE_DAYS:-30,7,3,1}
+    MON_RENEW_LAST_ALERT=$(monitor_alert_cfg_get RENEW_LAST_ALERT)
+}
+
+monitor_alert_save_cfg() {
+    local CFG; CFG=$(monitor_alert_cfg)
+    mkdir -p "$(dirname "$CFG")" 2>/dev/null || true
+    cat > "$CFG" <<EOF
+ENABLED=${MON_ENABLED:-no}
+DISK_WARN=${MON_DISK_WARN:-85}
+MEM_WARN=${MON_MEM_WARN:-85}
+LOAD_WARN=${MON_LOAD_WARN:-}
+BOT_TOKEN=${MON_BOT_TOKEN:-}
+CHAT_ID=${MON_CHAT_ID:-}
+TRAFFIC_ENABLED=${MON_TRAFFIC_ENABLED:-no}
+TRAFFIC_LIMIT_GB=${MON_TRAFFIC_LIMIT_GB:-50}
+TRAFFIC_BASELINE_DATE=${MON_TRAFFIC_BASELINE_DATE:-}
+TRAFFIC_BASELINE_BYTES=${MON_TRAFFIC_BASELINE_BYTES:-0}
+RENEW_ENABLED=${MON_RENEW_ENABLED:-no}
+RENEW_MODE=${MON_RENEW_MODE:-interval}
+RENEW_NEXT_DATE=${MON_RENEW_NEXT_DATE:-}
+RENEW_INTERVAL_DAYS=${MON_RENEW_INTERVAL_DAYS:-365}
+RENEW_MONTH_DAY=${MON_RENEW_MONTH_DAY:-1}
+RENEW_NOTICE_DAYS=${MON_RENEW_NOTICE_DAYS:-30,7,3,1}
+RENEW_LAST_ALERT=${MON_RENEW_LAST_ALERT:-}
+EOF
+    chmod 600 "$CFG" 2>/dev/null || true
+}
+
+monitor_traffic_total_bytes() {
+    if [ -r /proc/net/dev ]; then
+        awk 'NR>2 {gsub(":", "", $1); if ($1 != "lo") sum += $2 + $10} END {print sum+0}' /proc/net/dev 2>/dev/null
+        return
+    fi
+    if command -v ip >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1; then
+        ip -j -s link show 2>/dev/null | python3 -c '
+import sys, json
+data = json.load(sys.stdin)
+total = 0
+for item in data:
+    if item.get("ifname") == "lo":
+        continue
+    stats = item.get("stats64") or item.get("stats") or {}
+    rx = stats.get("rx", {}).get("bytes", 0)
+    tx = stats.get("tx", {}).get("bytes", 0)
+    total += int(rx) + int(tx)
+print(total)
+' 2>/dev/null && return
+    fi
+    echo 0
+}
+
+monitor_traffic_ensure_baseline() {
+    local TODAY CURRENT
+    TODAY=$(date +%F)
+    CURRENT=$(monitor_traffic_total_bytes)
+    if [ -z "${MON_TRAFFIC_BASELINE_DATE:-}" ] || [ "$MON_TRAFFIC_BASELINE_DATE" != "$TODAY" ] || ! echo "${MON_TRAFFIC_BASELINE_BYTES:-0}" | grep -qE '^[0-9]+$'; then
+        MON_TRAFFIC_BASELINE_DATE="$TODAY"
+        MON_TRAFFIC_BASELINE_BYTES="$CURRENT"
+        monitor_alert_save_cfg
+    fi
+}
+
+monitor_traffic_used_bytes() {
+    local CURRENT BASE USED
+    CURRENT=$(monitor_traffic_total_bytes)
+    BASE=${MON_TRAFFIC_BASELINE_BYTES:-0}
+    USED=$((CURRENT - BASE))
+    [ "$USED" -lt 0 ] && USED=0
+    echo "$USED"
+}
+
+monitor_traffic_used_gb() {
+    awk "BEGIN {printf \"%.2f\", ($1/1024/1024/1024)}"
+}
+
+monitor_renew_next_date() {
+    local MODE="$1" BASE="$2" DAYS="$3" MONTH_DAY="$4"
+    python3 - "$MODE" "$BASE" "$DAYS" "$MONTH_DAY" <<'PY'
+from calendar import monthrange
+from datetime import date, datetime, timedelta
+import sys
+mode, base, days, month_day = sys.argv[1:]
+base_date = datetime.strptime(base, "%Y-%m-%d").date()
+if mode == "interval":
+    print((base_date + timedelta(days=int(days))).isoformat())
+elif mode == "monthly":
+    target_day = max(1, min(31, int(month_day or 1)))
+    y, m = base_date.year, base_date.month
+    for _ in range(24):
+        last = monthrange(y, m)[1]
+        cand = date(y, m, min(target_day, last))
+        if cand > base_date:
+            print(cand.isoformat())
+            break
+        m += 1
+        if m > 12:
+            y += 1
+            m = 1
+else:
+    print(base)
+PY
+}
+
+monitor_renew_days_left() {
+    local NEXT="$1"
+    python3 - "$NEXT" <<'PY'
+from datetime import date, datetime
+import sys
+next_date = datetime.strptime(sys.argv[1], "%Y-%m-%d").date()
+print((next_date - date.today()).days)
+PY
+}
+
+monitor_renew_notice_match() {
+    local DAYS_LEFT="$1" LIST="${2:-30,7,3,1}" I
+    [ "$DAYS_LEFT" -le 0 ] && return 0
+    IFS=',' read -r -a MON_LIST <<< "$LIST"
+    for I in "${MON_LIST[@]}"; do
+        [ -n "$I" ] || continue
+        [ "$DAYS_LEFT" -eq "$I" ] && return 0
+    done
+    return 1
+}
+
 monitor_alert_notify() {
     local TITLE="$1" BODY="$2" BOT CHAT
     BOT=$(monitor_alert_cfg_get BOT_TOKEN)
@@ -5246,109 +5405,284 @@ monitor_alert_service_state() {
     fi
 }
 
+monitor_alert_resource_check() {
+    local HOST DISK_PCT MEM_PCT LOAD1 CPU_COUNT ISSUES=""
+    HOST=$(hostname 2>/dev/null || echo unknown)
+    DISK_PCT=$(df -P / 2>/dev/null | awk 'NR==2 {gsub("%","",$5); print $5+0}')
+    MEM_PCT=$(awk '/^MemTotal:/ {t=$2} /^MemAvailable:/ {a=$2} END {if (t>0) printf "%.0f", (t-a)*100/t; else print 0}' /proc/meminfo 2>/dev/null)
+    LOAD1=$(awk '{print $1}' /proc/loadavg 2>/dev/null || echo 0)
+    CPU_COUNT=$(getconf _NPROCESSORS_ONLN 2>/dev/null || nproc 2>/dev/null || echo 1)
+    local LOAD_WARN_VALUE="${MON_LOAD_WARN:-}"
+    [ -n "$LOAD_WARN_VALUE" ] || LOAD_WARN_VALUE=$(awk "BEGIN{printf \"%.1f\", $CPU_COUNT*1.5}")
+
+    if [ "${DISK_PCT:-0}" -ge "${MON_DISK_WARN:-85}" ]; then ISSUES="${ISSUES}磁盘 ${DISK_PCT}%  "; fi
+    if [ "${MEM_PCT:-0}" -ge "${MON_MEM_WARN:-85}" ]; then ISSUES="${ISSUES}内存 ${MEM_PCT}%  "; fi
+    if awk "BEGIN{exit !($LOAD1 >= $LOAD_WARN_VALUE)}"; then ISSUES="${ISSUES}负载 ${LOAD1}  "; fi
+    if [ "$(monitor_alert_service_state ssh)" != running ]; then ISSUES="${ISSUES}SSH 服务异常  "; fi
+    if command -v fail2ban-client >/dev/null 2>&1 && [ "$(f2b_status 2>/dev/null || echo stopped)" != running ]; then ISSUES="${ISSUES}Fail2ban 异常  "; fi
+    if command -v docker >/dev/null 2>&1 && [ "$(docker_status 2>/dev/null || echo not_installed)" = stopped ]; then ISSUES="${ISSUES}Docker 服务异常  "; fi
+    if command -v caddy >/dev/null 2>&1 && [ "$(caddy_status 2>/dev/null || echo not_installed)" = stopped ]; then ISSUES="${ISSUES}Caddy 服务异常  "; fi
+    [ -n "${ISSUES// }" ] || return 0
+    local SIG CUR_TS LAST_SIG LAST_TS
+    CUR_TS=$(date +%s)
+    SIG=$(printf '%s|%s|%s' "$HOST" "$ISSUES" "$DISK_PCT" | sha256sum 2>/dev/null | awk '{print $1}')
+    LAST_SIG=$(monitor_alert_state_get SIG 2>/dev/null || true)
+    LAST_TS=$(monitor_alert_state_get TS 2>/dev/null || echo 0)
+    if [ "$SIG" = "$LAST_SIG" ] && [ $((CUR_TS - LAST_TS)) -lt 1800 ]; then
+        return 0
+    fi
+    local MSG
+    MSG="监控告警\n主机：${HOST}\n时间：$(date '+%Y-%m-%d %H:%M:%S')\n磁盘：${DISK_PCT}%\n内存：${MEM_PCT}%\n负载：${LOAD1}\n异常：${ISSUES}"
+    monitor_alert_notify "⚠️ <b>VPS 监控告警</b>" "$MSG"
+    monitor_alert_state_set SIG "$SIG"
+    monitor_alert_state_set TS "$CUR_TS"
+    audit_action "发送系统监控告警：$ISSUES" SUCCESS
+}
+
+monitor_alert_traffic_check() {
+    [ "${MON_TRAFFIC_ENABLED:-no}" = "yes" ] || return 0
+    monitor_traffic_ensure_baseline
+    local USED_BYTES USED_GB LIMIT_GB
+    USED_BYTES=$(monitor_traffic_used_bytes)
+    USED_GB=$(monitor_traffic_used_gb "$USED_BYTES")
+    LIMIT_GB="${MON_TRAFFIC_LIMIT_GB:-50}"
+    if awk "BEGIN{exit !($USED_GB >= $LIMIT_GB)}"; then
+        local SIG CUR_TS
+        CUR_TS=$(date +%s)
+        SIG=$(printf 'traffic|%s|%s|%s' "$(hostname 2>/dev/null || echo unknown)" "$USED_GB" "$LIMIT_GB" | sha256sum 2>/dev/null | awk '{print $1}')
+        if [ "$(monitor_alert_state_get TRAFFIC_SIG 2>/dev/null || true)" = "$SIG" ] && [ $((CUR_TS - $(monitor_alert_state_get TRAFFIC_TS 2>/dev/null || echo 0))) -lt 1800 ]; then
+            return 0
+        fi
+        monitor_alert_notify "⚠️ <b>流量超限告警</b>" "今日累计流量：<code>${USED_GB} GB</code>\n阈值：<code>${LIMIT_GB} GB</code>\n主机：<code>$(hostname 2>/dev/null || echo unknown)</code>"
+        monitor_alert_state_set TRAFFIC_SIG "$SIG"
+        monitor_alert_state_set TRAFFIC_TS "$CUR_TS"
+        audit_action "发送流量超限告警：${USED_GB}GB / ${LIMIT_GB}GB" SUCCESS
+    fi
+}
+
+monitor_alert_renew_check() {
+    [ "${MON_RENEW_ENABLED:-no}" = "yes" ] || return 0
+    local NEXT="${MON_RENEW_NEXT_DATE:-}" TODAY DAYS_LEFT
+    TODAY=$(date +%F)
+    if [ -z "$NEXT" ]; then
+        NEXT="$TODAY"
+    fi
+    DAYS_LEFT=$(monitor_renew_days_left "$NEXT" 2>/dev/null || echo 0)
+    if ! monitor_renew_notice_match "$DAYS_LEFT" "${MON_RENEW_NOTICE_DAYS:-30,7,3,1}"; then
+        return 0
+    fi
+    local SIG CUR_TS LAST_SIG LAST_TS
+    CUR_TS=$(date +%s)
+    SIG=$(printf 'renew|%s|%s|%s' "$(hostname 2>/dev/null || echo unknown)" "$NEXT" "$DAYS_LEFT" | sha256sum 2>/dev/null | awk '{print $1}')
+    LAST_SIG=$(monitor_alert_state_get RENEW_SIG 2>/dev/null || true)
+    LAST_TS=$(monitor_alert_state_get RENEW_TS 2>/dev/null || echo 0)
+    if [ "$SIG" = "$LAST_SIG" ] && [ $((CUR_TS - LAST_TS)) -lt 86400 ]; then
+        return 0
+    fi
+    monitor_alert_notify "⏰ <b>续费提醒</b>" "下次续费日期：<code>${NEXT}</code>\n剩余天数：<code>${DAYS_LEFT}</code>\n主机：<code>$(hostname 2>/dev/null || echo unknown)</code>"
+    monitor_alert_state_set RENEW_SIG "$SIG"
+    monitor_alert_state_set RENEW_TS "$CUR_TS"
+    MON_RENEW_LAST_ALERT="$TODAY"
+    monitor_alert_save_cfg
+    if [ "$DAYS_LEFT" -le 0 ]; then
+        case "$MON_RENEW_MODE" in
+            interval)
+                MON_RENEW_NEXT_DATE=$(monitor_renew_next_date interval "$NEXT" "${MON_RENEW_INTERVAL_DAYS:-365}" "${MON_RENEW_MONTH_DAY:-1}")
+                ;;
+            monthly)
+                MON_RENEW_NEXT_DATE=$(monitor_renew_next_date monthly "$NEXT" "${MON_RENEW_INTERVAL_DAYS:-365}" "${MON_RENEW_MONTH_DAY:-1}")
+                ;;
+            manual)
+                : ;;
+            *)
+                : ;;
+        esac
+        monitor_alert_save_cfg
+    fi
+    audit_action "发送续费提醒：$NEXT，剩余 $DAYS_LEFT 天" SUCCESS
+}
+
 monitor_alert_check() {
     local CFG; CFG=$(monitor_alert_cfg)
     [ -f "$CFG" ] || return 0
     # shellcheck source=/dev/null
     . "$CFG"
     [ "${ENABLED:-no}" = "yes" ] || return 0
-
-    local HOST DISK_PCT MEM_PCT LOAD1 CPU_COUNT ISSUES="" SIG CUR_TS LAST_SIG LAST_TS
-    HOST=$(hostname 2>/dev/null || echo unknown)
-    DISK_PCT=$(df -P / 2>/dev/null | awk 'NR==2 {gsub("%","",$5); print $5+0}')
-    MEM_PCT=$(awk '/^MemTotal:/ {t=$2} /^MemAvailable:/ {a=$2} END {if (t>0) printf "%.0f", (t-a)*100/t; else print 0}' /proc/meminfo 2>/dev/null)
-    LOAD1=$(awk '{print $1}' /proc/loadavg 2>/dev/null || echo 0)
-    CPU_COUNT=$(getconf _NPROCESSORS_ONLN 2>/dev/null || nproc 2>/dev/null || echo 1)
-    CUR_TS=$(date +%s)
-    local DISK_WARN="${DISK_WARN:-85}" MEM_WARN="${MEM_WARN:-85}" LOAD_WARN="${LOAD_WARN:-$(awk "BEGIN{printf \"%.1f\", $CPU_COUNT*1.5}")}"
-
-    if [ "${DISK_PCT:-0}" -ge "$DISK_WARN" ]; then ISSUES="${ISSUES}磁盘 ${DISK_PCT}%  "; fi
-    if [ "${MEM_PCT:-0}" -ge "$MEM_WARN" ]; then ISSUES="${ISSUES}内存 ${MEM_PCT}%  "; fi
-    if awk "BEGIN{exit !($LOAD1 >= $LOAD_WARN)}"; then ISSUES="${ISSUES}负载 ${LOAD1}  "; fi
-
-    if [ "$(monitor_alert_service_state ssh)" != running ]; then ISSUES="${ISSUES}SSH 服务异常  "; fi
-    if command -v fail2ban-client >/dev/null 2>&1 && [ "$(f2b_status 2>/dev/null || echo stopped)" != running ]; then ISSUES="${ISSUES}Fail2ban 异常  "; fi
-    if command -v docker >/dev/null 2>&1 && [ "$(docker_status 2>/dev/null || echo not_installed)" = stopped ]; then ISSUES="${ISSUES}Docker 服务异常  "; fi
-    if command -v caddy >/dev/null 2>&1 && [ "$(caddy_status 2>/dev/null || echo not_installed)" = stopped ]; then ISSUES="${ISSUES}Caddy 服务异常  "; fi
-    [ -n "${ISSUES// }" ] || return 0
-
-    SIG=$(printf '%s|%s|%s' "$HOST" "$ISSUES" "$DISK_PCT" | sha256sum 2>/dev/null | awk '{print $1}')
-    LAST_SIG=""; LAST_TS=0
-    [ -f "$(monitor_alert_state)" ] && { LAST_SIG=$(awk -F= '/^SIG=/{print $2}' "$(monitor_alert_state)" 2>/dev/null); LAST_TS=$(awk -F= '/^TS=/{print $2}' "$(monitor_alert_state)" 2>/dev/null); }
-    if [ "$SIG" = "$LAST_SIG" ] && [ $((CUR_TS - LAST_TS)) -lt 1800 ]; then
-        return 0
-    fi
-
-    local MSG
-    MSG="监控告警\n主机：${HOST}\n时间：$(date '+%Y-%m-%d %H:%M:%S')\n磁盘：${DISK_PCT}%\n内存：${MEM_PCT}%\n负载：${LOAD1}\n异常：${ISSUES}"
-    monitor_alert_notify "⚠️ <b>VPS 监控告警</b>" "$MSG"
-    printf 'SIG=%s\nTS=%s\n' "$SIG" "$CUR_TS" > "$(monitor_alert_state)" 2>/dev/null || true
-    audit_action "发送监控告警：$ISSUES" SUCCESS
+    monitor_alert_load_cfg
+    monitor_alert_resource_check
+    monitor_alert_traffic_check
+    monitor_alert_renew_check
 }
 
 monitor_alert_config_menu() {
     local CFG; CFG=$(monitor_alert_cfg)
     mkdir -p "$(dirname "$CFG")" 2>/dev/null || true
-    local DISK_WARN MEM_WARN LOAD_WARN ENABLED BOT_TOKEN CHAT_ID
-    DISK_WARN=$(monitor_alert_cfg_get DISK_WARN); DISK_WARN=${DISK_WARN:-85}
-    MEM_WARN=$(monitor_alert_cfg_get MEM_WARN); MEM_WARN=${MEM_WARN:-85}
-    LOAD_WARN=$(monitor_alert_cfg_get LOAD_WARN); LOAD_WARN=${LOAD_WARN:-}
-    ENABLED=$(monitor_alert_cfg_get ENABLED); ENABLED=${ENABLED:-no}
-    BOT_TOKEN=$(monitor_alert_cfg_get BOT_TOKEN)
-    CHAT_ID=$(monitor_alert_cfg_get CHAT_ID)
+    monitor_alert_load_cfg
     print_header "监控告警配置"
-    echo -e "  状态：${BOLD}$([ "$ENABLED" = yes ] && echo '已启用' || echo '未启用')${NC}"
-    echo -e "  磁盘阈值：${BOLD}${DISK_WARN}%${NC}"
-    echo -e "  内存阈值：${BOLD}${MEM_WARN}%${NC}"
-    echo -e "  负载阈值：${BOLD}${LOAD_WARN:-自动}${NC}"
-    echo -e "  通知：${BOLD}$([ -n "$BOT_TOKEN" ] && echo '已配置' || echo '未配置')${NC}"
+    echo -e "  状态：${BOLD}$([ "$MON_ENABLED" = yes ] && echo '已启用' || echo '未启用')${NC}"
+    echo -e "  磁盘阈值：${BOLD}${MON_DISK_WARN}%${NC}"
+    echo -e "  内存阈值：${BOLD}${MON_MEM_WARN}%${NC}"
+    echo -e "  负载阈值：${BOLD}${MON_LOAD_WARN:-自动}${NC}"
+    echo -e "  流量监控：${BOLD}$([ "$MON_TRAFFIC_ENABLED" = yes ] && echo "${MON_TRAFFIC_LIMIT_GB} GB/日" || echo '未启用')${NC}"
+    echo -e "  续费提醒：${BOLD}$([ "$MON_RENEW_ENABLED" = yes ] && echo "${MON_RENEW_MODE} · ${MON_RENEW_NEXT_DATE:-未设置}" || echo '未启用')${NC}"
+    echo -e "  通知：${BOLD}$([ -n "$MON_BOT_TOKEN" ] && echo '已配置' || echo '未配置')${NC}"
     echo ""
     menu_div
     menu_item "1" "配置 Telegram 通知" "$GREEN"
-    menu_item "2" "设置告警阈值" "$YELLOW"
-    menu_item "3" "发送测试告警" "$CYAN"
-    menu_item "4" "启用定时告警" "$GREEN"
-    menu_item "5" "关闭定时告警" "$RED"
+    menu_item "2" "设置资源告警阈值" "$YELLOW"
+    menu_item "3" "流量监控与阈值" "$CYAN"
+    menu_item "4" "续费提醒设置" "$GREEN"
+    menu_item "5" "发送测试告警" "$CYAN"
+    menu_item "6" "启用定时告警" "$GREEN"
+    menu_item "7" "关闭定时告警" "$RED"
     menu_item "0" "返回上级" "$RED"
     menu_div; echo ""
-    read -rp "$(ui_prompt '选择操作 [0-5]: ')" CH
+    read -rp "$(ui_prompt '选择操作 [0-7]: ')" CH
     case "$CH" in
         1)
             read -rp "$(ui_prompt 'Bot Token: ')" BOT_TOKEN
             read -rp "$(ui_prompt 'Chat ID: ')" CHAT_ID
             [ -n "$BOT_TOKEN" ] && [ -n "$CHAT_ID" ] || { warn "已取消"; return; }
-            printf 'ENABLED=%s\nDISK_WARN=%s\nMEM_WARN=%s\nLOAD_WARN=%s\nBOT_TOKEN=%s\nCHAT_ID=%s\n' \
-                "${ENABLED:-no}" "${DISK_WARN:-85}" "${MEM_WARN:-85}" "${LOAD_WARN:-}" "$BOT_TOKEN" "$CHAT_ID" > "$CFG"
-            chmod 600 "$CFG" 2>/dev/null || true
+            MON_BOT_TOKEN="$BOT_TOKEN"
+            MON_CHAT_ID="$CHAT_ID"
+            monitor_alert_save_cfg
             info "Telegram 已配置"
             ;;
         2)
-            read -rp "$(ui_prompt "磁盘阈值 [${DISK_WARN}%]: ")" DISK_WARN_IN
-            read -rp "$(ui_prompt "内存阈值 [${MEM_WARN}%]: ")" MEM_WARN_IN
-            read -rp "$(ui_prompt "负载阈值（空=自动） [${LOAD_WARN:-自动}]: ")" LOAD_WARN_IN
-            [ -n "$DISK_WARN_IN" ] && DISK_WARN="$DISK_WARN_IN"
-            [ -n "$MEM_WARN_IN" ] && MEM_WARN="$MEM_WARN_IN"
-            [ -n "$LOAD_WARN_IN" ] && LOAD_WARN="$LOAD_WARN_IN"
-            printf 'ENABLED=%s\nDISK_WARN=%s\nMEM_WARN=%s\nLOAD_WARN=%s\nBOT_TOKEN=%s\nCHAT_ID=%s\n' \
-                "${ENABLED:-no}" "$DISK_WARN" "$MEM_WARN" "$LOAD_WARN" "${BOT_TOKEN:-}" "${CHAT_ID:-}" > "$CFG"
-            chmod 600 "$CFG" 2>/dev/null || true
+            read -rp "$(ui_prompt "磁盘阈值 [${MON_DISK_WARN}%]: ")" DISK_WARN_IN
+            read -rp "$(ui_prompt "内存阈值 [${MON_MEM_WARN}%]: ")" MEM_WARN_IN
+            read -rp "$(ui_prompt "负载阈值（空=自动） [${MON_LOAD_WARN:-自动}]: ")" LOAD_WARN_IN
+            [ -n "$DISK_WARN_IN" ] && MON_DISK_WARN="$DISK_WARN_IN"
+            [ -n "$MEM_WARN_IN" ] && MON_MEM_WARN="$MEM_WARN_IN"
+            [ -n "$LOAD_WARN_IN" ] && MON_LOAD_WARN="$LOAD_WARN_IN"
+            monitor_alert_save_cfg
             info "阈值已保存"
             ;;
         3)
+            while true; do
+                print_header "流量监控"
+                echo -e "  状态：${BOLD}$([ "$MON_TRAFFIC_ENABLED" = yes ] && echo '已启用' || echo '未启用')${NC}"
+                echo -e "  阈值：${BOLD}${MON_TRAFFIC_LIMIT_GB} GB / 日${NC}"
+                monitor_traffic_ensure_baseline
+                local USED_BYTES USED_GB
+                USED_BYTES=$(monitor_traffic_used_bytes)
+                USED_GB=$(monitor_traffic_used_gb "$USED_BYTES")
+                echo -e "  今日累计：${BOLD}${USED_GB} GB${NC}"
+                echo -e "  基线日期：${DIM}${MON_TRAFFIC_BASELINE_DATE:-未设置}${NC}"
+                menu_div
+                menu_item "1" "启用 / 更新阈值" "$GREEN"
+                menu_item "2" "关闭流量监控" "$YELLOW"
+                menu_item "3" "重置今日基线" "$CYAN"
+                menu_item "0" "返回上级" "$RED"
+                menu_div; echo ""
+                read -rp "$(ui_prompt '选择操作 [0-3]: ')" TCH
+                case "$TCH" in
+                    1)
+                        read -rp "$(ui_prompt "流量阈值（GB/日，默认 50） [${MON_TRAFFIC_LIMIT_GB}]: ")" LIMIT_IN
+                        [ -n "$LIMIT_IN" ] && MON_TRAFFIC_LIMIT_GB="$LIMIT_IN"
+                        MON_TRAFFIC_ENABLED=yes
+                        MON_TRAFFIC_BASELINE_DATE=$(date +%F)
+                        MON_TRAFFIC_BASELINE_BYTES=$(monitor_traffic_total_bytes)
+                        monitor_alert_save_cfg
+                        info "流量监控已启用"
+                        ;;
+                    2)
+                        MON_TRAFFIC_ENABLED=no
+                        monitor_alert_save_cfg
+                        info "流量监控已关闭"
+                        ;;
+                    3)
+                        MON_TRAFFIC_BASELINE_DATE=$(date +%F)
+                        MON_TRAFFIC_BASELINE_BYTES=$(monitor_traffic_total_bytes)
+                        monitor_alert_save_cfg
+                        info "今日基线已重置"
+                        ;;
+                    0) break ;;
+                    *) warn "无效选项"; sleep 1 ;;
+                esac
+            done
+            ;;
+        4)
+            while true; do
+                print_header "续费提醒"
+                echo -e "  状态：${BOLD}$([ "$MON_RENEW_ENABLED" = yes ] && echo '已启用' || echo '未启用')${NC}"
+                echo -e "  模式：${BOLD}${MON_RENEW_MODE}${NC}"
+                echo -e "  下次续费：${BOLD}${MON_RENEW_NEXT_DATE:-未设置}${NC}"
+                echo -e "  提前提醒：${BOLD}${MON_RENEW_NOTICE_DAYS}${NC}"
+                echo -e "  周期：${BOLD}${MON_RENEW_INTERVAL_DAYS} 天${NC}"
+                echo -e "  每月固定日：${BOLD}${MON_RENEW_MONTH_DAY}${NC}"
+                menu_div
+                menu_item "1" "设置固定日期" "$GREEN"
+                menu_item "2" "按周期循环（30/90/365）" "$YELLOW"
+                menu_item "3" "按每月固定日" "$CYAN"
+                menu_item "4" "设置提醒天数" "$GREEN"
+                menu_item "5" "关闭续费提醒" "$RED"
+                menu_item "0" "返回上级" "$RED"
+                menu_div; echo ""
+                read -rp "$(ui_prompt '选择操作 [0-5]: ')" RCH
+                case "$RCH" in
+                    1)
+                        read -rp "$(ui_prompt '请输入下次续费日期（YYYY-MM-DD）: ')" NEXT_IN
+                        date -d "$NEXT_IN" >/dev/null 2>&1 || { warn "日期格式无效"; continue; }
+                        MON_RENEW_ENABLED=yes
+                        MON_RENEW_MODE=manual
+                        MON_RENEW_NEXT_DATE="$NEXT_IN"
+                        monitor_alert_save_cfg
+                        info "续费日期已设置"
+                        ;;
+                    2)
+                        read -rp "$(ui_prompt '循环天数（如 30/90/365）: ')" DAYS_IN
+                        echo "$DAYS_IN" | grep -qE '^[0-9]+$' || { warn "输入无效"; continue; }
+                        read -rp "$(ui_prompt '下次续费日期（留空=今天起算）: ')" BASE_IN
+                        BASE_IN=${BASE_IN:-$(date +%F)}
+                        date -d "$BASE_IN" >/dev/null 2>&1 || { warn "日期格式无效"; continue; }
+                        MON_RENEW_ENABLED=yes
+                        MON_RENEW_MODE=interval
+                        MON_RENEW_INTERVAL_DAYS="$DAYS_IN"
+                        MON_RENEW_NEXT_DATE=$(monitor_renew_next_date interval "$BASE_IN" "$DAYS_IN" "$MON_RENEW_MONTH_DAY")
+                        monitor_alert_save_cfg
+                        info "循环续费已设置"
+                        ;;
+                    3)
+                        read -rp "$(ui_prompt '每月固定日（1-28/31）: ')" MDAY
+                        echo "$MDAY" | grep -qE '^[0-9]+$' || { warn "输入无效"; continue; }
+                        MON_RENEW_ENABLED=yes
+                        MON_RENEW_MODE=monthly
+                        MON_RENEW_MONTH_DAY="$MDAY"
+                        MON_RENEW_NEXT_DATE=$(monitor_renew_next_date monthly "$(date +%F)" "${MON_RENEW_INTERVAL_DAYS:-365}" "$MDAY")
+                        monitor_alert_save_cfg
+                        info "每月续费提醒已设置"
+                        ;;
+                    4)
+                        read -rp "$(ui_prompt '提醒天数（逗号分隔，如 30,7,3,1）: ')" NOTICE_IN
+                        [ -n "$NOTICE_IN" ] && MON_RENEW_NOTICE_DAYS="$NOTICE_IN"
+                        monitor_alert_save_cfg
+                        info "提醒天数已保存"
+                        ;;
+                    5)
+                        MON_RENEW_ENABLED=no
+                        monitor_alert_save_cfg
+                        info "续费提醒已关闭"
+                        ;;
+                    0) break ;;
+                    *) warn "无效选项"; sleep 1 ;;
+                esac
+            done
+            ;;
+        5)
             monitor_alert_notify "⚠️ <b>VPS 监控测试</b>" "这是一条测试告警：$(date '+%Y-%m-%d %H:%M:%S')"
             info "测试消息已发送（如已配置 Telegram）"
             ;;
-        4)
-            [ -f "$CFG" ] || { printf 'ENABLED=yes\nDISK_WARN=85\nMEM_WARN=85\nLOAD_WARN=\nBOT_TOKEN=\nCHAT_ID=\n' > "$CFG"; chmod 600 "$CFG"; }
-            sed -i 's/^ENABLED=.*/ENABLED=yes/' "$CFG"
-            local SVC_PATH
-            SVC_PATH="${LOCAL_SCRIPT:-$0}"
-            (crontab -l 2>/dev/null | grep -v 'vps-monitor-alert'; echo "*/10 * * * * ${SVC_PATH} --monitor-alert >> /var/log/vps-monitor.log 2>&1 # vps-monitor-alert") | crontab -
+        6)
+            MON_ENABLED=yes
+            monitor_alert_save_cfg
+            (crontab -l 2>/dev/null | grep -v 'vps-monitor-alert'; echo "*/10 * * * * ${SVC_PATH:-${LOCAL_SCRIPT:-$0}} --monitor-alert >> /var/log/vps-monitor.log 2>&1 # vps-monitor-alert") | crontab -
             ddns_ensure_cron >/dev/null 2>&1 || true
             info "已启用定时告警"
             ;;
-        5)
-            [ -f "$CFG" ] && sed -i 's/^ENABLED=.*/ENABLED=no/' "$CFG"
+        7)
+            MON_ENABLED=no
+            monitor_alert_save_cfg
             (crontab -l 2>/dev/null | grep -v 'vps-monitor-alert') | crontab -
             info "已关闭定时告警"
             ;;
