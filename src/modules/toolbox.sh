@@ -272,6 +272,7 @@ monitor_alert_load_cfg() {
     MON_LOAD_WARN=$(monitor_alert_cfg_get LOAD_WARN); MON_LOAD_WARN=${MON_LOAD_WARN:-}
     MON_BOT_TOKEN=$(monitor_alert_cfg_get BOT_TOKEN)
     MON_CHAT_ID=$(monitor_alert_cfg_get CHAT_ID)
+    MON_HOST_LABEL=$(monitor_alert_cfg_get HOST_LABEL)
     MON_TRAFFIC_ENABLED=$(monitor_alert_cfg_get TRAFFIC_ENABLED); MON_TRAFFIC_ENABLED=${MON_TRAFFIC_ENABLED:-no}
     MON_TRAFFIC_LIMIT_GB=$(monitor_alert_cfg_get TRAFFIC_LIMIT_GB); MON_TRAFFIC_LIMIT_GB=${MON_TRAFFIC_LIMIT_GB:-50}
     MON_TRAFFIC_BASELINE_DATE=$(monitor_alert_cfg_get TRAFFIC_BASELINE_DATE)
@@ -300,6 +301,7 @@ MEM_WARN=${MON_MEM_WARN:-85}
 LOAD_WARN=${MON_LOAD_WARN:-}
 BOT_TOKEN=${MON_BOT_TOKEN:-}
 CHAT_ID=${MON_CHAT_ID:-}
+HOST_LABEL=${MON_HOST_LABEL:-}
 TRAFFIC_ENABLED=${MON_TRAFFIC_ENABLED:-no}
 TRAFFIC_LIMIT_GB=${MON_TRAFFIC_LIMIT_GB:-50}
 TRAFFIC_BASELINE_DATE=${MON_TRAFFIC_BASELINE_DATE:-}
@@ -318,6 +320,14 @@ DAILY_REPORT_ENABLED=${MON_DAILY_REPORT_ENABLED:-no}
 DAILY_REPORT_TIME=${MON_DAILY_REPORT_TIME:-08:00}
 EOF
     chmod 600 "$CFG" 2>/dev/null || true
+}
+
+monitor_alert_host_label() {
+    if [ -n "${MON_HOST_LABEL:-}" ]; then
+        echo "$MON_HOST_LABEL"
+    else
+        hostname 2>/dev/null || echo unknown
+    fi
 }
 
 monitor_traffic_total_bytes() {
@@ -437,7 +447,7 @@ monitor_daily_report_due() {
 
 monitor_alert_daily_report() {
     local HOST TODAY DAILY_BYTES DAILY_GB CYCLE_BYTES CYCLE_GB CYCLE_START RENEW_LEFT NEXT
-    HOST=$(hostname 2>/dev/null || echo unknown)
+    HOST=$(monitor_alert_host_label)
     TODAY=$(date +%F)
     monitor_traffic_ensure_baseline
     monitor_traffic_cycle_ensure_baseline
@@ -464,7 +474,7 @@ monitor_alert_daily_report_check() {
     CUR_TS=$(date +%s)
     LAST_DATE=$(monitor_alert_state_get DAILY_REPORT_DATE 2>/dev/null || true)
     LAST_TS=$(monitor_alert_state_get DAILY_REPORT_TS 2>/dev/null || echo 0)
-    SIG=$(printf 'daily|%s|%s' "$(hostname 2>/dev/null || echo unknown)" "$TODAY" | sha256sum 2>/dev/null | awk '{print $1}')
+    SIG=$(printf 'daily|%s|%s' "$HOST" "$TODAY" | sha256sum 2>/dev/null | awk '{print $1}')
     if [ "$LAST_DATE" = "$TODAY" ] && [ $((CUR_TS - LAST_TS)) -lt 43200 ]; then
         return 0
     fi
@@ -482,7 +492,7 @@ monitor_alert_home_menu() {
         monitor_traffic_ensure_baseline
         monitor_traffic_cycle_ensure_baseline
         local DAILY_BYTES DAILY_GB CYCLE_BYTES CYCLE_GB HOST
-        HOST=$(hostname 2>/dev/null || echo unknown)
+        HOST=$(monitor_alert_host_label)
         DAILY_BYTES=$(monitor_traffic_used_bytes)
         DAILY_GB=$(monitor_traffic_used_gb "$DAILY_BYTES")
         CYCLE_BYTES=$(monitor_traffic_current_cycle_used_bytes)
@@ -591,7 +601,7 @@ monitor_alert_service_state() {
 
 monitor_alert_resource_check() {
     local HOST DISK_PCT MEM_PCT LOAD1 CPU_COUNT ISSUES=""
-    HOST=$(hostname 2>/dev/null || echo unknown)
+    HOST=$(monitor_alert_host_label)
     DISK_PCT=$(df -P / 2>/dev/null | awk 'NR==2 {gsub("%","",$5); print $5+0}')
     MEM_PCT=$(awk '/^MemTotal:/ {t=$2} /^MemAvailable:/ {a=$2} END {if (t>0) printf "%.0f", (t-a)*100/t; else print 0}' /proc/meminfo 2>/dev/null)
     LOAD1=$(awk '{print $1}' /proc/loadavg 2>/dev/null || echo 0)
@@ -637,7 +647,7 @@ monitor_alert_traffic_check() {
         if [ "$(monitor_alert_state_get TRAFFIC_SIG 2>/dev/null || true)" = "$SIG" ] && [ $((CUR_TS - $(monitor_alert_state_get TRAFFIC_TS 2>/dev/null || echo 0))) -lt 1800 ]; then
             return 0
         fi
-        monitor_alert_notify "⚠️ <b>流量超限告警</b>" "今日累计流量：<code>${USED_GB} GB</code>\n阈值：<code>${LIMIT_GB} GB</code>\n主机：<code>$(hostname 2>/dev/null || echo unknown)</code>"
+        monitor_alert_notify "⚠️ <b>流量超限告警</b>" "今日累计流量：<code>${USED_GB} GB</code>\n阈值：<code>${LIMIT_GB} GB</code>\n主机：<code>$(monitor_alert_host_label)</code>"
         monitor_alert_state_set TRAFFIC_SIG "$SIG"
         monitor_alert_state_set TRAFFIC_TS "$CUR_TS"
         audit_action "发送流量超限告警：${USED_GB}GB / ${LIMIT_GB}GB" SUCCESS
@@ -657,13 +667,13 @@ monitor_alert_renew_check() {
     fi
     local SIG CUR_TS LAST_SIG LAST_TS
     CUR_TS=$(date +%s)
-    SIG=$(printf 'renew|%s|%s|%s' "$(hostname 2>/dev/null || echo unknown)" "$NEXT" "$DAYS_LEFT" | sha256sum 2>/dev/null | awk '{print $1}')
+    SIG=$(printf 'renew|%s|%s|%s' "$(monitor_alert_host_label)" "$NEXT" "$DAYS_LEFT" | sha256sum 2>/dev/null | awk '{print $1}')
     LAST_SIG=$(monitor_alert_state_get RENEW_SIG 2>/dev/null || true)
     LAST_TS=$(monitor_alert_state_get RENEW_TS 2>/dev/null || echo 0)
     if [ "$SIG" = "$LAST_SIG" ] && [ $((CUR_TS - LAST_TS)) -lt 86400 ]; then
         return 0
     fi
-    monitor_alert_notify "⏰ <b>续费提醒</b>" "下次续费日期：<code>${NEXT}</code>\n剩余天数：<code>${DAYS_LEFT}</code>\n主机：<code>$(hostname 2>/dev/null || echo unknown)</code>"
+    monitor_alert_notify "⏰ <b>续费提醒</b>" "下次续费日期：<code>${NEXT}</code>\n剩余天数：<code>${DAYS_LEFT}</code>\n主机：<code>$(monitor_alert_host_label)</code>"
     monitor_alert_state_set RENEW_SIG "$SIG"
     monitor_alert_state_set RENEW_TS "$CUR_TS"
     MON_RENEW_LAST_ALERT="$TODAY"
@@ -718,6 +728,7 @@ monitor_alert_config_menu() {
     echo -e "  重置日：${BOLD}${MON_TRAFFIC_RESET_DAY}${NC}   周期起点：${BOLD}${MON_TRAFFIC_CYCLE_BASELINE_DATE:-未设置}${NC}"
     echo -e "  续费提醒：${BOLD}$([ "$MON_RENEW_ENABLED" = yes ] && echo "${MON_RENEW_MODE} · ${MON_RENEW_NEXT_DATE:-未设置}" || echo '未启用')${NC}"
     echo -e "  每日日报：${BOLD}$([ "$MON_DAILY_REPORT_ENABLED" = yes ] && echo "${MON_DAILY_REPORT_TIME}" || echo '未启用')${NC}"
+    echo -e "  主机显示：${BOLD}${MON_HOST_LABEL:-自动使用 hostname}${NC}"
     echo -e "  通知：${BOLD}$([ -n "$MON_BOT_TOKEN" ] && echo '已配置' || echo '未配置')${NC}"
     echo ""
     menu_div
@@ -726,12 +737,13 @@ monitor_alert_config_menu() {
     menu_item "3" "流量监控与周期" "$CYAN"
     menu_item "4" "每日日报设置" "$GREEN"
     menu_item "5" "续费提醒设置" "$GREEN"
-    menu_item "6" "发送测试告警" "$CYAN"
-    menu_item "7" "启用定时告警" "$GREEN"
-    menu_item "8" "关闭定时告警" "$RED"
+    menu_item "6" "主机显示名称" "$YELLOW"
+    menu_item "7" "发送测试告警" "$CYAN"
+    menu_item "8" "启用定时告警" "$GREEN"
+    menu_item "9" "关闭定时告警" "$RED"
     menu_item "0" "返回上级" "$RED"
     menu_div; echo ""
-    read -rp "$(ui_prompt '选择操作 [0-8]: ')" CH
+    read -rp "$(ui_prompt '选择操作 [0-9]: ')" CH
     case "$CH" in
         1)
             read -rp "$(ui_prompt 'Bot Token: ')" BOT_TOKEN
@@ -932,17 +944,23 @@ monitor_alert_config_menu() {
             done
             ;;
         6)
+            read -rp "$(ui_prompt "推送中显示的主机名 [${MON_HOST_LABEL:-自动使用 hostname}]: ")" HOST_LABEL_IN
+            MON_HOST_LABEL="$HOST_LABEL_IN"
+            monitor_alert_save_cfg
+            info "主机显示名称已保存"
+            ;;
+        7)
             monitor_alert_notify "⚠️ <b>VPS 监控测试</b>" "这是一条测试告警：$(date '+%Y-%m-%d %H:%M:%S')"
             info "测试消息已发送（如已配置 Telegram）"
             ;;
-        7)
+        8)
             MON_ENABLED=yes
             monitor_alert_save_cfg
             (crontab -l 2>/dev/null | grep -v 'vps-monitor-alert'; echo "*/10 * * * * ${SVC_PATH:-${LOCAL_SCRIPT:-$0}} --monitor-alert >> /var/log/vps-monitor.log 2>&1 # vps-monitor-alert") | crontab -
             ddns_ensure_cron >/dev/null 2>&1 || true
             info "已启用定时告警"
             ;;
-        8)
+        9)
             MON_ENABLED=no
             monitor_alert_save_cfg
             (crontab -l 2>/dev/null | grep -v 'vps-monitor-alert') | crontab -
