@@ -16,7 +16,7 @@ for fn in docker_install docker_status docker_select_container docker_upgrade_co
     declare -F "$fn" >/dev/null || { echo "Missing Docker function: $fn" >&2; exit 1; }
 done
 
-for fn in self_offline_bundle_create self_offline_bundle_install self_update monitor_alert_check monitor_alert_config_menu monitor_alert_home_menu monitor_alert_daily_report monitor_alert_host_label monitor_time_normalize monitor_date_normalize monitor_int_normalize monitor_traffic_totals monitor_traffic_usage_triplet monitor_traffic_usage_text monitor_alert_test_snapshot monitor_alert_notify; do
+for fn in self_offline_bundle_create self_offline_bundle_install self_update monitor_alert_check monitor_alert_config_menu monitor_alert_home_menu monitor_alert_daily_report monitor_alert_host_label monitor_time_normalize monitor_date_normalize monitor_int_normalize monitor_traffic_totals monitor_traffic_usage_triplet monitor_traffic_usage_text monitor_traffic_set_cycle_usage_split_gb monitor_alert_test_snapshot monitor_alert_notify; do
     declare -F "$fn" >/dev/null || { echo "Missing new function: $fn" >&2; exit 1; }
 done
 
@@ -31,6 +31,14 @@ done
 [[ "$(software_group_packages apt base)" = *curl* ]] || { echo "APT base package mapping is incomplete" >&2; exit 1; }
 [[ "$(software_group_packages apk network)" = *mtr* ]] || { echo "APK network package mapping is incomplete" >&2; exit 1; }
 [[ "$(monitor_int_normalize 1.24682e+11)" = "124682000000" ]] || { echo "Scientific notation normalization failed" >&2; exit 1; }
+monitor_traffic_totals() { echo "107374182400 214748364800 322122547200"; }
+monitor_alert_save_cfg() { :; }
+# shellcheck disable=SC2034 # consumed by monitor_traffic_set_cycle_usage_split_gb
+MON_TRAFFIC_RESET_DAY=1
+monitor_traffic_set_cycle_usage_split_gb 10 20
+MON_TRAFFIC_CYCLE_BASELINE_RX_BYTES=${MON_TRAFFIC_CYCLE_BASELINE_RX_BYTES:?}
+MON_TRAFFIC_CYCLE_BASELINE_TX_BYTES=${MON_TRAFFIC_CYCLE_BASELINE_TX_BYTES:?}
+[[ "$(monitor_traffic_usage_triplet cycle)" = "10737418240 21474836480 32212254720" ]] || { echo "Split traffic calibration failed" >&2; exit 1; }
 
 OS=$(detect_os)
 [ -n "$OS" ] || { echo "OS detection returned empty" >&2; exit 1; }

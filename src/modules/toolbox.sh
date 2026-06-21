@@ -445,10 +445,6 @@ EOF
         MON_TRAFFIC_BASELINE_RX_BYTES="$RX"
         MON_TRAFFIC_BASELINE_TX_BYTES="$TX"
         monitor_alert_save_cfg
-    elif [ -z "${MON_TRAFFIC_BASELINE_RX_BYTES:-}" ] || [ -z "${MON_TRAFFIC_BASELINE_TX_BYTES:-}" ]; then
-        MON_TRAFFIC_BASELINE_RX_BYTES="$RX"
-        MON_TRAFFIC_BASELINE_TX_BYTES="$TX"
-        monitor_alert_save_cfg
     fi
 }
 
@@ -489,10 +485,6 @@ EOF
         MON_TRAFFIC_CYCLE_BASELINE_RX_BYTES="$RX"
         MON_TRAFFIC_CYCLE_BASELINE_TX_BYTES="$TX"
         monitor_alert_save_cfg
-    elif [ -z "${MON_TRAFFIC_CYCLE_BASELINE_RX_BYTES:-}" ] || [ -z "${MON_TRAFFIC_CYCLE_BASELINE_TX_BYTES:-}" ]; then
-        MON_TRAFFIC_CYCLE_BASELINE_RX_BYTES="$RX"
-        MON_TRAFFIC_CYCLE_BASELINE_TX_BYTES="$TX"
-        monitor_alert_save_cfg
     fi
 }
 
@@ -510,7 +502,7 @@ monitor_traffic_used_gb() {
 }
 
 monitor_traffic_usage_triplet() {
-    local KIND="${1:-daily}" RX TX TOTAL BASE_RX BASE_TX BASE_TOTAL USED_RX USED_TX USED_TOTAL
+    local KIND="${1:-daily}" RX TX TOTAL BASE_RX BASE_TX BASE_TOTAL USED_RX USED_TX USED_TOTAL HAS_SPLIT=no
     read -r RX TX TOTAL <<EOF
 $(monitor_traffic_totals)
 EOF
@@ -526,10 +518,11 @@ EOF
         BASE_TX=${MON_TRAFFIC_BASELINE_TX_BYTES:-}
         BASE_TOTAL=${MON_TRAFFIC_BASELINE_BYTES:-0}
     fi
+    [ -n "${BASE_RX:-}" ] && [ -n "${BASE_TX:-}" ] && HAS_SPLIT=yes
     BASE_RX=$(monitor_int_normalize "${BASE_RX:-0}")
     BASE_TX=$(monitor_int_normalize "${BASE_TX:-0}")
     BASE_TOTAL=$(monitor_int_normalize "${BASE_TOTAL:-0}")
-    if [ "$BASE_RX" -gt 0 ] || [ "$BASE_TX" -gt 0 ]; then
+    if [ "$HAS_SPLIT" = "yes" ]; then
         USED_RX=$((RX - BASE_RX))
         USED_TX=$((TX - BASE_TX))
         [ "$USED_RX" -lt 0 ] && USED_RX=0
@@ -568,24 +561,32 @@ monitor_traffic_current_cycle_used_gb() {
     monitor_traffic_used_gb "$1"
 }
 
-monitor_traffic_set_cycle_usage_gb() {
-    local USED_GB="$1" RX TX CURRENT BASE BASE_RX BASE_TX CYCLE_START USED_BYTES
-    echo "$USED_GB" | grep -qE '^[0-9]+([.][0-9]+)?$' || return 1
+monitor_traffic_set_cycle_usage_split_gb() {
+    local USED_RX_GB="$1" USED_TX_GB="$2" RX TX CURRENT BASE BASE_RX BASE_TX CYCLE_START USED_RX_BYTES USED_TX_BYTES
+    echo "$USED_RX_GB" | grep -qE '^[0-9]+([.][0-9]+)?$' || return 1
+    echo "$USED_TX_GB" | grep -qE '^[0-9]+([.][0-9]+)?$' || return 1
     read -r RX TX CURRENT <<EOF
 $(monitor_traffic_totals)
 EOF
-    USED_BYTES=$(awk "BEGIN {printf \"%.0f\", ($USED_GB*1024*1024*1024)}")
-    BASE=$((CURRENT - USED_BYTES))
-    [ "$BASE" -lt 0 ] && BASE=0
-    BASE_RX=$RX
-    BASE_TX=$((TX - USED_BYTES))
+    RX=$(monitor_int_normalize "$RX")
+    TX=$(monitor_int_normalize "$TX")
+    USED_RX_BYTES=$(awk "BEGIN {printf \"%.0f\", ($USED_RX_GB*1024*1024*1024)}")
+    USED_TX_BYTES=$(awk "BEGIN {printf \"%.0f\", ($USED_TX_GB*1024*1024*1024)}")
+    BASE_RX=$((RX - USED_RX_BYTES))
+    BASE_TX=$((TX - USED_TX_BYTES))
+    [ "$BASE_RX" -lt 0 ] && BASE_RX=0
     [ "$BASE_TX" -lt 0 ] && BASE_TX=0
+    BASE=$((BASE_RX + BASE_TX))
     CYCLE_START=$(monitor_traffic_current_cycle_start "${MON_TRAFFIC_RESET_DAY:-1}" "$(date +%F)")
     MON_TRAFFIC_CYCLE_BASELINE_DATE="$CYCLE_START"
     MON_TRAFFIC_CYCLE_BASELINE_BYTES="$BASE"
     MON_TRAFFIC_CYCLE_BASELINE_RX_BYTES="$BASE_RX"
     MON_TRAFFIC_CYCLE_BASELINE_TX_BYTES="$BASE_TX"
     monitor_alert_save_cfg
+}
+
+monitor_traffic_set_cycle_usage_gb() {
+    monitor_traffic_set_cycle_usage_split_gb 0 "$1"
 }
 
 monitor_daily_report_due() {
@@ -964,10 +965,14 @@ monitor_alert_config_menu() {
                 echo -e "  阈值：${BOLD}${MON_TRAFFIC_LIMIT_GB} GB / 日${NC}"
                 monitor_traffic_ensure_baseline
                 monitor_traffic_cycle_ensure_baseline
-                local TODAY_TEXT CYCLE_TEXT CYCLE_GB
+                local TODAY_TEXT CYCLE_TEXT CYCLE_RX_BYTES CYCLE_TX_BYTES CYCLE_RX_GB CYCLE_TX_GB
                 TODAY_TEXT=$(monitor_traffic_usage_text daily)
                 CYCLE_TEXT=$(monitor_traffic_usage_text cycle)
-                CYCLE_GB=$(monitor_traffic_used_gb "$(monitor_traffic_current_cycle_used_bytes)")
+                read -r CYCLE_RX_BYTES CYCLE_TX_BYTES _ <<EOF
+$(monitor_traffic_usage_triplet cycle)
+EOF
+                CYCLE_RX_GB=$(monitor_traffic_used_gb "$CYCLE_RX_BYTES")
+                CYCLE_TX_GB=$(monitor_traffic_used_gb "$CYCLE_TX_BYTES")
                 echo -e "  今日累计：${TODAY_TEXT}"
                 echo -e "  当前周期：${CYCLE_TEXT}"
                 echo -e "  基线日期：${DIM}${MON_TRAFFIC_BASELINE_DATE:-未设置}${NC}"
@@ -977,7 +982,7 @@ monitor_alert_config_menu() {
                 menu_item "2" "关闭流量监控" "$YELLOW"
                 menu_item "3" "重置今日基线" "$CYAN"
                 menu_item "4" "设置重置日" "$GREEN"
-                menu_item "5" "设置当前周期已消耗流量" "$YELLOW"
+                menu_item "5" "校准周期下行 / 上行流量" "$YELLOW"
                 menu_item "0" "返回上级" "$RED"
                 menu_div; echo ""
                 read -rp "$(ui_prompt '选择操作 [0-5]: ')" TCH
@@ -1036,9 +1041,12 @@ EOF
                         info "重置日已保存"
                         ;;
                     5)
-                        read -rp "$(ui_prompt "当前周期已消耗流量（GB） [${CYCLE_GB}]: ")" CYCLE_IN
-                        [ -n "$CYCLE_IN" ] || continue
-                        monitor_traffic_set_cycle_usage_gb "$CYCLE_IN" || { warn "输入无效"; continue; }
+                        local CYCLE_RX_IN CYCLE_TX_IN
+                        read -rp "$(ui_prompt "当前周期下行已消耗（GB） [${CYCLE_RX_GB}]: ")" CYCLE_RX_IN
+                        read -rp "$(ui_prompt "当前周期上行已消耗（GB） [${CYCLE_TX_GB}]: ")" CYCLE_TX_IN
+                        CYCLE_RX_IN=${CYCLE_RX_IN:-$CYCLE_RX_GB}
+                        CYCLE_TX_IN=${CYCLE_TX_IN:-$CYCLE_TX_GB}
+                        monitor_traffic_set_cycle_usage_split_gb "$CYCLE_RX_IN" "$CYCLE_TX_IN" || { warn "输入无效"; continue; }
                         info "当前周期流量已更新"
                         ;;
                     0) break ;;
