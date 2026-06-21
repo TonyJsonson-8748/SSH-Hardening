@@ -332,7 +332,7 @@ monitor_alert_host_label() {
 
 monitor_traffic_total_bytes() {
     if [ -r /proc/net/dev ]; then
-        awk 'NR>2 {gsub(":", "", $1); if ($1 != "lo") sum += $2 + $10} END {print sum+0}' /proc/net/dev 2>/dev/null
+        awk 'NR>2 {gsub(":", "", $1); if ($1 != "lo") sum += $2 + $10} END {printf "%.0f\n", sum+0}' /proc/net/dev 2>/dev/null
         return
     fi
     if command -v ip >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1; then
@@ -347,7 +347,7 @@ for item in data:
     rx = stats.get("rx", {}).get("bytes", 0)
     tx = stats.get("tx", {}).get("bytes", 0)
     total += int(rx) + int(tx)
-print(total)
+    print(f"{int(total):d}")
 ' 2>/dev/null && return
     fi
     echo 0
@@ -505,19 +505,29 @@ monitor_alert_home_menu() {
         echo -e "  每日日报：${BOLD}$([ "$MON_DAILY_REPORT_ENABLED" = yes ] && echo "${MON_DAILY_REPORT_TIME}" || echo '未启用')${NC}"
         echo ""
         menu_div
-        menu_item "1" "告警配置中心" "$GREEN"
-        menu_item "2" "查看今日流量" "$CYAN"
-        menu_item "3" "发送每日日报" "$YELLOW"
+        menu_item "1" "配置 Bot / Chat" "$GREEN"
+        menu_item "2" "告警配置中心" "$GREEN"
+        menu_item "3" "查看今日流量" "$CYAN"
+        menu_item "4" "发送每日日报" "$YELLOW"
         menu_item "0" "返回上级" "$RED"
         menu_div; echo ""
-        read -rp "$(ui_prompt '选择操作 [0-3]: ')" CH
+        read -rp "$(ui_prompt '选择操作 [0-4]: ')" CH
         case "$CH" in
-            1) monitor_alert_config_menu ;;
-            2)
+            1)
+                read -rp "$(ui_prompt 'Bot Token: ')" BOT_TOKEN
+                read -rp "$(ui_prompt 'Chat ID: ')" CHAT_ID
+                [ -n "$BOT_TOKEN" ] && [ -n "$CHAT_ID" ] || { warn "已取消"; continue; }
+                MON_BOT_TOKEN="$BOT_TOKEN"
+                MON_CHAT_ID="$CHAT_ID"
+                monitor_alert_save_cfg
+                info "Telegram 已配置"
+                ;;
+            2) monitor_alert_config_menu ;;
+            3)
                 info "今日流量：${DAILY_GB} GB，当前周期：${CYCLE_GB} GB"
                 ui_pause
                 ;;
-            3)
+            4)
                 monitor_alert_daily_report
                 info "日报已发送（如已配置 Telegram）"
                 ui_pause
