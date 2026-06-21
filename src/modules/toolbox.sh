@@ -462,8 +462,16 @@ monitor_alert_daily_report() {
     else
         RENEW_LEFT="未设置"
     fi
-    monitor_alert_notify "📊 <b>VPS 每日日报</b>" \
-        "主机：<code>${HOST}</code>\n日期：<code>${TODAY}</code>\n今日流量：<code>${DAILY_GB} GB</code>\n当前周期：<code>${CYCLE_GB} GB</code>\n周期起点：<code>${CYCLE_START}</code>\n续费日期：<code>${NEXT}</code>\n剩余天数：<code>${RENEW_LEFT}</code>"
+    monitor_alert_notify "📊 <b>VPS 每日日报</b>" "$(cat <<EOF
+主机：<code>${HOST}</code>
+日期：<code>${TODAY}</code>
+今日流量：<code>${DAILY_GB} GB</code>
+当前周期：<code>${CYCLE_GB} GB</code>
+周期起点：<code>${CYCLE_START}</code>
+续费日期：<code>${NEXT}</code>
+剩余天数：<code>${RENEW_LEFT}</code>
+EOF
+)"
 }
 
 monitor_alert_daily_report_check() {
@@ -474,7 +482,7 @@ monitor_alert_daily_report_check() {
     CUR_TS=$(date +%s)
     LAST_DATE=$(monitor_alert_state_get DAILY_REPORT_DATE 2>/dev/null || true)
     LAST_TS=$(monitor_alert_state_get DAILY_REPORT_TS 2>/dev/null || echo 0)
-    SIG=$(printf 'daily|%s|%s' "$HOST" "$TODAY" | sha256sum 2>/dev/null | awk '{print $1}')
+    SIG=$(printf 'daily|%s|%s' "$(monitor_alert_host_label)" "$TODAY" | sha256sum 2>/dev/null | awk '{print $1}')
     if [ "$LAST_DATE" = "$TODAY" ] && [ $((CUR_TS - LAST_TS)) -lt 43200 ]; then
         return 0
     fi
@@ -592,9 +600,11 @@ monitor_alert_notify() {
     BOT=$(monitor_alert_cfg_get BOT_TOKEN)
     CHAT=$(monitor_alert_cfg_get CHAT_ID)
     [ -n "$BOT" ] && [ -n "$CHAT" ] || return 0
+    local TEXT
+    TEXT=$(printf '%s\n%s' "$TITLE" "$BODY")
     curl -s --max-time 15 "https://api.telegram.org/bot${BOT}/sendMessage" \
         --data-urlencode "chat_id=${CHAT}" \
-        --data-urlencode "text=${TITLE}\n${BODY}" \
+        --data-urlencode "text=${TEXT}" \
         -d "parse_mode=HTML" >/dev/null 2>&1 || true
 }
 
@@ -742,29 +752,19 @@ monitor_alert_config_menu() {
     echo -e "  通知：${BOLD}$([ -n "$MON_BOT_TOKEN" ] && echo '已配置' || echo '未配置')${NC}"
     echo ""
     menu_div
-    menu_item "1" "配置 Telegram 通知" "$GREEN"
-    menu_item "2" "设置资源告警阈值" "$YELLOW"
-    menu_item "3" "流量监控与周期" "$CYAN"
-    menu_item "4" "每日日报设置" "$GREEN"
-    menu_item "5" "续费提醒设置" "$GREEN"
-    menu_item "6" "主机显示名称" "$YELLOW"
-    menu_item "7" "发送测试告警" "$CYAN"
-    menu_item "8" "启用定时告警" "$GREEN"
-    menu_item "9" "关闭定时告警" "$RED"
+    menu_item "1" "设置资源告警阈值" "$YELLOW"
+    menu_item "2" "流量监控与周期" "$CYAN"
+    menu_item "3" "每日日报设置" "$GREEN"
+    menu_item "4" "续费提醒设置" "$GREEN"
+    menu_item "5" "主机显示名称" "$YELLOW"
+    menu_item "6" "发送测试告警" "$CYAN"
+    menu_item "7" "启用定时告警" "$GREEN"
+    menu_item "8" "关闭定时告警" "$RED"
     menu_item "0" "返回上级" "$RED"
     menu_div; echo ""
-    read -rp "$(ui_prompt '选择操作 [0-9]: ')" CH
+    read -rp "$(ui_prompt '选择操作 [0-8]: ')" CH
     case "$CH" in
         1)
-            read -rp "$(ui_prompt 'Bot Token: ')" BOT_TOKEN
-            read -rp "$(ui_prompt 'Chat ID: ')" CHAT_ID
-            [ -n "$BOT_TOKEN" ] && [ -n "$CHAT_ID" ] || { warn "已取消"; return; }
-            MON_BOT_TOKEN="$BOT_TOKEN"
-            MON_CHAT_ID="$CHAT_ID"
-            monitor_alert_save_cfg
-            info "Telegram 已配置"
-            ;;
-        2)
             read -rp "$(ui_prompt "磁盘阈值 [${MON_DISK_WARN}%]: ")" DISK_WARN_IN
             read -rp "$(ui_prompt "内存阈值 [${MON_MEM_WARN}%]: ")" MEM_WARN_IN
             read -rp "$(ui_prompt "负载阈值（空=自动） [${MON_LOAD_WARN:-自动}]: ")" LOAD_WARN_IN
@@ -774,7 +774,7 @@ monitor_alert_config_menu() {
             monitor_alert_save_cfg
             info "阈值已保存"
             ;;
-        3)
+        2)
             while true; do
                 print_header "流量监控"
                 echo -e "  状态：${BOLD}$([ "$MON_TRAFFIC_ENABLED" = yes ] && echo '已启用' || echo '未启用')${NC}"
@@ -844,7 +844,7 @@ monitor_alert_config_menu() {
                 esac
             done
             ;;
-        4)
+        3)
             while true; do
                 print_header "每日日报"
                 echo -e "  状态：${BOLD}$([ "$MON_DAILY_REPORT_ENABLED" = yes ] && echo '已启用' || echo '未启用')${NC}"
@@ -886,7 +886,7 @@ monitor_alert_config_menu() {
                 esac
             done
             ;;
-        5)
+        4)
             while true; do
                 print_header "续费提醒"
                 echo -e "  状态：${BOLD}$([ "$MON_RENEW_ENABLED" = yes ] && echo '已启用' || echo '未启用')${NC}"
@@ -953,24 +953,24 @@ monitor_alert_config_menu() {
                 esac
             done
             ;;
-        6)
+        5)
             read -rp "$(ui_prompt "推送中显示的主机名 [${MON_HOST_LABEL:-自动使用 hostname}]: ")" HOST_LABEL_IN
             MON_HOST_LABEL="$HOST_LABEL_IN"
             monitor_alert_save_cfg
             info "主机显示名称已保存"
             ;;
-        7)
+        6)
             monitor_alert_notify "⚠️ <b>VPS 监控测试</b>" "这是一条测试告警：$(date '+%Y-%m-%d %H:%M:%S')"
             info "测试消息已发送（如已配置 Telegram）"
             ;;
-        8)
+        7)
             MON_ENABLED=yes
             monitor_alert_save_cfg
             (crontab -l 2>/dev/null | grep -v 'vps-monitor-alert'; echo "*/10 * * * * ${SVC_PATH:-${LOCAL_SCRIPT:-$0}} --monitor-alert >> /var/log/vps-monitor.log 2>&1 # vps-monitor-alert") | crontab -
             ddns_ensure_cron >/dev/null 2>&1 || true
             info "已启用定时告警"
             ;;
-        9)
+        8)
             MON_ENABLED=no
             monitor_alert_save_cfg
             (crontab -l 2>/dev/null | grep -v 'vps-monitor-alert') | crontab -
