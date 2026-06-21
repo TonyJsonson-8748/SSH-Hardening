@@ -276,6 +276,9 @@ monitor_alert_load_cfg() {
     MON_TRAFFIC_LIMIT_GB=$(monitor_alert_cfg_get TRAFFIC_LIMIT_GB); MON_TRAFFIC_LIMIT_GB=${MON_TRAFFIC_LIMIT_GB:-50}
     MON_TRAFFIC_BASELINE_DATE=$(monitor_alert_cfg_get TRAFFIC_BASELINE_DATE)
     MON_TRAFFIC_BASELINE_BYTES=$(monitor_alert_cfg_get TRAFFIC_BASELINE_BYTES); MON_TRAFFIC_BASELINE_BYTES=${MON_TRAFFIC_BASELINE_BYTES:-0}
+    MON_TRAFFIC_RESET_DAY=$(monitor_alert_cfg_get TRAFFIC_RESET_DAY); MON_TRAFFIC_RESET_DAY=${MON_TRAFFIC_RESET_DAY:-1}
+    MON_TRAFFIC_CYCLE_BASELINE_DATE=$(monitor_alert_cfg_get TRAFFIC_CYCLE_BASELINE_DATE)
+    MON_TRAFFIC_CYCLE_BASELINE_BYTES=$(monitor_alert_cfg_get TRAFFIC_CYCLE_BASELINE_BYTES); MON_TRAFFIC_CYCLE_BASELINE_BYTES=${MON_TRAFFIC_CYCLE_BASELINE_BYTES:-0}
     MON_RENEW_ENABLED=$(monitor_alert_cfg_get RENEW_ENABLED); MON_RENEW_ENABLED=${MON_RENEW_ENABLED:-no}
     MON_RENEW_MODE=$(monitor_alert_cfg_get RENEW_MODE); MON_RENEW_MODE=${MON_RENEW_MODE:-interval}
     MON_RENEW_NEXT_DATE=$(monitor_alert_cfg_get RENEW_NEXT_DATE)
@@ -283,6 +286,8 @@ monitor_alert_load_cfg() {
     MON_RENEW_MONTH_DAY=$(monitor_alert_cfg_get RENEW_MONTH_DAY); MON_RENEW_MONTH_DAY=${MON_RENEW_MONTH_DAY:-1}
     MON_RENEW_NOTICE_DAYS=$(monitor_alert_cfg_get RENEW_NOTICE_DAYS); MON_RENEW_NOTICE_DAYS=${MON_RENEW_NOTICE_DAYS:-30,7,3,1}
     MON_RENEW_LAST_ALERT=$(monitor_alert_cfg_get RENEW_LAST_ALERT)
+    MON_DAILY_REPORT_ENABLED=$(monitor_alert_cfg_get DAILY_REPORT_ENABLED); MON_DAILY_REPORT_ENABLED=${MON_DAILY_REPORT_ENABLED:-no}
+    MON_DAILY_REPORT_TIME=$(monitor_alert_cfg_get DAILY_REPORT_TIME); MON_DAILY_REPORT_TIME=${MON_DAILY_REPORT_TIME:-08:00}
 }
 
 monitor_alert_save_cfg() {
@@ -299,6 +304,9 @@ TRAFFIC_ENABLED=${MON_TRAFFIC_ENABLED:-no}
 TRAFFIC_LIMIT_GB=${MON_TRAFFIC_LIMIT_GB:-50}
 TRAFFIC_BASELINE_DATE=${MON_TRAFFIC_BASELINE_DATE:-}
 TRAFFIC_BASELINE_BYTES=${MON_TRAFFIC_BASELINE_BYTES:-0}
+TRAFFIC_RESET_DAY=${MON_TRAFFIC_RESET_DAY:-1}
+TRAFFIC_CYCLE_BASELINE_DATE=${MON_TRAFFIC_CYCLE_BASELINE_DATE:-}
+TRAFFIC_CYCLE_BASELINE_BYTES=${MON_TRAFFIC_CYCLE_BASELINE_BYTES:-0}
 RENEW_ENABLED=${MON_RENEW_ENABLED:-no}
 RENEW_MODE=${MON_RENEW_MODE:-interval}
 RENEW_NEXT_DATE=${MON_RENEW_NEXT_DATE:-}
@@ -306,6 +314,8 @@ RENEW_INTERVAL_DAYS=${MON_RENEW_INTERVAL_DAYS:-365}
 RENEW_MONTH_DAY=${MON_RENEW_MONTH_DAY:-1}
 RENEW_NOTICE_DAYS=${MON_RENEW_NOTICE_DAYS:-30,7,3,1}
 RENEW_LAST_ALERT=${MON_RENEW_LAST_ALERT:-}
+DAILY_REPORT_ENABLED=${MON_DAILY_REPORT_ENABLED:-no}
+DAILY_REPORT_TIME=${MON_DAILY_REPORT_TIME:-08:00}
 EOF
     chmod 600 "$CFG" 2>/dev/null || true
 }
@@ -344,6 +354,42 @@ monitor_traffic_ensure_baseline() {
     fi
 }
 
+monitor_traffic_current_cycle_start() {
+    local RESET_DAY="$1" TODAY
+    TODAY="${2:-$(date +%F)}"
+    python3 - "$RESET_DAY" "$TODAY" <<'PY'
+from calendar import monthrange
+from datetime import date
+import sys
+reset_day = int(sys.argv[1] or 1)
+today = date.fromisoformat(sys.argv[2])
+reset_day = max(1, min(31, reset_day))
+def anchor(y, m):
+    last = monthrange(y, m)[1]
+    return date(y, m, min(reset_day, last))
+this_month = anchor(today.year, today.month)
+if today >= this_month:
+    print(this_month.isoformat())
+else:
+    y = today.year - 1 if today.month == 1 else today.year
+    m = 12 if today.month == 1 else today.month - 1
+    print(anchor(y, m).isoformat())
+PY
+}
+
+monitor_traffic_cycle_ensure_baseline() {
+    [ "${MON_TRAFFIC_ENABLED:-no}" = "yes" ] || return 0
+    local TODAY CURRENT CYCLE_START
+    TODAY=$(date +%F)
+    CURRENT=$(monitor_traffic_total_bytes)
+    CYCLE_START=$(monitor_traffic_current_cycle_start "${MON_TRAFFIC_RESET_DAY:-1}" "$TODAY")
+    if [ -z "${MON_TRAFFIC_CYCLE_BASELINE_DATE:-}" ] || [ "$MON_TRAFFIC_CYCLE_BASELINE_DATE" != "$CYCLE_START" ] || ! echo "${MON_TRAFFIC_CYCLE_BASELINE_BYTES:-0}" | grep -qE '^[0-9]+$'; then
+        MON_TRAFFIC_CYCLE_BASELINE_DATE="$CYCLE_START"
+        MON_TRAFFIC_CYCLE_BASELINE_BYTES="$CURRENT"
+        monitor_alert_save_cfg
+    fi
+}
+
 monitor_traffic_used_bytes() {
     local CURRENT BASE USED
     CURRENT=$(monitor_traffic_total_bytes)
@@ -355,6 +401,121 @@ monitor_traffic_used_bytes() {
 
 monitor_traffic_used_gb() {
     awk "BEGIN {printf \"%.2f\", ($1/1024/1024/1024)}"
+}
+
+monitor_traffic_current_cycle_used_bytes() {
+    local CURRENT BASE USED
+    CURRENT=$(monitor_traffic_total_bytes)
+    BASE=${MON_TRAFFIC_CYCLE_BASELINE_BYTES:-0}
+    USED=$((CURRENT - BASE))
+    [ "$USED" -lt 0 ] && USED=0
+    echo "$USED"
+}
+
+monitor_traffic_current_cycle_used_gb() {
+    monitor_traffic_used_gb "$1"
+}
+
+monitor_traffic_set_cycle_usage_gb() {
+    local USED_GB="$1" CURRENT BASE CYCLE_START USED_BYTES
+    echo "$USED_GB" | grep -qE '^[0-9]+([.][0-9]+)?$' || return 1
+    CURRENT=$(monitor_traffic_total_bytes)
+    USED_BYTES=$(awk "BEGIN {printf \"%.0f\", ($USED_GB*1024*1024*1024)}")
+    BASE=$((CURRENT - USED_BYTES))
+    [ "$BASE" -lt 0 ] && BASE=0
+    CYCLE_START=$(monitor_traffic_current_cycle_start "${MON_TRAFFIC_RESET_DAY:-1}" "$(date +%F)")
+    MON_TRAFFIC_CYCLE_BASELINE_DATE="$CYCLE_START"
+    MON_TRAFFIC_CYCLE_BASELINE_BYTES="$BASE"
+    monitor_alert_save_cfg
+}
+
+monitor_daily_report_due() {
+    local TIME="${1:-08:00}" NOW
+    NOW=$(date +%H:%M)
+    [ "$NOW" \> "$TIME" ] || [ "$NOW" = "$TIME" ]
+}
+
+monitor_alert_daily_report() {
+    local HOST TODAY DAILY_BYTES DAILY_GB CYCLE_BYTES CYCLE_GB CYCLE_START RENEW_LEFT NEXT
+    HOST=$(hostname 2>/dev/null || echo unknown)
+    TODAY=$(date +%F)
+    monitor_traffic_ensure_baseline
+    monitor_traffic_cycle_ensure_baseline
+    DAILY_BYTES=$(monitor_traffic_used_bytes)
+    DAILY_GB=$(monitor_traffic_used_gb "$DAILY_BYTES")
+    CYCLE_BYTES=$(monitor_traffic_current_cycle_used_bytes)
+    CYCLE_GB=$(monitor_traffic_current_cycle_used_gb "$CYCLE_BYTES")
+    CYCLE_START="${MON_TRAFFIC_CYCLE_BASELINE_DATE:-$(monitor_traffic_current_cycle_start "${MON_TRAFFIC_RESET_DAY:-1}" "$TODAY")}"
+    NEXT="${MON_RENEW_NEXT_DATE:-未设置}"
+    if [ -n "${MON_RENEW_NEXT_DATE:-}" ]; then
+        RENEW_LEFT=$(monitor_renew_days_left "$MON_RENEW_NEXT_DATE" 2>/dev/null || echo 0)
+    else
+        RENEW_LEFT="未设置"
+    fi
+    monitor_alert_notify "📊 <b>VPS 每日日报</b>" \
+        "主机：<code>${HOST}</code>\n日期：<code>${TODAY}</code>\n今日流量：<code>${DAILY_GB} GB</code>\n当前周期：<code>${CYCLE_GB} GB</code>\n周期起点：<code>${CYCLE_START}</code>\n续费日期：<code>${NEXT}</code>\n剩余天数：<code>${RENEW_LEFT}</code>"
+}
+
+monitor_alert_daily_report_check() {
+    [ "${MON_DAILY_REPORT_ENABLED:-no}" = "yes" ] || return 0
+    local TODAY CUR_TS LAST_DATE LAST_TS SIG
+    TODAY=$(date +%F)
+    monitor_daily_report_due "${MON_DAILY_REPORT_TIME:-08:00}" || return 0
+    CUR_TS=$(date +%s)
+    LAST_DATE=$(monitor_alert_state_get DAILY_REPORT_DATE 2>/dev/null || true)
+    LAST_TS=$(monitor_alert_state_get DAILY_REPORT_TS 2>/dev/null || echo 0)
+    SIG=$(printf 'daily|%s|%s' "$(hostname 2>/dev/null || echo unknown)" "$TODAY" | sha256sum 2>/dev/null | awk '{print $1}')
+    if [ "$LAST_DATE" = "$TODAY" ] && [ $((CUR_TS - LAST_TS)) -lt 43200 ]; then
+        return 0
+    fi
+    monitor_alert_daily_report
+    monitor_alert_state_set DAILY_REPORT_DATE "$TODAY"
+    monitor_alert_state_set DAILY_REPORT_TS "$CUR_TS"
+    monitor_alert_state_set DAILY_REPORT_SIG "$SIG"
+    audit_action "发送每日日报：$TODAY" SUCCESS
+}
+
+monitor_alert_home_menu() {
+    while true; do
+        monitor_alert_load_cfg
+        print_header "监控告警中心"
+        monitor_traffic_ensure_baseline
+        monitor_traffic_cycle_ensure_baseline
+        local DAILY_BYTES DAILY_GB CYCLE_BYTES CYCLE_GB HOST
+        HOST=$(hostname 2>/dev/null || echo unknown)
+        DAILY_BYTES=$(monitor_traffic_used_bytes)
+        DAILY_GB=$(monitor_traffic_used_gb "$DAILY_BYTES")
+        CYCLE_BYTES=$(monitor_traffic_current_cycle_used_bytes)
+        CYCLE_GB=$(monitor_traffic_current_cycle_used_gb "$CYCLE_BYTES")
+        echo -e "  主机：${BOLD}${HOST}${NC}"
+        echo -e "  状态：${BOLD}$([ "$MON_ENABLED" = yes ] && echo '已启用' || echo '未启用')${NC}"
+        echo -e "  今日流量：${BOLD}${DAILY_GB} GB${NC}"
+        echo -e "  当前周期：${BOLD}${CYCLE_GB} GB${NC}"
+        echo -e "  续费提醒：${BOLD}$([ "$MON_RENEW_ENABLED" = yes ] && echo "${MON_RENEW_MODE} · ${MON_RENEW_NEXT_DATE:-未设置}" || echo '未启用')${NC}"
+        echo -e "  每日日报：${BOLD}$([ "$MON_DAILY_REPORT_ENABLED" = yes ] && echo "${MON_DAILY_REPORT_TIME}" || echo '未启用')${NC}"
+        echo ""
+        menu_div
+        menu_item "1" "告警配置中心" "$GREEN"
+        menu_item "2" "查看今日流量" "$CYAN"
+        menu_item "3" "发送每日日报" "$YELLOW"
+        menu_item "0" "返回上级" "$RED"
+        menu_div; echo ""
+        read -rp "$(ui_prompt '选择操作 [0-3]: ')" CH
+        case "$CH" in
+            1) monitor_alert_config_menu ;;
+            2)
+                info "今日流量：${DAILY_GB} GB，当前周期：${CYCLE_GB} GB"
+                ui_pause
+                ;;
+            3)
+                monitor_alert_daily_report
+                info "日报已发送（如已配置 Telegram）"
+                ui_pause
+                ;;
+            0) return ;;
+            *) warn "无效选项"; sleep 1 ;;
+        esac
+    done
 }
 
 monitor_renew_next_date() {
@@ -535,6 +696,7 @@ monitor_alert_check() {
     monitor_alert_resource_check
     monitor_alert_traffic_check
     monitor_alert_renew_check
+    monitor_alert_daily_report_check
 }
 
 monitor_alert_config_menu() {
@@ -546,21 +708,30 @@ monitor_alert_config_menu() {
     echo -e "  磁盘阈值：${BOLD}${MON_DISK_WARN}%${NC}"
     echo -e "  内存阈值：${BOLD}${MON_MEM_WARN}%${NC}"
     echo -e "  负载阈值：${BOLD}${MON_LOAD_WARN:-自动}${NC}"
+    monitor_traffic_ensure_baseline
+    monitor_traffic_cycle_ensure_baseline
+    local TODAY_DAILY TODAY_CYCLE
+    TODAY_DAILY=$(monitor_traffic_used_gb "$(monitor_traffic_used_bytes)")
+    TODAY_CYCLE=$(monitor_traffic_current_cycle_used_gb "$(monitor_traffic_current_cycle_used_bytes)")
     echo -e "  流量监控：${BOLD}$([ "$MON_TRAFFIC_ENABLED" = yes ] && echo "${MON_TRAFFIC_LIMIT_GB} GB/日" || echo '未启用')${NC}"
+    echo -e "  今日流量：${BOLD}${TODAY_DAILY} GB${NC}   当前周期：${BOLD}${TODAY_CYCLE} GB${NC}"
+    echo -e "  重置日：${BOLD}${MON_TRAFFIC_RESET_DAY}${NC}   周期起点：${BOLD}${MON_TRAFFIC_CYCLE_BASELINE_DATE:-未设置}${NC}"
     echo -e "  续费提醒：${BOLD}$([ "$MON_RENEW_ENABLED" = yes ] && echo "${MON_RENEW_MODE} · ${MON_RENEW_NEXT_DATE:-未设置}" || echo '未启用')${NC}"
+    echo -e "  每日日报：${BOLD}$([ "$MON_DAILY_REPORT_ENABLED" = yes ] && echo "${MON_DAILY_REPORT_TIME}" || echo '未启用')${NC}"
     echo -e "  通知：${BOLD}$([ -n "$MON_BOT_TOKEN" ] && echo '已配置' || echo '未配置')${NC}"
     echo ""
     menu_div
     menu_item "1" "配置 Telegram 通知" "$GREEN"
     menu_item "2" "设置资源告警阈值" "$YELLOW"
-    menu_item "3" "流量监控与阈值" "$CYAN"
-    menu_item "4" "续费提醒设置" "$GREEN"
-    menu_item "5" "发送测试告警" "$CYAN"
-    menu_item "6" "启用定时告警" "$GREEN"
-    menu_item "7" "关闭定时告警" "$RED"
+    menu_item "3" "流量监控与周期" "$CYAN"
+    menu_item "4" "每日日报设置" "$GREEN"
+    menu_item "5" "续费提醒设置" "$GREEN"
+    menu_item "6" "发送测试告警" "$CYAN"
+    menu_item "7" "启用定时告警" "$GREEN"
+    menu_item "8" "关闭定时告警" "$RED"
     menu_item "0" "返回上级" "$RED"
     menu_div; echo ""
-    read -rp "$(ui_prompt '选择操作 [0-7]: ')" CH
+    read -rp "$(ui_prompt '选择操作 [0-8]: ')" CH
     case "$CH" in
         1)
             read -rp "$(ui_prompt 'Bot Token: ')" BOT_TOKEN
@@ -587,18 +758,25 @@ monitor_alert_config_menu() {
                 echo -e "  状态：${BOLD}$([ "$MON_TRAFFIC_ENABLED" = yes ] && echo '已启用' || echo '未启用')${NC}"
                 echo -e "  阈值：${BOLD}${MON_TRAFFIC_LIMIT_GB} GB / 日${NC}"
                 monitor_traffic_ensure_baseline
-                local USED_BYTES USED_GB
+                monitor_traffic_cycle_ensure_baseline
+                local USED_BYTES USED_GB CYCLE_BYTES CYCLE_GB
                 USED_BYTES=$(monitor_traffic_used_bytes)
                 USED_GB=$(monitor_traffic_used_gb "$USED_BYTES")
+                CYCLE_BYTES=$(monitor_traffic_current_cycle_used_bytes)
+                CYCLE_GB=$(monitor_traffic_current_cycle_used_gb "$CYCLE_BYTES")
                 echo -e "  今日累计：${BOLD}${USED_GB} GB${NC}"
+                echo -e "  当前周期：${BOLD}${CYCLE_GB} GB${NC}"
                 echo -e "  基线日期：${DIM}${MON_TRAFFIC_BASELINE_DATE:-未设置}${NC}"
+                echo -e "  重置日：${DIM}${MON_TRAFFIC_RESET_DAY}${NC}   周期起点：${DIM}${MON_TRAFFIC_CYCLE_BASELINE_DATE:-未设置}${NC}"
                 menu_div
                 menu_item "1" "启用 / 更新阈值" "$GREEN"
                 menu_item "2" "关闭流量监控" "$YELLOW"
                 menu_item "3" "重置今日基线" "$CYAN"
+                menu_item "4" "设置重置日" "$GREEN"
+                menu_item "5" "设置当前周期已消耗流量" "$YELLOW"
                 menu_item "0" "返回上级" "$RED"
                 menu_div; echo ""
-                read -rp "$(ui_prompt '选择操作 [0-3]: ')" TCH
+                read -rp "$(ui_prompt '选择操作 [0-5]: ')" TCH
                 case "$TCH" in
                     1)
                         read -rp "$(ui_prompt "流量阈值（GB/日，默认 50） [${MON_TRAFFIC_LIMIT_GB}]: ")" LIMIT_IN
@@ -606,6 +784,8 @@ monitor_alert_config_menu() {
                         MON_TRAFFIC_ENABLED=yes
                         MON_TRAFFIC_BASELINE_DATE=$(date +%F)
                         MON_TRAFFIC_BASELINE_BYTES=$(monitor_traffic_total_bytes)
+                        MON_TRAFFIC_CYCLE_BASELINE_DATE=$(monitor_traffic_current_cycle_start "${MON_TRAFFIC_RESET_DAY:-1}" "$(date +%F)")
+                        MON_TRAFFIC_CYCLE_BASELINE_BYTES=$(monitor_traffic_total_bytes)
                         monitor_alert_save_cfg
                         info "流量监控已启用"
                         ;;
@@ -620,12 +800,71 @@ monitor_alert_config_menu() {
                         monitor_alert_save_cfg
                         info "今日基线已重置"
                         ;;
+                    4)
+                        read -rp "$(ui_prompt "每月流量重置日（1-28/31） [${MON_TRAFFIC_RESET_DAY}]: ")" RESET_IN
+                        if [ -n "$RESET_IN" ]; then
+                            echo "$RESET_IN" | grep -qE '^[0-9]+$' || { warn "输入无效"; continue; }
+                            MON_TRAFFIC_RESET_DAY="$RESET_IN"
+                        fi
+                        MON_TRAFFIC_CYCLE_BASELINE_DATE=$(monitor_traffic_current_cycle_start "${MON_TRAFFIC_RESET_DAY:-1}" "$(date +%F)")
+                        MON_TRAFFIC_CYCLE_BASELINE_BYTES=$(monitor_traffic_total_bytes)
+                        monitor_alert_save_cfg
+                        info "重置日已保存"
+                        ;;
+                    5)
+                        read -rp "$(ui_prompt "当前周期已消耗流量（GB） [${CYCLE_GB}]: ")" CYCLE_IN
+                        [ -n "$CYCLE_IN" ] || continue
+                        monitor_traffic_set_cycle_usage_gb "$CYCLE_IN" || { warn "输入无效"; continue; }
+                        info "当前周期流量已更新"
+                        ;;
                     0) break ;;
                     *) warn "无效选项"; sleep 1 ;;
                 esac
             done
             ;;
         4)
+            while true; do
+                print_header "每日日报"
+                echo -e "  状态：${BOLD}$([ "$MON_DAILY_REPORT_ENABLED" = yes ] && echo '已启用' || echo '未启用')${NC}"
+                echo -e "  时间：${BOLD}${MON_DAILY_REPORT_TIME}${NC}"
+                echo -e "  今日流量：${BOLD}$(monitor_traffic_used_gb "$(monitor_traffic_used_bytes)") GB${NC}"
+                echo -e "  当前周期：${BOLD}$(monitor_traffic_current_cycle_used_gb "$(monitor_traffic_current_cycle_used_bytes)") GB${NC}"
+                menu_div
+                menu_item "1" "启用 / 更新日报" "$GREEN"
+                menu_item "2" "关闭每日日报" "$YELLOW"
+                menu_item "3" "设置日报时间" "$CYAN"
+                menu_item "4" "立即发送日报" "$GREEN"
+                menu_item "0" "返回上级" "$RED"
+                menu_div; echo ""
+                read -rp "$(ui_prompt '选择操作 [0-4]: ')" DCH
+                case "$DCH" in
+                    1)
+                        MON_DAILY_REPORT_ENABLED=yes
+                        [ -z "${MON_DAILY_REPORT_TIME:-}" ] && MON_DAILY_REPORT_TIME="08:00"
+                        monitor_alert_save_cfg
+                        info "每日日报已启用"
+                        ;;
+                    2)
+                        MON_DAILY_REPORT_ENABLED=no
+                        monitor_alert_save_cfg
+                        info "每日日报已关闭"
+                        ;;
+                    3)
+                        read -rp "$(ui_prompt "日报时间（HH:MM） [${MON_DAILY_REPORT_TIME}]: ")" TIME_IN
+                        [ -n "$TIME_IN" ] && MON_DAILY_REPORT_TIME="$TIME_IN"
+                        monitor_alert_save_cfg
+                        info "日报时间已保存"
+                        ;;
+                    4)
+                        monitor_alert_daily_report
+                        info "日报已发送（如已配置 Telegram）"
+                        ;;
+                    0) break ;;
+                    *) warn "无效选项"; sleep 1 ;;
+                esac
+            done
+            ;;
+        5)
             while true; do
                 print_header "续费提醒"
                 echo -e "  状态：${BOLD}$([ "$MON_RENEW_ENABLED" = yes ] && echo '已启用' || echo '未启用')${NC}"
@@ -692,18 +931,18 @@ monitor_alert_config_menu() {
                 esac
             done
             ;;
-        5)
+        6)
             monitor_alert_notify "⚠️ <b>VPS 监控测试</b>" "这是一条测试告警：$(date '+%Y-%m-%d %H:%M:%S')"
             info "测试消息已发送（如已配置 Telegram）"
             ;;
-        6)
+        7)
             MON_ENABLED=yes
             monitor_alert_save_cfg
             (crontab -l 2>/dev/null | grep -v 'vps-monitor-alert'; echo "*/10 * * * * ${SVC_PATH:-${LOCAL_SCRIPT:-$0}} --monitor-alert >> /var/log/vps-monitor.log 2>&1 # vps-monitor-alert") | crontab -
             ddns_ensure_cron >/dev/null 2>&1 || true
             info "已启用定时告警"
             ;;
-        7)
+        8)
             MON_ENABLED=no
             monitor_alert_save_cfg
             (crontab -l 2>/dev/null | grep -v 'vps-monitor-alert') | crontab -
@@ -992,7 +1231,7 @@ system_toolbox_menu() {
             7) system_update_manager; continue ;;
             8) config_transfer_menu; continue ;;
             9) rollback_center_menu; continue ;;
-            10) monitor_alert_config_menu ;;
+            10) monitor_alert_home_menu ;;
             0) return ;;
             *) warn "无效选项"; sleep 1; continue ;;
         esac

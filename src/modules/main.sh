@@ -39,7 +39,7 @@ main_menu() {
         volcano_art_banner
         echo ""
         box_top
-        echo -e "  ${BOLD}${CYAN}VPS 开荒脚本${NC}  ${DIM}V3.8.7 · 银趴火山帮${NC}"
+        echo -e "  ${BOLD}${CYAN}VPS 开荒脚本${NC}  ${DIM}V3.8.8 · 银趴火山帮${NC}"
         echo ""
         # 收集状态数据
         local FW_TYPE FW_STAT FW_STATE
@@ -115,11 +115,12 @@ main_menu() {
         menu_pair "t" "时间与时区" "s" "Swap 管理"
         menu_pair "h" "安全与诊断" "a" "软件与重装"
         menu_pair "d" "Docker 管理" "m" "脚本管理"
+        menu_pair "g" "监控告警中心" "" "" "$CYAN" "$CYAN"
         echo ""
         menu_item "0" "退出脚本" "$RED"
         box_bot
         echo ""
-        read -rp "$(ui_prompt '选择功能 [0-9 / n / t / s / h / a / d / m]: ')" CHOICE
+        read -rp "$(ui_prompt '选择功能 [0-9 / n / t / s / h / a / d / m / g]: ')" CHOICE
         audit_action "主菜单选择 $CHOICE" INFO
 
         case "$CHOICE" in
@@ -139,6 +140,7 @@ main_menu() {
             a|A) software_reinstall_menu ;;
             d|D) docker_menu ;;
             m|M) self_manage_menu ;;
+            g|G) monitor_alert_home_menu ;;
             0) safe_clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;
             *) warn "无效选项，请重新输入。"; sleep 1 ;;
         esac

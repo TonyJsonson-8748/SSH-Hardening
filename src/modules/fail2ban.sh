@@ -278,7 +278,11 @@ f2b_config_params() {
 
     echo ""
     info "重启 Fail2ban 使配置生效..."
-    restart_fail2ban && info "Fail2ban 已重启 ✓" || error "重启失败"
+    if restart_fail2ban; then
+        info "Fail2ban 已重启 ✓"
+    else
+        error "重启失败"
+    fi
 }
 
 # 写入参数到 jail.local [DEFAULT] 节
@@ -459,7 +463,7 @@ fail2ban_menu() {
         safe_clear
         echo ""
         box_top
-        box_title "VPS 开荒脚本 V3.8.7"
+        box_title "VPS 开荒脚本 V3.8.8"
         box_title "· · 银趴火山帮 · ·"
         box_sep
         box_title "Fail2ban 管理"
@@ -513,7 +517,11 @@ fail2ban_menu() {
                 ;;
             7)
                 if [ "$F2B_ST" = "running" ]; then
-                    stop_fail2ban && info "Fail2ban 已停止" || error "停止失败"
+                    if stop_fail2ban; then
+                        info "Fail2ban 已停止"
+                    else
+                        error "停止失败"
+                    fi
                 else
                     start_fail2ban
                     sleep 2
