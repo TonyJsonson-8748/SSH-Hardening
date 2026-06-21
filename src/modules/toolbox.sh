@@ -466,7 +466,11 @@ today = date.fromisoformat(sys.argv[2])
 reset_day = max(1, min(31, reset_day))
 def anchor(y, m):
     last = monthrange(y, m)[1]
-    return date(y, m, min(reset_day, last))
+    if reset_day <= last:
+        return date(y, m, reset_day)
+    if m == 12:
+        return date(y + 1, 1, 1)
+    return date(y, m + 1, 1)
 this_month = anchor(today.year, today.month)
 if today >= this_month:
     print(this_month.isoformat())
@@ -1065,9 +1069,9 @@ EOF
                         info "今日基线已重置"
                         ;;
                     4)
-                        read -rp "$(ui_prompt "每月流量重置日（1-31，短月按月底） [${MON_TRAFFIC_RESET_DAY}]: ")" RESET_IN
+                        read -rp "$(ui_prompt "每月流量重置日（1-31，短月顺延下月1日） [${MON_TRAFFIC_RESET_DAY}]: ")" RESET_IN
                         if [ -n "$RESET_IN" ]; then
-                            monitor_traffic_reset_day_valid "$RESET_IN" || { warn "重置日必须是 1-31；例如 31 遇到 2 月会按月底计算"; continue; }
+                            monitor_traffic_reset_day_valid "$RESET_IN" || { warn "重置日必须是 1-31；例如 31 遇到 2 月会顺延到 3 月 1 日"; continue; }
                             MON_TRAFFIC_RESET_DAY="$RESET_IN"
                         fi
                         local CUR_RX CUR_TX CUR_TOTAL

@@ -34,8 +34,12 @@ done
 monitor_traffic_reset_day_valid 31 || { echo "Reset day 31 should be valid" >&2; exit 1; }
 ! monitor_traffic_reset_day_valid 32 || { echo "Reset day 32 should be invalid" >&2; exit 1; }
 [[ "$(monitor_traffic_current_cycle_start 31 2026-02-15)" = "2026-01-31" ]] || { echo "Previous short-month reset calculation failed" >&2; exit 1; }
-[[ "$(monitor_traffic_current_cycle_start 31 2026-02-28)" = "2026-02-28" ]] || { echo "Short-month reset calculation failed" >&2; exit 1; }
-[[ "$(monitor_traffic_current_cycle_start 31 2028-02-29)" = "2028-02-29" ]] || { echo "Leap-year reset calculation failed" >&2; exit 1; }
+[[ "$(monitor_traffic_current_cycle_start 31 2026-02-28)" = "2026-01-31" ]] || { echo "Short-month reset should wait for next month" >&2; exit 1; }
+[[ "$(monitor_traffic_current_cycle_start 31 2026-03-01)" = "2026-03-01" ]] || { echo "Short-month rollover reset failed" >&2; exit 1; }
+[[ "$(monitor_traffic_current_cycle_start 31 2028-02-29)" = "2028-01-31" ]] || { echo "Leap-year short-month reset should wait for next month" >&2; exit 1; }
+[[ "$(monitor_traffic_current_cycle_start 31 2028-03-01)" = "2028-03-01" ]] || { echo "Leap-year rollover reset failed" >&2; exit 1; }
+[[ "$(monitor_traffic_current_cycle_start 31 2026-04-30)" = "2026-03-31" ]] || { echo "April reset should wait for next month" >&2; exit 1; }
+[[ "$(monitor_traffic_current_cycle_start 31 2026-05-01)" = "2026-05-01" ]] || { echo "April rollover reset failed" >&2; exit 1; }
 monitor_traffic_totals() { echo "107374182400 214748364800 322122547200"; }
 monitor_alert_save_cfg() { :; }
 # shellcheck disable=SC2034 # consumed by monitor_traffic_set_cycle_usage_split_gb
