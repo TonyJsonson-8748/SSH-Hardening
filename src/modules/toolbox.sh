@@ -266,6 +266,7 @@ monitor_alert_state_set() {
 }
 
 monitor_alert_load_cfg() {
+    local RAW_TRAFFIC_RX RAW_TRAFFIC_TX RAW_TRAFFIC_CYCLE_RX RAW_TRAFFIC_CYCLE_TX
     MON_ENABLED=$(monitor_alert_cfg_get ENABLED); MON_ENABLED=${MON_ENABLED:-no}
     MON_DISK_WARN=$(monitor_alert_cfg_get DISK_WARN); MON_DISK_WARN=${MON_DISK_WARN:-85}
     MON_MEM_WARN=$(monitor_alert_cfg_get MEM_WARN); MON_MEM_WARN=${MON_MEM_WARN:-85}
@@ -276,14 +277,18 @@ monitor_alert_load_cfg() {
     MON_TRAFFIC_ENABLED=$(monitor_alert_cfg_get TRAFFIC_ENABLED); MON_TRAFFIC_ENABLED=${MON_TRAFFIC_ENABLED:-no}
     MON_TRAFFIC_LIMIT_GB=$(monitor_alert_cfg_get TRAFFIC_LIMIT_GB); MON_TRAFFIC_LIMIT_GB=${MON_TRAFFIC_LIMIT_GB:-50}
     MON_TRAFFIC_BASELINE_DATE=$(monitor_alert_cfg_get TRAFFIC_BASELINE_DATE)
-    MON_TRAFFIC_BASELINE_BYTES=$(monitor_alert_cfg_get TRAFFIC_BASELINE_BYTES); MON_TRAFFIC_BASELINE_BYTES=${MON_TRAFFIC_BASELINE_BYTES:-0}
-    MON_TRAFFIC_BASELINE_RX_BYTES=$(monitor_alert_cfg_get TRAFFIC_BASELINE_RX_BYTES); MON_TRAFFIC_BASELINE_RX_BYTES=${MON_TRAFFIC_BASELINE_RX_BYTES:-}
-    MON_TRAFFIC_BASELINE_TX_BYTES=$(monitor_alert_cfg_get TRAFFIC_BASELINE_TX_BYTES); MON_TRAFFIC_BASELINE_TX_BYTES=${MON_TRAFFIC_BASELINE_TX_BYTES:-}
+    MON_TRAFFIC_BASELINE_BYTES=$(monitor_int_normalize "$(monitor_alert_cfg_get TRAFFIC_BASELINE_BYTES)")
+    RAW_TRAFFIC_RX=$(monitor_alert_cfg_get TRAFFIC_BASELINE_RX_BYTES)
+    RAW_TRAFFIC_TX=$(monitor_alert_cfg_get TRAFFIC_BASELINE_TX_BYTES)
+    [ -n "$RAW_TRAFFIC_RX" ] && MON_TRAFFIC_BASELINE_RX_BYTES=$(monitor_int_normalize "$RAW_TRAFFIC_RX") || MON_TRAFFIC_BASELINE_RX_BYTES=
+    [ -n "$RAW_TRAFFIC_TX" ] && MON_TRAFFIC_BASELINE_TX_BYTES=$(monitor_int_normalize "$RAW_TRAFFIC_TX") || MON_TRAFFIC_BASELINE_TX_BYTES=
     MON_TRAFFIC_RESET_DAY=$(monitor_alert_cfg_get TRAFFIC_RESET_DAY); MON_TRAFFIC_RESET_DAY=${MON_TRAFFIC_RESET_DAY:-1}
     MON_TRAFFIC_CYCLE_BASELINE_DATE=$(monitor_alert_cfg_get TRAFFIC_CYCLE_BASELINE_DATE)
-    MON_TRAFFIC_CYCLE_BASELINE_BYTES=$(monitor_alert_cfg_get TRAFFIC_CYCLE_BASELINE_BYTES); MON_TRAFFIC_CYCLE_BASELINE_BYTES=${MON_TRAFFIC_CYCLE_BASELINE_BYTES:-0}
-    MON_TRAFFIC_CYCLE_BASELINE_RX_BYTES=$(monitor_alert_cfg_get TRAFFIC_CYCLE_BASELINE_RX_BYTES); MON_TRAFFIC_CYCLE_BASELINE_RX_BYTES=${MON_TRAFFIC_CYCLE_BASELINE_RX_BYTES:-}
-    MON_TRAFFIC_CYCLE_BASELINE_TX_BYTES=$(monitor_alert_cfg_get TRAFFIC_CYCLE_BASELINE_TX_BYTES); MON_TRAFFIC_CYCLE_BASELINE_TX_BYTES=${MON_TRAFFIC_CYCLE_BASELINE_TX_BYTES:-}
+    MON_TRAFFIC_CYCLE_BASELINE_BYTES=$(monitor_int_normalize "$(monitor_alert_cfg_get TRAFFIC_CYCLE_BASELINE_BYTES)")
+    RAW_TRAFFIC_CYCLE_RX=$(monitor_alert_cfg_get TRAFFIC_CYCLE_BASELINE_RX_BYTES)
+    RAW_TRAFFIC_CYCLE_TX=$(monitor_alert_cfg_get TRAFFIC_CYCLE_BASELINE_TX_BYTES)
+    [ -n "$RAW_TRAFFIC_CYCLE_RX" ] && MON_TRAFFIC_CYCLE_BASELINE_RX_BYTES=$(monitor_int_normalize "$RAW_TRAFFIC_CYCLE_RX") || MON_TRAFFIC_CYCLE_BASELINE_RX_BYTES=
+    [ -n "$RAW_TRAFFIC_CYCLE_TX" ] && MON_TRAFFIC_CYCLE_BASELINE_TX_BYTES=$(monitor_int_normalize "$RAW_TRAFFIC_CYCLE_TX") || MON_TRAFFIC_CYCLE_BASELINE_TX_BYTES=
     MON_RENEW_ENABLED=$(monitor_alert_cfg_get RENEW_ENABLED); MON_RENEW_ENABLED=${MON_RENEW_ENABLED:-no}
     MON_RENEW_MODE=$(monitor_alert_cfg_get RENEW_MODE); MON_RENEW_MODE=${MON_RENEW_MODE:-interval}
     MON_RENEW_NEXT_DATE=$(monitor_date_normalize "$(monitor_alert_cfg_get RENEW_NEXT_DATE)" 2>/dev/null || true)
@@ -387,6 +392,18 @@ monitor_alert_host_label() {
     fi
 }
 
+monitor_int_normalize() {
+    local VALUE="${1:-0}"
+    awk -v value="$VALUE" 'BEGIN {
+        gsub(/^[[:space:]]+|[[:space:]]+$/, "", value)
+        if (value ~ /^[-+]?[0-9]+([.][0-9]+)?([eE][-+]?[0-9]+)?$/) {
+            printf "%.0f\n", value
+        } else {
+            print 0
+        }
+    }'
+}
+
 monitor_traffic_totals() {
     if [ -r /proc/net/dev ]; then
         awk 'NR>2 {gsub(":", "", $1); if ($1 != "lo") {rx += $2; tx += $10}} END {printf "%.0f %.0f %.0f\n", rx+0, tx+0, rx+tx}' /proc/net/dev 2>/dev/null
@@ -413,7 +430,7 @@ print(f"{rx_total:d} {tx_total:d} {rx_total + tx_total:d}")
 }
 
 monitor_traffic_total_bytes() {
-    monitor_traffic_totals | awk '{print $3+0}'
+    monitor_traffic_totals | awk '{printf "%.0f\n", $3}'
 }
 
 monitor_traffic_ensure_baseline() {
@@ -481,8 +498,8 @@ EOF
 
 monitor_traffic_used_bytes() {
     local CURRENT BASE USED
-    CURRENT=$(monitor_traffic_total_bytes)
-    BASE=${MON_TRAFFIC_BASELINE_BYTES:-0}
+    CURRENT=$(monitor_int_normalize "$(monitor_traffic_total_bytes)")
+    BASE=$(monitor_int_normalize "${MON_TRAFFIC_BASELINE_BYTES:-0}")
     USED=$((CURRENT - BASE))
     [ "$USED" -lt 0 ] && USED=0
     echo "$USED"
@@ -497,6 +514,9 @@ monitor_traffic_usage_triplet() {
     read -r RX TX TOTAL <<EOF
 $(monitor_traffic_totals)
 EOF
+    RX=$(monitor_int_normalize "$RX")
+    TX=$(monitor_int_normalize "$TX")
+    TOTAL=$(monitor_int_normalize "$TOTAL")
     if [ "$KIND" = "cycle" ]; then
         BASE_RX=${MON_TRAFFIC_CYCLE_BASELINE_RX_BYTES:-}
         BASE_TX=${MON_TRAFFIC_CYCLE_BASELINE_TX_BYTES:-}
@@ -506,7 +526,10 @@ EOF
         BASE_TX=${MON_TRAFFIC_BASELINE_TX_BYTES:-}
         BASE_TOTAL=${MON_TRAFFIC_BASELINE_BYTES:-0}
     fi
-    if echo "${BASE_RX:-}" | grep -qE '^[0-9]+$' && echo "${BASE_TX:-}" | grep -qE '^[0-9]+$'; then
+    BASE_RX=$(monitor_int_normalize "${BASE_RX:-0}")
+    BASE_TX=$(monitor_int_normalize "${BASE_TX:-0}")
+    BASE_TOTAL=$(monitor_int_normalize "${BASE_TOTAL:-0}")
+    if [ "$BASE_RX" -gt 0 ] || [ "$BASE_TX" -gt 0 ]; then
         USED_RX=$((RX - BASE_RX))
         USED_TX=$((TX - BASE_TX))
         [ "$USED_RX" -lt 0 ] && USED_RX=0
@@ -534,8 +557,8 @@ EOF
 
 monitor_traffic_current_cycle_used_bytes() {
     local CURRENT BASE USED
-    CURRENT=$(monitor_traffic_total_bytes)
-    BASE=${MON_TRAFFIC_CYCLE_BASELINE_BYTES:-0}
+    CURRENT=$(monitor_int_normalize "$(monitor_traffic_total_bytes)")
+    BASE=$(monitor_int_normalize "${MON_TRAFFIC_CYCLE_BASELINE_BYTES:-0}")
     USED=$((CURRENT - BASE))
     [ "$USED" -lt 0 ] && USED=0
     echo "$USED"
@@ -577,8 +600,8 @@ monitor_alert_daily_report() {
     TODAY=$(date +%F)
     monitor_traffic_ensure_baseline
     monitor_traffic_cycle_ensure_baseline
-    DAILY_TEXT=$(monitor_traffic_usage_text daily html)
-    CYCLE_TEXT=$(monitor_traffic_usage_text cycle html)
+    DAILY_TEXT=$(monitor_traffic_usage_text daily)
+    CYCLE_TEXT=$(monitor_traffic_usage_text cycle)
     CYCLE_START="${MON_TRAFFIC_CYCLE_BASELINE_DATE:-$(monitor_traffic_current_cycle_start "${MON_TRAFFIC_RESET_DAY:-1}" "$TODAY")}"
     NEXT="${MON_RENEW_NEXT_DATE:-未设置}"
     if [ -n "${MON_RENEW_NEXT_DATE:-}" ]; then
@@ -780,7 +803,7 @@ monitor_alert_test_snapshot() {
     local HOST DISK_PCT MEM_PCT LOAD1 CPU_COUNT LOAD_WARN_VALUE DAILY_TEXT SSH_STATE F2B_STATE DOCKER_STATE CADDY_STATE
     HOST=$(monitor_alert_host_label)
     monitor_traffic_ensure_baseline
-    DAILY_TEXT=$(monitor_traffic_usage_text daily html)
+    DAILY_TEXT=$(monitor_traffic_usage_text daily)
     DISK_PCT=$(df -P / 2>/dev/null | awk 'NR==2 {gsub("%","",$5); print $5+0}')
     MEM_PCT=$(awk '/^MemTotal:/ {t=$2} /^MemAvailable:/ {a=$2} END {if (t>0) printf "%.0f", (t-a)*100/t; else print 0}' /proc/meminfo 2>/dev/null)
     LOAD1=$(awk '{print $1}' /proc/loadavg 2>/dev/null || echo 0)
@@ -817,7 +840,7 @@ monitor_alert_traffic_check() {
 $(monitor_traffic_usage_triplet daily)
 EOF
     USED_GB=$(monitor_traffic_used_gb "$USED_BYTES")
-    DAILY_TEXT=$(monitor_traffic_usage_text daily html)
+    DAILY_TEXT=$(monitor_traffic_usage_text daily)
     LIMIT_GB="${MON_TRAFFIC_LIMIT_GB:-50}"
     if awk "BEGIN{exit !($USED_GB >= $LIMIT_GB)}"; then
         local SIG CUR_TS
@@ -941,13 +964,12 @@ monitor_alert_config_menu() {
                 echo -e "  阈值：${BOLD}${MON_TRAFFIC_LIMIT_GB} GB / 日${NC}"
                 monitor_traffic_ensure_baseline
                 monitor_traffic_cycle_ensure_baseline
-                local USED_BYTES USED_GB CYCLE_BYTES CYCLE_GB
-                USED_BYTES=$(monitor_traffic_used_bytes)
-                USED_GB=$(monitor_traffic_used_gb "$USED_BYTES")
-                CYCLE_BYTES=$(monitor_traffic_current_cycle_used_bytes)
-                CYCLE_GB=$(monitor_traffic_current_cycle_used_gb "$CYCLE_BYTES")
-                echo -e "  今日累计：${BOLD}${USED_GB} GB${NC}"
-                echo -e "  当前周期：${BOLD}${CYCLE_GB} GB${NC}"
+                local TODAY_TEXT CYCLE_TEXT CYCLE_GB
+                TODAY_TEXT=$(monitor_traffic_usage_text daily)
+                CYCLE_TEXT=$(monitor_traffic_usage_text cycle)
+                CYCLE_GB=$(monitor_traffic_used_gb "$(monitor_traffic_current_cycle_used_bytes)")
+                echo -e "  今日累计：${TODAY_TEXT}"
+                echo -e "  当前周期：${CYCLE_TEXT}"
                 echo -e "  基线日期：${DIM}${MON_TRAFFIC_BASELINE_DATE:-未设置}${NC}"
                 echo -e "  重置日：${DIM}${MON_TRAFFIC_RESET_DAY}${NC}   周期起点：${DIM}${MON_TRAFFIC_CYCLE_BASELINE_DATE:-未设置}${NC}"
                 menu_div
