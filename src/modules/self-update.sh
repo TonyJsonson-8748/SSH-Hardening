@@ -67,25 +67,29 @@ self_update() {
     local TMP_FILE CHECKSUM_FILE; TMP_FILE="/tmp/vps_update_$$.sh"; CHECKSUM_FILE="/tmp/vps_update_$$.sha256"
 
     info "正在下载最新版本..."
-    if ! curl -fsSL "$SCRIPT_URL" -o "$TMP_FILE" 2>/dev/null; then
-        rm -f "$TMP_FILE"
-        error "下载失败，请检查网络连接"
-        echo -e "  ${DIM}手动更新：curl -fsSL ${SCRIPT_URL} -o ${LOCAL_SCRIPT} && chmod +x ${LOCAL_SCRIPT}${NC}"
-        return
-    fi
-
-    if ! curl -fsSL "$CHECKSUM_URL" -o "$CHECKSUM_FILE" 2>/dev/null; then
+    local TRY EXPECTED_HASH ACTUAL_HASH DOWNLOAD_OK
+    DOWNLOAD_OK=0
+    for TRY in 1 2 3; do
         rm -f "$TMP_FILE" "$CHECKSUM_FILE"
-        error "无法下载 SHA256 校验文件，已拒绝更新"
-        return
-    fi
-    local EXPECTED_HASH ACTUAL_HASH
-    EXPECTED_HASH=$(awk 'NR==1 {print $1}' "$CHECKSUM_FILE")
-    ACTUAL_HASH=$(file_sha256 "$TMP_FILE" 2>/dev/null || true)
+        if curl -fsSL --retry 2 --retry-delay 1 -H 'Cache-Control: no-cache' -H 'Pragma: no-cache' \
+            "$SCRIPT_URL?ts=$(date +%s%N)" -o "$TMP_FILE" 2>/dev/null \
+            && curl -fsSL --retry 2 --retry-delay 1 -H 'Cache-Control: no-cache' -H 'Pragma: no-cache' \
+            "$CHECKSUM_URL?ts=$(date +%s%N)" -o "$CHECKSUM_FILE" 2>/dev/null; then
+            EXPECTED_HASH=$(awk 'NR==1 {print $1}' "$CHECKSUM_FILE")
+            ACTUAL_HASH=$(file_sha256 "$TMP_FILE" 2>/dev/null || true)
+            if [ -n "$ACTUAL_HASH" ] && [ "$ACTUAL_HASH" = "$EXPECTED_HASH" ]; then
+                DOWNLOAD_OK=1
+                break
+            fi
+        fi
+        warn "下载或校验未通过，正在重试（${TRY}/3）"
+        sleep 1
+    done
     rm -f "$CHECKSUM_FILE"
-    if [ -z "$ACTUAL_HASH" ] || [ "$ACTUAL_HASH" != "$EXPECTED_HASH" ]; then
+    if [ "$DOWNLOAD_OK" -ne 1 ]; then
         rm -f "$TMP_FILE"
         error "SHA256 校验失败，已拒绝更新"
+        echo -e "  ${DIM}可先手动验证：curl -fsSL '${SCRIPT_URL}' -o /tmp/SSH-Hardening.sh && sha256sum /tmp/SSH-Hardening.sh${NC}"
         audit_action "脚本更新SHA256校验失败" FAILED
         return
     fi
@@ -177,7 +181,7 @@ self_rollback() {
 
 self_offline_bundle_create() {
     print_header "离线安装包"
-    local SRC TMPDIR BUNDLE ARCHIVE HASH
+    local SRC TMPDIR BUNDLE ARCHIVE
     SRC="${LOCAL_SCRIPT:-}"
     [ -f "$SRC" ] || SRC=$(resolve_self_path)
     [ -f "$SRC" ] || { error "找不到可打包的脚本"; return 1; }
