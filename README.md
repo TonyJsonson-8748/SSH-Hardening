@@ -1,4 +1,4 @@
-# VPS 开荒脚本 V3.9.2
+# VPS 开荒脚本 V3.9.3
 
 > **银趴火山帮** 出品 · SSH · BBR · DDNS · Caddy · Firewall · NFT 转发
 
@@ -30,7 +30,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/chnnic/SSH-Hardening/refs/he
    ...
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  VPS 开荒脚本  V3.9.2 · 银趴火山帮
+  VPS 开荒脚本  V3.9.3 · 银趴火山帮
 
   ◆ 系统概览
   ● SSH  22 · 1 公钥          ● 认证  仅密钥
@@ -556,5 +556,6 @@ GitHub Actions 还会在 Debian、Ubuntu、Alpine、Rocky Linux 容器中加载�
 | V3.1.6 | Alpine ash 兼容（去除 bash 专属语法） |
 | V3.0.4 | 快捷键改用纯软链接，不写 alias，避免冲突其他脚本 |
 | V3.0.0 | 主菜单与 fork 同步，整合 BBR 智能向导 + DDNS 双栈 + Telegram |
+| **V3.9.3** | 日报时间支持 `23:59` / `2359`，续费日期支持 `2026-05-15` / `20260515`；测试告警改为发送当前系统状态快照 |
 | **V3.9.2** | 监控首页保留唯一 Bot 配置入口；每日日报改为真正分段文本，避免 Telegram 显示成一行 |
 | **V3.9.1** | 强制更新加入重试与缓存失效参数，降低 GitHub raw 拉取和 SHA256 校验的误报 |

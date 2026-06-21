@@ -282,13 +282,13 @@ monitor_alert_load_cfg() {
     MON_TRAFFIC_CYCLE_BASELINE_BYTES=$(monitor_alert_cfg_get TRAFFIC_CYCLE_BASELINE_BYTES); MON_TRAFFIC_CYCLE_BASELINE_BYTES=${MON_TRAFFIC_CYCLE_BASELINE_BYTES:-0}
     MON_RENEW_ENABLED=$(monitor_alert_cfg_get RENEW_ENABLED); MON_RENEW_ENABLED=${MON_RENEW_ENABLED:-no}
     MON_RENEW_MODE=$(monitor_alert_cfg_get RENEW_MODE); MON_RENEW_MODE=${MON_RENEW_MODE:-interval}
-    MON_RENEW_NEXT_DATE=$(monitor_alert_cfg_get RENEW_NEXT_DATE)
+    MON_RENEW_NEXT_DATE=$(monitor_date_normalize "$(monitor_alert_cfg_get RENEW_NEXT_DATE)" 2>/dev/null || true)
     MON_RENEW_INTERVAL_DAYS=$(monitor_alert_cfg_get RENEW_INTERVAL_DAYS); MON_RENEW_INTERVAL_DAYS=${MON_RENEW_INTERVAL_DAYS:-365}
     MON_RENEW_MONTH_DAY=$(monitor_alert_cfg_get RENEW_MONTH_DAY); MON_RENEW_MONTH_DAY=${MON_RENEW_MONTH_DAY:-1}
     MON_RENEW_NOTICE_DAYS=$(monitor_alert_cfg_get RENEW_NOTICE_DAYS); MON_RENEW_NOTICE_DAYS=${MON_RENEW_NOTICE_DAYS:-30,7,3,1}
     MON_RENEW_LAST_ALERT=$(monitor_alert_cfg_get RENEW_LAST_ALERT)
     MON_DAILY_REPORT_ENABLED=$(monitor_alert_cfg_get DAILY_REPORT_ENABLED); MON_DAILY_REPORT_ENABLED=${MON_DAILY_REPORT_ENABLED:-no}
-    MON_DAILY_REPORT_TIME=$(monitor_alert_cfg_get DAILY_REPORT_TIME); MON_DAILY_REPORT_TIME=${MON_DAILY_REPORT_TIME:-08:00}
+    MON_DAILY_REPORT_TIME=$(monitor_time_normalize "$(monitor_alert_cfg_get DAILY_REPORT_TIME)" 2>/dev/null || true); MON_DAILY_REPORT_TIME=${MON_DAILY_REPORT_TIME:-08:00}
 }
 
 monitor_alert_save_cfg() {
@@ -320,6 +320,55 @@ DAILY_REPORT_ENABLED=${MON_DAILY_REPORT_ENABLED:-no}
 DAILY_REPORT_TIME=${MON_DAILY_REPORT_TIME:-08:00}
 EOF
     chmod 600 "$CFG" 2>/dev/null || true
+}
+
+monitor_time_normalize() {
+    local IN="${1:-}" HH MM
+    IN=${IN//[[:space:]]/}
+    case "$IN" in
+        [0-9][0-9]:[0-9][0-9])
+            HH=${IN%:*}
+            MM=${IN#*:}
+            ;;
+        [0-9][0-9][0-9][0-9])
+            HH=${IN:0:2}
+            MM=${IN:2:2}
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+    echo "$HH" | grep -qE '^[0-9]+$' || return 1
+    echo "$MM" | grep -qE '^[0-9]+$' || return 1
+    [ "$HH" -lt 24 ] || return 1
+    [ "$MM" -lt 60 ] || return 1
+    printf '%02d:%02d\n' "$((10#$HH))" "$((10#$MM))"
+}
+
+monitor_date_normalize() {
+    local IN="${1:-}" Y M D
+    IN=${IN//[[:space:]]/}
+    case "$IN" in
+        [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9])
+            Y=${IN%%-*}
+            M=${IN#*-}; M=${M%-*}
+            D=${IN##*-}
+            ;;
+        [0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9])
+            Y=${IN:0:4}
+            M=${IN:4:2}
+            D=${IN:6:2}
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+    python3 - "$Y" "$M" "$D" <<'PY'
+from datetime import date
+import sys
+y, m, d = map(int, sys.argv[1:])
+print(date(y, m, d).isoformat())
+PY
 }
 
 monitor_alert_host_label() {
@@ -601,7 +650,7 @@ monitor_alert_notify() {
     CHAT=$(monitor_alert_cfg_get CHAT_ID)
     [ -n "$BOT" ] && [ -n "$CHAT" ] || return 0
     local TEXT
-    TEXT=$(printf '%s\n%s' "$TITLE" "$BODY")
+    TEXT=$(printf '%s\n%b' "$TITLE" "$BODY")
     curl -s --max-time 15 "https://api.telegram.org/bot${BOT}/sendMessage" \
         --data-urlencode "chat_id=${CHAT}" \
         --data-urlencode "text=${TEXT}" \
@@ -651,6 +700,36 @@ monitor_alert_resource_check() {
     monitor_alert_state_set SIG "$SIG"
     monitor_alert_state_set TS "$CUR_TS"
     audit_action "发送系统监控告警：$ISSUES" SUCCESS
+}
+
+monitor_alert_test_snapshot() {
+    local HOST DISK_PCT MEM_PCT LOAD1 CPU_COUNT LOAD_WARN_VALUE SSH_STATE F2B_STATE DOCKER_STATE CADDY_STATE
+    HOST=$(monitor_alert_host_label)
+    DISK_PCT=$(df -P / 2>/dev/null | awk 'NR==2 {gsub("%","",$5); print $5+0}')
+    MEM_PCT=$(awk '/^MemTotal:/ {t=$2} /^MemAvailable:/ {a=$2} END {if (t>0) printf "%.0f", (t-a)*100/t; else print 0}' /proc/meminfo 2>/dev/null)
+    LOAD1=$(awk '{print $1}' /proc/loadavg 2>/dev/null || echo 0)
+    CPU_COUNT=$(getconf _NPROCESSORS_ONLN 2>/dev/null || nproc 2>/dev/null || echo 1)
+    LOAD_WARN_VALUE="${MON_LOAD_WARN:-}"
+    [ -n "$LOAD_WARN_VALUE" ] || LOAD_WARN_VALUE=$(awk "BEGIN{printf \"%.1f\", $CPU_COUNT*1.5}")
+    SSH_STATE=$(monitor_alert_service_state ssh)
+    F2B_STATE="未安装"
+    command -v fail2ban-client >/dev/null 2>&1 && F2B_STATE=$(f2b_status 2>/dev/null || echo unknown)
+    DOCKER_STATE="未安装"
+    command -v docker >/dev/null 2>&1 && DOCKER_STATE=$(docker_status 2>/dev/null || echo unknown)
+    CADDY_STATE="未安装"
+    command -v caddy >/dev/null 2>&1 && CADDY_STATE=$(caddy_status 2>/dev/null || echo unknown)
+    monitor_alert_notify "✅ <b>VPS 监控测试</b>" "$(cat <<EOF
+主机：<code>${HOST}</code>
+时间：<code>$(date '+%Y-%m-%d %H:%M:%S')</code>
+磁盘：<code>${DISK_PCT}% / ${MON_DISK_WARN}%</code>
+内存：<code>${MEM_PCT}% / ${MON_MEM_WARN}%</code>
+负载：<code>${LOAD1} / ${LOAD_WARN_VALUE}</code>
+SSH：<code>${SSH_STATE}</code>
+Fail2ban：<code>${F2B_STATE}</code>
+Docker：<code>${DOCKER_STATE}</code>
+Caddy：<code>${CADDY_STATE}</code>
+EOF
+)"
 }
 
 monitor_alert_traffic_check() {
@@ -872,8 +951,13 @@ monitor_alert_config_menu() {
                         info "每日日报已关闭"
                         ;;
                     3)
-                        read -rp "$(ui_prompt "日报时间（HH:MM） [${MON_DAILY_REPORT_TIME}]: ")" TIME_IN
-                        [ -n "$TIME_IN" ] && MON_DAILY_REPORT_TIME="$TIME_IN"
+                        local NORMAL_TIME
+                        read -rp "$(ui_prompt "日报时间（支持 23:59 / 2359） [${MON_DAILY_REPORT_TIME}]: ")" TIME_IN
+                        if [ -n "$TIME_IN" ]; then
+                            NORMAL_TIME=$(monitor_time_normalize "$TIME_IN" 2>/dev/null || true)
+                            [ -n "$NORMAL_TIME" ] || { warn "时间格式无效"; continue; }
+                            MON_DAILY_REPORT_TIME="$NORMAL_TIME"
+                        fi
                         monitor_alert_save_cfg
                         info "日报时间已保存"
                         ;;
@@ -906,24 +990,28 @@ monitor_alert_config_menu() {
                 read -rp "$(ui_prompt '选择操作 [0-5]: ')" RCH
                 case "$RCH" in
                     1)
-                        read -rp "$(ui_prompt '请输入下次续费日期（YYYY-MM-DD）: ')" NEXT_IN
-                        date -d "$NEXT_IN" >/dev/null 2>&1 || { warn "日期格式无效"; continue; }
+                        local NORMAL_DATE
+                        read -rp "$(ui_prompt '请输入下次续费日期（支持 2026-05-15 / 20260515）: ')" NEXT_IN
+                        NORMAL_DATE=$(monitor_date_normalize "$NEXT_IN" 2>/dev/null || true)
+                        [ -n "$NORMAL_DATE" ] || { warn "日期格式无效"; continue; }
                         MON_RENEW_ENABLED=yes
                         MON_RENEW_MODE=manual
-                        MON_RENEW_NEXT_DATE="$NEXT_IN"
+                        MON_RENEW_NEXT_DATE="$NORMAL_DATE"
                         monitor_alert_save_cfg
                         info "续费日期已设置"
                         ;;
                     2)
                         read -rp "$(ui_prompt '循环天数（如 30/90/365）: ')" DAYS_IN
                         echo "$DAYS_IN" | grep -qE '^[0-9]+$' || { warn "输入无效"; continue; }
-                        read -rp "$(ui_prompt '下次续费日期（留空=今天起算）: ')" BASE_IN
+                        local NORMAL_BASE_DATE
+                        read -rp "$(ui_prompt '下次续费日期（支持 2026-05-15 / 20260515，留空=今天起算）: ')" BASE_IN
                         BASE_IN=${BASE_IN:-$(date +%F)}
-                        date -d "$BASE_IN" >/dev/null 2>&1 || { warn "日期格式无效"; continue; }
+                        NORMAL_BASE_DATE=$(monitor_date_normalize "$BASE_IN" 2>/dev/null || true)
+                        [ -n "$NORMAL_BASE_DATE" ] || { warn "日期格式无效"; continue; }
                         MON_RENEW_ENABLED=yes
                         MON_RENEW_MODE=interval
                         MON_RENEW_INTERVAL_DAYS="$DAYS_IN"
-                        MON_RENEW_NEXT_DATE=$(monitor_renew_next_date interval "$BASE_IN" "$DAYS_IN" "$MON_RENEW_MONTH_DAY")
+                        MON_RENEW_NEXT_DATE=$(monitor_renew_next_date interval "$NORMAL_BASE_DATE" "$DAYS_IN" "$MON_RENEW_MONTH_DAY")
                         monitor_alert_save_cfg
                         info "循环续费已设置"
                         ;;
@@ -960,7 +1048,7 @@ monitor_alert_config_menu() {
             info "主机显示名称已保存"
             ;;
         6)
-            monitor_alert_notify "⚠️ <b>VPS 监控测试</b>" "这是一条测试告警：$(date '+%Y-%m-%d %H:%M:%S')"
+            monitor_alert_test_snapshot
             info "测试消息已发送（如已配置 Telegram）"
             ;;
         7)
