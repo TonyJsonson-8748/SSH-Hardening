@@ -147,6 +147,96 @@ config_backup_menu() {
     done
 }
 
+config_export_archive() {
+    local TARGET="${1:-}" LABEL="${2:-export}" TMP_ARCHIVE
+    local OLD_KEEP="$VPS_BACKUP_KEEP"
+    VPS_BACKUP_KEEP=999999
+    TMP_ARCHIVE=$(config_backup_create "export_${LABEL}" true)
+    local RC=$?
+    VPS_BACKUP_KEEP="$OLD_KEEP"
+    [ "$RC" -eq 0 ] || return "$RC"
+    if [ -z "$TARGET" ]; then
+        printf '%s\n' "$TMP_ARCHIVE"
+        return 0
+    fi
+    mkdir -p "$(dirname "$TARGET")" 2>/dev/null || { error "无法创建导出目录"; return 1; }
+    if ! cp "$TMP_ARCHIVE" "$TARGET" 2>/dev/null; then
+        error "导出失败"
+        return 1
+    fi
+    chmod 600 "$TARGET" 2>/dev/null || true
+    audit_action "导出配置到 $(basename "$TARGET")" SUCCESS
+    info "配置已导出：$TARGET"
+    printf '%s\n' "$TARGET"
+}
+
+config_import_archive() {
+    local FILE="$1"
+    [ -f "$FILE" ] || { error "导入包不存在"; return 1; }
+    tar -tzf "$FILE" >/dev/null 2>&1 || { error "导入包损坏"; return 1; }
+    config_backup_restore "$FILE"
+}
+
+config_transfer_menu() {
+    while true; do
+        print_header "配置导出 / 导入"
+        ui_hint "适合迁移到新机器或把当前配置带走备份"
+        echo ""; menu_div
+        menu_item "1" "导出当前配置" "$GREEN"
+        menu_item "2" "导入配置包" "$YELLOW"
+        menu_item "0" "返回上级" "$RED"
+        menu_div; echo ""
+        read -rp "$(ui_prompt '选择操作 [0-2]: ')" CH
+        case "$CH" in
+            1)
+                local TARGET ARCHIVE_NAME
+                read -rp "$(ui_prompt '导出文件路径（默认 /root/vps-config-export.tar.gz）: ')" TARGET
+                TARGET=${TARGET:-/root/vps-config-export.tar.gz}
+                ARCHIVE_NAME="$(date +%Y%m%d_%H%M%S)_export"
+                config_export_archive "$TARGET" "$ARCHIVE_NAME" || true
+                ui_pause
+                ;;
+            2)
+                local FILE
+                read -rp "$(ui_prompt '输入要导入的 tar.gz 路径: ')" FILE
+                config_import_archive "$FILE" || true
+                ui_pause
+                ;;
+            0) return ;;
+            *) warn "无效选项"; sleep 1 ;;
+        esac
+    done
+}
+
+rollback_center_menu() {
+    while true; do
+        local BACKUP_COUNT VERSION_COUNT LATEST_BACKUP LATEST_VERSION
+        BACKUP_COUNT=$(find "$VPS_BACKUP_DIR" -maxdepth 1 -type f -name '*.tar.gz' 2>/dev/null | wc -l | tr -d ' ')
+        VERSION_COUNT=$(find "$VPS_VERSION_DIR" -maxdepth 1 -type f -name '*.sh' 2>/dev/null | wc -l | tr -d ' ')
+        LATEST_BACKUP=$(find "$VPS_BACKUP_DIR" -maxdepth 1 -type f -name '*.tar.gz' 2>/dev/null | sort -r | head -1)
+        LATEST_VERSION=$(find "$VPS_VERSION_DIR" -maxdepth 1 -type f -name '*.sh' 2>/dev/null | sort -r | head -1)
+        print_header "统一回滚中心"
+        [ -n "$LATEST_BACKUP" ] && LATEST_BACKUP="${LATEST_BACKUP##*/}" || LATEST_BACKUP="无"
+        [ -n "$LATEST_VERSION" ] && LATEST_VERSION="${LATEST_VERSION##*/}" || LATEST_VERSION="无"
+        echo -e "  备份包：${BOLD}${BACKUP_COUNT:-0}${NC}   最新配置：${BOLD}${LATEST_BACKUP}${NC}"
+        echo -e "  版本包：${BOLD}${VERSION_COUNT:-0}${NC}   最新脚本：${BOLD}${LATEST_VERSION}${NC}"
+        echo ""; menu_div
+        menu_item "1" "配置备份与恢复" "$GREEN"
+        menu_item "2" "配置导出 / 导入" "$CYAN"
+        menu_item "3" "脚本版本回滚" "$YELLOW"
+        menu_item "0" "返回上级" "$RED"
+        menu_div; echo ""
+        read -rp "$(ui_prompt '选择操作 [0-3]: ')" CH
+        case "$CH" in
+            1) config_backup_menu ;;
+            2) config_transfer_menu ;;
+            3) self_rollback ;;
+            0) return ;;
+            *) warn "无效选项"; sleep 1 ;;
+        esac
+    done
+}
+
 safety_arm() {
     local LABEL="$1" SNAP SCRIPT UFW_STATE="inactive" FIREWALLD_STATE="inactive"
     SNAP=$(config_backup_create "safety_${LABEL}" true) || return 1
@@ -408,11 +498,12 @@ system_toolbox_menu() {
         menu_pair "1" "系统安全体检" "2" "登录与安全日志"
         menu_pair "3" "网络诊断" "4" "配置备份与恢复"
         menu_pair "5" "脚本操作记录" "6" "系统资源健康"
-        menu_pair "7" "系统更新管理" "0" "返回主菜单" "$GREEN" "$RED"
+        menu_pair "7" "系统更新管理" "8" "配置导出 / 导入"
+        menu_pair "9" "统一回滚中心" "0" "返回主菜单" "$CYAN" "$RED"
         menu_div
         ui_hint "SSH、防火墙、DNS 和 IP 修改均有防断联保护"
         echo ""
-        read -rp "$(ui_prompt '选择工具 [0-7]: ')" CH
+        read -rp "$(ui_prompt '选择工具 [0-9]: ')" CH
         case "$CH" in
             1) security_audit ;;
             2) login_security_logs; continue ;;
@@ -421,6 +512,8 @@ system_toolbox_menu() {
             5) audit_log_view ;;
             6) resource_health_check ;;
             7) system_update_manager; continue ;;
+            8) config_transfer_menu; continue ;;
+            9) rollback_center_menu; continue ;;
             0) return ;;
             *) warn "无效选项"; sleep 1; continue ;;
         esac

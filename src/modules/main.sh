@@ -39,7 +39,7 @@ main_menu() {
         volcano_art_banner
         echo ""
         box_top
-        echo -e "  ${BOLD}${CYAN}VPS 开荒脚本${NC}  ${DIM}V3.8.5 · 银趴火山帮${NC}"
+        echo -e "  ${BOLD}${CYAN}VPS 开荒脚本${NC}  ${DIM}V3.8.6 · 银趴火山帮${NC}"
         echo ""
         # 收集状态数据
         local FW_TYPE FW_STAT FW_STATE

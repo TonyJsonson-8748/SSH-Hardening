@@ -20,6 +20,10 @@ for fn in common_software_menu system_reinstall_menu software_reinstall_menu sof
     declare -F "$fn" >/dev/null || { echo "Missing function: $fn" >&2; exit 1; }
 done
 
+for fn in config_export_archive config_import_archive config_transfer_menu rollback_center_menu; do
+    declare -F "$fn" >/dev/null || { echo "Missing toolbox function: $fn" >&2; exit 1; }
+done
+
 [[ "$(software_group_packages apt base)" = *curl* ]] || { echo "APT base package mapping is incomplete" >&2; exit 1; }
 [[ "$(software_group_packages apk network)" = *mtr* ]] || { echo "APK network package mapping is incomplete" >&2; exit 1; }
 

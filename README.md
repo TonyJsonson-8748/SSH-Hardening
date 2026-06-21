@@ -1,4 +1,4 @@
-# VPS 开荒脚本 V3.8.5
+# VPS 开荒脚本 V3.8.6
 
 > **银趴火山帮** 出品 · SSH · BBR · DDNS · Caddy · Firewall · NFT 转发
 
@@ -30,7 +30,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/chnnic/SSH-Hardening/refs/he
    ...
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  VPS 开荒脚本  V3.8.5 · 银趴火山帮
+  VPS 开荒脚本  V3.8.6 · 银趴火山帮
 
   ◆ 系统概览
   ● SSH  22 · 1 公钥          ● 认证  仅密钥
@@ -512,6 +512,7 @@ GitHub Actions 还会在 Debian、Ubuntu、Alpine、Rocky Linux 容器中加载�
 
 | 版本 | 主要变更 |
 |------|---------|
+| **V3.8.6** | 新增配置导出/导入与统一回滚中心入口，集中管理配置备份恢复、脚本版本回滚和迁移操作 |
 | **V3.8.5** | 新增从 URL 拉取 Compose 文件、自动校验并部署的入口，支持先预览再落盘执行 `docker compose up -d --pull always` |
 | **V3.8.4** | 新增 Docker Engine 与 Compose 插件一键安装；新增容器查看、详情、启停、重启、日志、Shell 和删除管理；Compose 容器可拉取新镜像并按原配置重建，普通容器采用无损镜像更新检查，避免丢失启动参数 |
 | **V3.8.3** | 新增常用软件多选安装，适配 apt/dnf/yum/apk/opkg/pacman；新增使用官方重装工具的一键 DD/Linux 重装向导，包含容器拒绝、目标磁盘展示、脚本语法检查与 SHA256 展示、SSH 参数继承及固定确认词保护 |

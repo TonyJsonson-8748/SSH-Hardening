@@ -76,6 +76,13 @@ config_backup_create three true >/dev/null
 COUNT=$(find "$VPS_BACKUP_DIR" -type f -name '*.tar.gz' | wc -l | tr -d ' ')
 [ "$COUNT" -eq 2 ] || { echo "Backup retention kept $COUNT archives instead of 2" >&2; exit 1; }
 
+# Export/import helpers must validate paths and write archives to a caller-specified destination.
+EXPORT_PATH="$TMP/exported-config.tar.gz"
+config_export_archive "$EXPORT_PATH" test >/dev/null || { echo "Export helper failed" >&2; exit 1; }
+[ -f "$EXPORT_PATH" ] || { echo "Export helper did not create archive" >&2; exit 1; }
+config_import_archive() { [ "$1" = "$EXPORT_PATH" ]; }
+config_import_archive "$EXPORT_PATH" >/dev/null || { echo "Import helper failed" >&2; exit 1; }
+
 # The real updater must reject a mismatched checksum without replacing the local script.
 LOCAL_SCRIPT="$TMP/local-script"
 export SCRIPT_URL="mock://script"
