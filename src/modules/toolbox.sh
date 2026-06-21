@@ -1156,8 +1156,17 @@ EOF
                 echo -e "  模式：${BOLD}${MON_RENEW_MODE}${NC}"
                 echo -e "  下次续费：${BOLD}${MON_RENEW_NEXT_DATE:-未设置}${NC}"
                 echo -e "  提前提醒：${BOLD}${MON_RENEW_NOTICE_DAYS}${NC}"
-                echo -e "  周期：${BOLD}${MON_RENEW_INTERVAL_DAYS} 天${NC}"
-                echo -e "  每月固定日：${BOLD}${MON_RENEW_MONTH_DAY}${NC}"
+                case "${MON_RENEW_MODE:-interval}" in
+                    interval)
+                        echo -e "  周期：${BOLD}${MON_RENEW_INTERVAL_DAYS} 天${NC}"
+                        ;;
+                    monthly)
+                        echo -e "  每月固定日：${BOLD}${MON_RENEW_MONTH_DAY}${NC}"
+                        ;;
+                    manual)
+                        echo -e "  类型：${BOLD}固定日期一次性提醒${NC}"
+                        ;;
+                esac
                 menu_div
                 menu_item "1" "设置固定日期" "$GREEN"
                 menu_item "2" "按周期循环（30/90/365）" "$YELLOW"
