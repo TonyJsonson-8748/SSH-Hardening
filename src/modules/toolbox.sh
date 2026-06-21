@@ -477,6 +477,12 @@ else:
 PY
 }
 
+monitor_traffic_reset_day_valid() {
+    local DAY="${1:-}"
+    echo "$DAY" | grep -qE '^[0-9]+$' || return 1
+    [ "$DAY" -ge 1 ] && [ "$DAY" -le 31 ]
+}
+
 monitor_traffic_cycle_ensure_baseline() {
     [ "${MON_TRAFFIC_ENABLED:-no}" = "yes" ] || return 0
     local TODAY RX TX CURRENT CYCLE_START
@@ -1059,9 +1065,9 @@ EOF
                         info "今日基线已重置"
                         ;;
                     4)
-                        read -rp "$(ui_prompt "每月流量重置日（1-28/31） [${MON_TRAFFIC_RESET_DAY}]: ")" RESET_IN
+                        read -rp "$(ui_prompt "每月流量重置日（1-31，短月按月底） [${MON_TRAFFIC_RESET_DAY}]: ")" RESET_IN
                         if [ -n "$RESET_IN" ]; then
-                            echo "$RESET_IN" | grep -qE '^[0-9]+$' || { warn "输入无效"; continue; }
+                            monitor_traffic_reset_day_valid "$RESET_IN" || { warn "重置日必须是 1-31；例如 31 遇到 2 月会按月底计算"; continue; }
                             MON_TRAFFIC_RESET_DAY="$RESET_IN"
                         fi
                         local CUR_RX CUR_TX CUR_TOTAL
