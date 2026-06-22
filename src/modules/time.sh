@@ -58,7 +58,7 @@ ts_sync_time() {
     local SYNCED=false
 
     # 方法1：timedatectl + systemd-timesyncd
-    if command -v timedatectl &>/dev/null && pidof systemd &>/dev/null; then
+    if command -v timedatectl &>/dev/null && systemd_available; then
         info "尝试 systemd-timesyncd..."
         timedatectl set-ntp true 2>/dev/null
         # 重启 timesyncd 强制立即同步

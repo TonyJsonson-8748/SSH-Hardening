@@ -56,7 +56,7 @@ ddns_ensure_cron() {
 
 ddns_start_cron_service() {
     for svc in cron crond dcron; do
-        if command -v systemctl &>/dev/null && pidof systemd &>/dev/null; then
+        if systemd_available; then
             systemctl enable "$svc" --quiet 2>/dev/null || true
             systemctl start "$svc" 2>/dev/null && return 0
         fi

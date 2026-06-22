@@ -61,7 +61,7 @@ nft_uninstall() {
     fi
 
     # 3. 停止服务
-    if command -v systemctl &>/dev/null && pidof systemd &>/dev/null; then
+    if systemd_available; then
         systemctl stop nftables &>/dev/null || true
         systemctl disable nftables &>/dev/null || true
     elif command -v rc-service &>/dev/null; then
@@ -375,7 +375,7 @@ nft_write_and_apply() {
     mv "$tmp" "$NFT_CONFIG_FILE"
     chmod +x "$NFT_CONFIG_FILE"
 
-    if command -v systemctl &>/dev/null && pidof systemd &>/dev/null; then
+    if systemd_available; then
         systemctl enable nftables &>/dev/null || true
         if ! systemctl restart nftables &>/dev/null; then
             nft -f "$NFT_CONFIG_FILE" &>/dev/null || {

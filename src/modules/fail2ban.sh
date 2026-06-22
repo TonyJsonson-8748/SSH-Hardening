@@ -146,7 +146,7 @@ f2b_install() {
     rmdir /etc/systemd/system/fail2ban.service.d/ 2>/dev/null || true
 
     # unmask + enable
-    if command -v systemctl &>/dev/null && pidof systemd &>/dev/null; then
+    if systemd_available; then
         systemctl unmask fail2ban 2>/dev/null || true
         systemctl daemon-reload 2>/dev/null || true
         systemctl enable fail2ban 2>/dev/null || true
@@ -463,7 +463,7 @@ fail2ban_menu() {
         safe_clear
         echo ""
         box_top
-        box_title "VPS 开荒脚本 V3.9.16"
+        box_title "VPS 开荒脚本 V3.9.17"
         box_title "· · 银趴火山帮 · ·"
         box_sep
         box_title "Fail2ban 管理"

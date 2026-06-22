@@ -100,7 +100,7 @@ caddy_install_binary() {
     fi
 
     # 创建 systemd service
-    if command -v systemctl &>/dev/null && pidof systemd &>/dev/null; then
+    if systemd_available; then
         useradd -r -d /var/lib/caddy -s /sbin/nologin caddy 2>/dev/null || true
         cat > /etc/systemd/system/caddy.service << 'SVCEOF'
 [Unit]
