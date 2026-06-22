@@ -1255,6 +1255,42 @@ EOF
 )"
 }
 
+monitor_alert_renew_mark_paid() {
+    local NEXT="${MON_RENEW_NEXT_DATE:-}" OLD_NEXT NEW_NEXT CONFIRM
+    [ "${MON_RENEW_ENABLED:-no}" = yes ] || { warn "续费提醒未启用"; return 1; }
+    [ -n "$NEXT" ] || { warn "下次续费日期未设置"; return 1; }
+    OLD_NEXT="$NEXT"
+    case "${MON_RENEW_MODE:-interval}" in
+        interval)
+            NEW_NEXT=$(monitor_renew_next_date interval "$OLD_NEXT" "${MON_RENEW_INTERVAL_DAYS:-365}" "${MON_RENEW_MONTH_DAY:-1}")
+            ;;
+        monthly)
+            NEW_NEXT=$(monitor_renew_next_date monthly "$OLD_NEXT" "${MON_RENEW_INTERVAL_DAYS:-365}" "${MON_RENEW_MONTH_DAY:-1}")
+            ;;
+        manual)
+            warn "固定日期提醒没有下一个周期，请改用每月固定日或按周期循环。"
+            return 1
+            ;;
+        *)
+            warn "未知续费模式：${MON_RENEW_MODE:-未设置}"
+            return 1
+            ;;
+    esac
+    echo ""
+    warn "将把本期续费提醒跳过：${OLD_NEXT} → ${NEW_NEXT}"
+    read -rp "  确认已续费并跳到下一个周期？(y/N): " CONFIRM
+    echo "$CONFIRM" | grep -qiE '^y(es)?$' || { warn "已取消"; return 1; }
+    MON_RENEW_NEXT_DATE="$NEW_NEXT"
+    MON_RENEW_LAST_ALERT=
+    monitor_alert_state_set RENEW_SIG ""
+    monitor_alert_state_set RENEW_TS "0"
+    monitor_alert_state_set RENEW_STATE ok
+    monitor_alert_save_cfg
+    monitor_alert_history_add RECOVER "已确认续费：$OLD_NEXT → $NEW_NEXT"
+    audit_action "确认已续费：$OLD_NEXT → $NEW_NEXT" SUCCESS
+    info "已跳到下一个续费周期：$NEW_NEXT"
+}
+
 monitor_alert_traffic_check() {
     [ "${MON_TRAFFIC_ENABLED:-no}" = "yes" ] || return 0
     monitor_traffic_ensure_baseline
@@ -1709,10 +1745,11 @@ monitor_alert_renew_menu() {
         menu_item "3" "按周期循环" "$YELLOW"
         menu_item "4" "设置提醒天数" "$GREEN"
         menu_item "5" "关闭续费提醒" "$RED"
-        menu_item "6" "立即发送一次" "$GREEN"
+        menu_item "6" "我已续费" "$YELLOW"
+        menu_item "7" "立即发送一次" "$GREEN"
         menu_item "0" "返回上级" "$RED"
         menu_div; echo ""
-        read -rp "$(ui_prompt '选择操作 [0-6]: ')" CH
+        read -rp "$(ui_prompt '选择操作 [0-7]: ')" CH
         case "$CH" in
             1)
                 local NORMAL_DATE
@@ -1762,6 +1799,9 @@ monitor_alert_renew_menu() {
                 info "续费提醒已关闭"
                 ;;
             6)
+                monitor_alert_renew_mark_paid || true
+                ;;
+            7)
                 monitor_alert_renew_snapshot
                 info "续费快照已发送（如已配置 Telegram）"
                 ;;
