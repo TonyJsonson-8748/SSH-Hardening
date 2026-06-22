@@ -18,7 +18,7 @@ for fn in docker_install docker_status docker_select_container docker_upgrade_co
     declare -F "$fn" >/dev/null || { echo "Missing Docker function: $fn" >&2; exit 1; }
 done
 
-for fn in self_offline_bundle_create self_offline_bundle_install self_update self_manifest_value monitor_alert_check monitor_alert_config_menu monitor_alert_home_menu monitor_alert_daily_report monitor_alert_host_label monitor_time_normalize monitor_date_normalize monitor_int_normalize monitor_traffic_reset_day_valid monitor_traffic_totals monitor_traffic_usage_triplet monitor_traffic_usage_text monitor_traffic_set_cycle_usage_split_gb monitor_alert_service_state monitor_alert_any_service_state monitor_alert_ssh_state monitor_alert_test_snapshot monitor_alert_notify monitor_alert_history_add monitor_alert_history_view monitor_alert_cooldown_seconds monitor_alert_time_to_minutes monitor_alert_in_silence monitor_alert_metrics monitor_alert_metrics_sample monitor_alert_trend_line monitor_alert_trend_summary monitor_alert_level_label monitor_alert_level_icon monitor_alert_level_rank monitor_alert_worst_level config_health_check diagnostic_bundle_create; do
+for fn in self_offline_bundle_create self_offline_bundle_install self_update self_manifest_value monitor_alert_check monitor_alert_config_menu monitor_alert_home_menu monitor_alert_daily_report monitor_alert_host_label monitor_time_normalize monitor_date_normalize monitor_int_normalize monitor_traffic_reset_day_valid monitor_traffic_totals monitor_traffic_usage_triplet monitor_traffic_usage_text monitor_traffic_set_cycle_usage_split_gb monitor_alert_service_state monitor_alert_any_service_state monitor_alert_ssh_state monitor_alert_test_snapshot monitor_alert_notify monitor_alert_history_add monitor_alert_history_view monitor_alert_cooldown_seconds monitor_alert_time_to_minutes monitor_alert_in_silence monitor_alert_metrics monitor_alert_metrics_sample monitor_alert_trend_line monitor_alert_trend_summary monitor_alert_level_label monitor_alert_level_icon monitor_alert_level_rank monitor_alert_worst_level monitor_alert_daily_cron_expr monitor_alert_cron_command monitor_alert_install_cron monitor_alert_remove_cron config_health_check diagnostic_bundle_create; do
     declare -F "$fn" >/dev/null || { echo "Missing new function: $fn" >&2; exit 1; }
 done
 
@@ -43,6 +43,8 @@ monitor_alert_service_state() { case "$1" in ssh) echo stopped ;; sshd) echo run
 MON_ALERT_COOLDOWN_MIN=7
 [[ "$(monitor_alert_cooldown_seconds)" = "420" ]] || { echo "Alert cooldown conversion failed" >&2; exit 1; }
 [[ "$(monitor_alert_time_to_minutes 23:59)" = "1439" ]] || { echo "Alert silence time parsing failed" >&2; exit 1; }
+[[ "$(monitor_alert_daily_cron_expr 23:59)" = "59 23 * * *" ]] || { echo "Daily cron 23:59 expression failed" >&2; exit 1; }
+[[ "$(monitor_alert_daily_cron_expr 2359)" = "59 23 * * *" ]] || { echo "Daily cron 2359 expression failed" >&2; exit 1; }
 [[ "$(monitor_alert_level_label critical)" = "严重" ]] || { echo "Alert level label failed" >&2; exit 1; }
 [[ "$(monitor_alert_worst_level warning critical)" = "critical" ]] || { echo "Alert level ranking failed" >&2; exit 1; }
 monitor_traffic_reset_day_valid 31 || { echo "Reset day 31 should be valid" >&2; exit 1; }
@@ -66,9 +68,9 @@ monitor_traffic_set_cycle_usage_split_gb 1000 1000
 [[ "$(monitor_traffic_usage_triplet cycle)" = "1073741824000 1073741824000 2147483648000" ]] || { echo "Large split traffic calibration failed" >&2; exit 1; }
 MANIFEST="$TMP/manifest.json"
 cat > "$MANIFEST" <<'EOF'
-{"name":"SSH-Hardening","version":"V3.9.20","sha256":"abc123"}
+{"name":"SSH-Hardening","version":"V3.9.21","sha256":"abc123"}
 EOF
-[[ "$(self_manifest_value "$MANIFEST" version)" = "V3.9.20" ]] || { echo "Manifest parsing failed" >&2; exit 1; }
+[[ "$(self_manifest_value "$MANIFEST" version)" = "V3.9.21" ]] || { echo "Manifest parsing failed" >&2; exit 1; }
 
 OS=$(detect_os)
 [ -n "$OS" ] || { echo "OS detection returned empty" >&2; exit 1; }

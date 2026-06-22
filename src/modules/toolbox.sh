@@ -703,6 +703,39 @@ monitor_alert_daily_report_check() {
     audit_action "发送每日日报：$TODAY" SUCCESS
 }
 
+monitor_alert_cron_command() {
+    printf '%s --monitor-alert >> /var/log/vps-monitor.log 2>&1' "${SVC_PATH:-${LOCAL_SCRIPT:-$0}}"
+}
+
+monitor_alert_daily_cron_expr() {
+    local T="${1:-08:00}" HH MM
+    T=$(monitor_time_normalize "$T" 2>/dev/null || echo "08:00")
+    HH=${T%:*}
+    MM=${T#*:}
+    printf '%s %s * * *' "$((10#$MM))" "$((10#$HH))"
+}
+
+monitor_alert_install_cron() {
+    local CMD DAILY_EXPR
+    command -v crontab >/dev/null 2>&1 || ddns_ensure_cron >/dev/null 2>&1 || true
+    command -v crontab >/dev/null 2>&1 || { warn "未检测到 crontab，无法安装定时监控"; return 1; }
+    CMD=$(monitor_alert_cron_command)
+    if [ "${MON_DAILY_REPORT_ENABLED:-no}" = "yes" ]; then
+        DAILY_EXPR=$(monitor_alert_daily_cron_expr "${MON_DAILY_REPORT_TIME:-08:00}")
+        (crontab -l 2>/dev/null | grep -v -E 'vps-monitor-alert|vps-monitor-daily-report'; \
+            echo "*/10 * * * * ${CMD} # vps-monitor-alert"; \
+            echo "${DAILY_EXPR} ${CMD} # vps-monitor-daily-report") | crontab -
+    else
+        (crontab -l 2>/dev/null | grep -v -E 'vps-monitor-alert|vps-monitor-daily-report'; \
+            echo "*/10 * * * * ${CMD} # vps-monitor-alert") | crontab -
+    fi
+}
+
+monitor_alert_remove_cron() {
+    command -v crontab >/dev/null 2>&1 || return 0
+    (crontab -l 2>/dev/null | grep -v -E 'vps-monitor-alert|vps-monitor-daily-report') | crontab -
+}
+
 monitor_alert_home_menu() {
     while true; do
         monitor_alert_load_cfg
@@ -1407,11 +1440,19 @@ EOF
                         MON_DAILY_REPORT_ENABLED=yes
                         [ -z "${MON_DAILY_REPORT_TIME:-}" ] && MON_DAILY_REPORT_TIME="08:00"
                         monitor_alert_save_cfg
+                        MON_ENABLED=yes
+                        monitor_alert_save_cfg
+                        monitor_alert_install_cron
                         info "每日日报已启用"
                         ;;
                     2)
                         MON_DAILY_REPORT_ENABLED=no
                         monitor_alert_save_cfg
+                        if [ "$MON_ENABLED" = yes ]; then
+                            monitor_alert_install_cron
+                        else
+                            monitor_alert_remove_cron
+                        fi
                         info "每日日报已关闭"
                         ;;
                     3)
@@ -1423,6 +1464,7 @@ EOF
                             MON_DAILY_REPORT_TIME="$NORMAL_TIME"
                         fi
                         monitor_alert_save_cfg
+                        [ "$MON_ENABLED" = yes ] && monitor_alert_install_cron
                         info "日报时间已保存"
                         ;;
                     4)
@@ -1615,14 +1657,14 @@ EOF
         9)
             MON_ENABLED=yes
             monitor_alert_save_cfg
-            (crontab -l 2>/dev/null | grep -v 'vps-monitor-alert'; echo "*/10 * * * * ${SVC_PATH:-${LOCAL_SCRIPT:-$0}} --monitor-alert >> /var/log/vps-monitor.log 2>&1 # vps-monitor-alert") | crontab -
+            monitor_alert_install_cron
             ddns_ensure_cron >/dev/null 2>&1 || true
             info "已启用定时告警"
             ;;
         10)
             MON_ENABLED=no
             monitor_alert_save_cfg
-            (crontab -l 2>/dev/null | grep -v 'vps-monitor-alert') | crontab -
+            monitor_alert_remove_cron
             info "已关闭定时告警"
             ;;
         0) return ;;
