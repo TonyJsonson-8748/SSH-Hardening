@@ -1034,8 +1034,8 @@ EOF
                 echo -e "  基线日期：${DIM}${MON_TRAFFIC_BASELINE_DATE:-未设置}${NC}"
                 echo -e "  重置日：${DIM}${MON_TRAFFIC_RESET_DAY}${NC}   周期起点：${DIM}${MON_TRAFFIC_CYCLE_BASELINE_DATE:-未设置}${NC}"
                 menu_div
-                menu_item "1" "启用 / 更新阈值" "$GREEN"
-                menu_item "2" "关闭流量监控" "$YELLOW"
+                menu_item "1" "设置阈值" "$GREEN"
+                menu_item "2" "$([ "$MON_TRAFFIC_ENABLED" = yes ] && echo '关闭流量监控' || echo '启用流量监控')" "$YELLOW"
                 menu_item "3" "重置今日基线" "$CYAN"
                 menu_item "4" "设置重置日" "$GREEN"
                 menu_item "5" "校准周期下行 / 上行流量" "$YELLOW"
@@ -1046,29 +1046,33 @@ EOF
                     1)
                         read -rp "$(ui_prompt "流量阈值（GB/日，默认 50） [${MON_TRAFFIC_LIMIT_GB}]: ")" LIMIT_IN
                         [ -n "$LIMIT_IN" ] && MON_TRAFFIC_LIMIT_GB="$LIMIT_IN"
-                        local CUR_RX CUR_TX CUR_TOTAL
-                        read -r CUR_RX CUR_TX CUR_TOTAL <<EOF
-$(monitor_traffic_totals)
-EOF
-                        MON_TRAFFIC_ENABLED=yes
-                        MON_TRAFFIC_BASELINE_DATE=$(date +%F)
-                        MON_TRAFFIC_BASELINE_BYTES="$CUR_TOTAL"
-                        MON_TRAFFIC_BASELINE_RX_BYTES="$CUR_RX"
-                        MON_TRAFFIC_BASELINE_TX_BYTES="$CUR_TX"
-                        MON_TRAFFIC_CYCLE_BASELINE_DATE=$(monitor_traffic_current_cycle_start "${MON_TRAFFIC_RESET_DAY:-1}" "$(date +%F)")
-                        MON_TRAFFIC_CYCLE_BASELINE_BYTES="$CUR_TOTAL"
-                        MON_TRAFFIC_CYCLE_BASELINE_RX_BYTES="$CUR_RX"
-                        MON_TRAFFIC_CYCLE_BASELINE_TX_BYTES="$CUR_TX"
-                        MON_TRAFFIC_CYCLE_OFFSET_BYTES=0
-                        MON_TRAFFIC_CYCLE_OFFSET_RX_BYTES=0
-                        MON_TRAFFIC_CYCLE_OFFSET_TX_BYTES=0
                         monitor_alert_save_cfg
-                        info "流量监控已启用"
+                        info "阈值已保存"
                         ;;
                     2)
-                        MON_TRAFFIC_ENABLED=no
+                        if [ "$MON_TRAFFIC_ENABLED" = yes ]; then
+                            MON_TRAFFIC_ENABLED=no
+                            info "流量监控已关闭"
+                        else
+                            local CUR_RX CUR_TX CUR_TOTAL
+                            read -r CUR_RX CUR_TX CUR_TOTAL <<EOF
+$(monitor_traffic_totals)
+EOF
+                            MON_TRAFFIC_ENABLED=yes
+                            MON_TRAFFIC_BASELINE_DATE=$(date +%F)
+                            MON_TRAFFIC_BASELINE_BYTES="$CUR_TOTAL"
+                            MON_TRAFFIC_BASELINE_RX_BYTES="$CUR_RX"
+                            MON_TRAFFIC_BASELINE_TX_BYTES="$CUR_TX"
+                            MON_TRAFFIC_CYCLE_BASELINE_DATE=$(monitor_traffic_current_cycle_start "${MON_TRAFFIC_RESET_DAY:-1}" "$(date +%F)")
+                            MON_TRAFFIC_CYCLE_BASELINE_BYTES="$CUR_TOTAL"
+                            MON_TRAFFIC_CYCLE_BASELINE_RX_BYTES="$CUR_RX"
+                            MON_TRAFFIC_CYCLE_BASELINE_TX_BYTES="$CUR_TX"
+                            MON_TRAFFIC_CYCLE_OFFSET_BYTES=0
+                            MON_TRAFFIC_CYCLE_OFFSET_RX_BYTES=0
+                            MON_TRAFFIC_CYCLE_OFFSET_TX_BYTES=0
+                            info "流量监控已启用"
+                        fi
                         monitor_alert_save_cfg
-                        info "流量监控已关闭"
                         ;;
                     3)
                         local CUR_RX CUR_TX CUR_TOTAL
