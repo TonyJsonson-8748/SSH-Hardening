@@ -241,6 +241,7 @@ monitor_alert_cfg() { echo "/root/.vps-monitor"; }
 monitor_alert_script() { echo "/root/vps-monitor-alert.sh"; }
 monitor_alert_state() { echo "/root/.vps-monitor.state"; }
 monitor_alert_history() { echo "/root/.vps-monitor.history"; }
+monitor_alert_metrics() { echo "/root/.vps-monitor.metrics"; }
 
 monitor_alert_cfg_get() {
     local KEY="$1" CFG; CFG=$(monitor_alert_cfg)
@@ -655,13 +656,14 @@ monitor_daily_report_due() {
 }
 
 monitor_alert_daily_report() {
-    local HOST TODAY DAILY_TEXT CYCLE_TEXT CYCLE_START RENEW_LEFT NEXT
+    local HOST TODAY DAILY_TEXT CYCLE_TEXT CYCLE_START RENEW_LEFT NEXT TREND_TEXT
     HOST=$(monitor_alert_host_label)
     TODAY=$(date +%F)
     monitor_traffic_ensure_baseline
     monitor_traffic_cycle_ensure_baseline
     DAILY_TEXT=$(monitor_traffic_usage_text daily)
     CYCLE_TEXT=$(monitor_traffic_usage_text cycle)
+    TREND_TEXT=$(monitor_alert_trend_summary)
     CYCLE_START="${MON_TRAFFIC_CYCLE_BASELINE_DATE:-$(monitor_traffic_current_cycle_start "${MON_TRAFFIC_RESET_DAY:-1}" "$TODAY")}"
     NEXT="${MON_RENEW_NEXT_DATE:-未设置}"
     if [ -n "${MON_RENEW_NEXT_DATE:-}" ]; then
@@ -674,6 +676,7 @@ monitor_alert_daily_report() {
 日期：<code>${TODAY}</code>
 今日流量：${DAILY_TEXT}
 当前周期：${CYCLE_TEXT}
+${TREND_TEXT}
 周期起点：<code>${CYCLE_START}</code>
 续费日期：<code>${NEXT}</code>
 剩余天数：<code>${RENEW_LEFT}</code>
@@ -865,6 +868,85 @@ monitor_alert_in_silence() {
     fi
 }
 
+monitor_alert_level_label() {
+    case "${1:-warning}" in
+        critical) echo "严重" ;;
+        notice) echo "提醒" ;;
+        *) echo "警告" ;;
+    esac
+}
+
+monitor_alert_level_icon() {
+    case "${1:-warning}" in
+        critical) echo "🚨" ;;
+        notice) echo "ℹ️" ;;
+        *) echo "⚠️" ;;
+    esac
+}
+
+monitor_alert_level_rank() {
+    case "${1:-warning}" in
+        critical) echo 3 ;;
+        warning) echo 2 ;;
+        notice) echo 1 ;;
+        *) echo 0 ;;
+    esac
+}
+
+monitor_alert_worst_level() {
+    local CUR="${1:-}" NEXT="${2:-warning}"
+    [ "$(monitor_alert_level_rank "$NEXT")" -gt "$(monitor_alert_level_rank "$CUR")" ] && echo "$NEXT" || echo "$CUR"
+}
+
+monitor_alert_metrics_sample() {
+    local METRICS TS DISK_PCT MEM_PCT LOAD1 RX TX TOTAL LAST_TS
+    METRICS=$(monitor_alert_metrics)
+    mkdir -p "$(dirname "$METRICS")" 2>/dev/null || true
+    TS=$(date +%s)
+    LAST_TS=$(tail -n 1 "$METRICS" 2>/dev/null | awk '{print $1}')
+    LAST_TS=$(monitor_int_normalize "${LAST_TS:-0}")
+    [ $((TS - LAST_TS)) -lt 300 ] && return 0
+    DISK_PCT=$(df -P / 2>/dev/null | awk 'NR==2 {gsub("%","",$5); print $5+0}')
+    MEM_PCT=$(awk '/^MemTotal:/ {t=$2} /^MemAvailable:/ {a=$2} END {if (t>0) printf "%.0f", (t-a)*100/t; else print 0}' /proc/meminfo 2>/dev/null)
+    LOAD1=$(awk '{print $1}' /proc/loadavg 2>/dev/null || echo 0)
+    read -r RX TX TOTAL <<EOF
+$(monitor_traffic_totals)
+EOF
+    printf '%s %s %s %s %s\n' "$TS" "${DISK_PCT:-0}" "${MEM_PCT:-0}" "${LOAD1:-0}" "$(monitor_int_normalize "${TOTAL:-0}")" >> "$METRICS" 2>/dev/null || true
+    tail -n 1500 "$METRICS" > "${METRICS}.tmp" 2>/dev/null && mv "${METRICS}.tmp" "$METRICS" 2>/dev/null || true
+    chmod 600 "$METRICS" 2>/dev/null || true
+}
+
+monitor_alert_trend_line() {
+    local LABEL="$1" SECONDS="$2" METRICS NOW
+    METRICS=$(monitor_alert_metrics)
+    [ -s "$METRICS" ] || { printf '%s：数据积累中\n' "$LABEL"; return; }
+    NOW=$(date +%s)
+    awk -v label="$LABEL" -v since="$((NOW - SECONDS))" '
+        $1 >= since {
+            if (!seen) {
+                first_disk=$2; first_mem=$3; first_load=$4; first_traffic=$5; seen=1
+            }
+            last_disk=$2; last_mem=$3; last_load=$4; last_traffic=$5; count++
+        }
+        END {
+            if (count < 2) {
+                printf "%s：数据积累中\n", label
+                exit
+            }
+            dt = last_traffic - first_traffic
+            if (dt < 0) dt = 0
+            printf "%s：磁盘 %+d%% 内存 %+d%% 负载 %+.2f 流量 +%.2fG\n", label, last_disk-first_disk, last_mem-first_mem, last_load-first_load, dt/1024/1024/1024
+        }
+    ' "$METRICS"
+}
+
+monitor_alert_trend_summary() {
+    monitor_alert_metrics_sample
+    monitor_alert_trend_line "24小时趋势" 86400
+    monitor_alert_trend_line "7天趋势" 604800
+}
+
 monitor_alert_service_state() {
     local SVC="$1"
     if command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then
@@ -891,7 +973,7 @@ monitor_alert_ssh_state() {
 }
 
 monitor_alert_resource_check() {
-    local HOST DISK_PCT MEM_PCT LOAD1 CPU_COUNT ISSUES=""
+    local HOST DISK_PCT MEM_PCT LOAD1 CPU_COUNT ISSUES="" LEVEL=notice
     HOST=$(monitor_alert_host_label)
     DISK_PCT=$(df -P / 2>/dev/null | awk 'NR==2 {gsub("%","",$5); print $5+0}')
     MEM_PCT=$(awk '/^MemTotal:/ {t=$2} /^MemAvailable:/ {a=$2} END {if (t>0) printf "%.0f", (t-a)*100/t; else print 0}' /proc/meminfo 2>/dev/null)
@@ -900,13 +982,38 @@ monitor_alert_resource_check() {
     local LOAD_WARN_VALUE="${MON_LOAD_WARN:-}"
     [ -n "$LOAD_WARN_VALUE" ] || LOAD_WARN_VALUE=$(awk "BEGIN{printf \"%.1f\", $CPU_COUNT*1.5}")
 
-    if [ "${DISK_PCT:-0}" -ge "${MON_DISK_WARN:-85}" ]; then ISSUES="${ISSUES}磁盘 ${DISK_PCT}%  "; fi
-    if [ "${MEM_PCT:-0}" -ge "${MON_MEM_WARN:-85}" ]; then ISSUES="${ISSUES}内存 ${MEM_PCT}%  "; fi
-    if awk "BEGIN{exit !($LOAD1 >= $LOAD_WARN_VALUE)}"; then ISSUES="${ISSUES}负载 ${LOAD1}  "; fi
-    if [ "${MON_CHECK_SSH:-yes}" = yes ] && [ "$(monitor_alert_ssh_state)" != running ]; then ISSUES="${ISSUES}SSH 服务异常  "; fi
-    if [ "${MON_CHECK_FAIL2BAN:-yes}" = yes ] && command -v fail2ban-client >/dev/null 2>&1 && [ "$(f2b_status 2>/dev/null || echo stopped)" != running ]; then ISSUES="${ISSUES}Fail2ban 异常  "; fi
-    if [ "${MON_CHECK_DOCKER:-yes}" = yes ] && command -v docker >/dev/null 2>&1 && [ "$(docker_status 2>/dev/null || echo not_installed)" = stopped ]; then ISSUES="${ISSUES}Docker 服务异常  "; fi
-    if [ "${MON_CHECK_CADDY:-yes}" = yes ] && command -v caddy >/dev/null 2>&1 && [ "$(caddy_status 2>/dev/null || echo not_installed)" = stopped ]; then ISSUES="${ISSUES}Caddy 服务异常  "; fi
+    if [ "${DISK_PCT:-0}" -ge "${MON_DISK_WARN:-85}" ]; then
+        ISSUES="${ISSUES}磁盘 ${DISK_PCT}%  "
+        [ "${DISK_PCT:-0}" -ge 95 ] && LEVEL=$(monitor_alert_worst_level "$LEVEL" critical) || LEVEL=$(monitor_alert_worst_level "$LEVEL" warning)
+    fi
+    if [ "${MEM_PCT:-0}" -ge "${MON_MEM_WARN:-85}" ]; then
+        ISSUES="${ISSUES}内存 ${MEM_PCT}%  "
+        [ "${MEM_PCT:-0}" -ge 95 ] && LEVEL=$(monitor_alert_worst_level "$LEVEL" critical) || LEVEL=$(monitor_alert_worst_level "$LEVEL" warning)
+    fi
+    if awk "BEGIN{exit !($LOAD1 >= $LOAD_WARN_VALUE)}"; then
+        ISSUES="${ISSUES}负载 ${LOAD1}  "
+        if awk "BEGIN{exit !($LOAD1 >= $LOAD_WARN_VALUE * 2)}"; then
+            LEVEL=$(monitor_alert_worst_level "$LEVEL" critical)
+        else
+            LEVEL=$(monitor_alert_worst_level "$LEVEL" warning)
+        fi
+    fi
+    if [ "${MON_CHECK_SSH:-yes}" = yes ] && [ "$(monitor_alert_ssh_state)" != running ]; then
+        ISSUES="${ISSUES}SSH 服务异常  "
+        LEVEL=$(monitor_alert_worst_level "$LEVEL" critical)
+    fi
+    if [ "${MON_CHECK_FAIL2BAN:-yes}" = yes ] && command -v fail2ban-client >/dev/null 2>&1 && [ "$(f2b_status 2>/dev/null || echo stopped)" != running ]; then
+        ISSUES="${ISSUES}Fail2ban 异常  "
+        LEVEL=$(monitor_alert_worst_level "$LEVEL" warning)
+    fi
+    if [ "${MON_CHECK_DOCKER:-yes}" = yes ] && command -v docker >/dev/null 2>&1 && [ "$(docker_status 2>/dev/null || echo not_installed)" = stopped ]; then
+        ISSUES="${ISSUES}Docker 服务异常  "
+        LEVEL=$(monitor_alert_worst_level "$LEVEL" warning)
+    fi
+    if [ "${MON_CHECK_CADDY:-yes}" = yes ] && command -v caddy >/dev/null 2>&1 && [ "$(caddy_status 2>/dev/null || echo not_installed)" = stopped ]; then
+        ISSUES="${ISSUES}Caddy 服务异常  "
+        LEVEL=$(monitor_alert_worst_level "$LEVEL" warning)
+    fi
     local PREV_STATE LAST_SIG LAST_TS CUR_TS SIG COOLDOWN
     CUR_TS=$(date +%s)
     COOLDOWN=$(monitor_alert_cooldown_seconds)
@@ -932,13 +1039,25 @@ monitor_alert_resource_check() {
         monitor_alert_state_set RESOURCE_STATE alert
         monitor_alert_state_set RESOURCE_SIG "$SIG"
         monitor_alert_state_set RESOURCE_TS "$CUR_TS"
-        monitor_alert_history_add SILENCED "资源告警静默：$ISSUES"
+        monitor_alert_history_add SILENCED "$(monitor_alert_level_label "$LEVEL") 资源告警静默：$ISSUES"
         return 0
     fi
-    local MSG
-    MSG="监控告警\n主机：${HOST}\n时间：$(date '+%Y-%m-%d %H:%M:%S')\n磁盘：${DISK_PCT}%\n内存：${MEM_PCT}%\n负载：${LOAD1}\n异常：${ISSUES}"
-    monitor_alert_notify "⚠️ <b>VPS 监控告警</b>" "$MSG"
-    monitor_alert_history_add ALERT "资源告警：$ISSUES"
+    local MSG LEVEL_LABEL LEVEL_ICON
+    LEVEL_LABEL=$(monitor_alert_level_label "$LEVEL")
+    LEVEL_ICON=$(monitor_alert_level_icon "$LEVEL")
+    MSG=$(cat <<EOF
+监控告警
+级别：<code>${LEVEL_LABEL}</code>
+主机：<code>${HOST}</code>
+时间：<code>$(date '+%Y-%m-%d %H:%M:%S')</code>
+磁盘：<code>${DISK_PCT}%</code>
+内存：<code>${MEM_PCT}%</code>
+负载：<code>${LOAD1}</code>
+异常：<code>${ISSUES}</code>
+EOF
+)
+    monitor_alert_notify "${LEVEL_ICON} <b>VPS 监控${LEVEL_LABEL}</b>" "$MSG"
+    monitor_alert_history_add ALERT "${LEVEL_LABEL} 资源告警：$ISSUES"
     monitor_alert_state_set RESOURCE_STATE alert
     monitor_alert_state_set RESOURCE_SIG "$SIG"
     monitor_alert_state_set RESOURCE_TS "$CUR_TS"
@@ -946,10 +1065,11 @@ monitor_alert_resource_check() {
 }
 
 monitor_alert_test_snapshot() {
-    local HOST DISK_PCT MEM_PCT LOAD1 CPU_COUNT LOAD_WARN_VALUE DAILY_TEXT SSH_STATE F2B_STATE DOCKER_STATE CADDY_STATE
+    local HOST DISK_PCT MEM_PCT LOAD1 CPU_COUNT LOAD_WARN_VALUE DAILY_TEXT TREND_TEXT SSH_STATE F2B_STATE DOCKER_STATE CADDY_STATE
     HOST=$(monitor_alert_host_label)
     monitor_traffic_ensure_baseline
     DAILY_TEXT=$(monitor_traffic_usage_text daily)
+    TREND_TEXT=$(monitor_alert_trend_summary)
     DISK_PCT=$(df -P / 2>/dev/null | awk 'NR==2 {gsub("%","",$5); print $5+0}')
     MEM_PCT=$(awk '/^MemTotal:/ {t=$2} /^MemAvailable:/ {a=$2} END {if (t>0) printf "%.0f", (t-a)*100/t; else print 0}' /proc/meminfo 2>/dev/null)
     LOAD1=$(awk '{print $1}' /proc/loadavg 2>/dev/null || echo 0)
@@ -970,6 +1090,7 @@ monitor_alert_test_snapshot() {
 内存：<code>${MEM_PCT}% / ${MON_MEM_WARN}%</code>
 负载：<code>${LOAD1} / ${LOAD_WARN_VALUE}</code>
 今日流量：${DAILY_TEXT}
+${TREND_TEXT}
 SSH：<code>${SSH_STATE}</code>
 Fail2ban：<code>${F2B_STATE}</code>
 Docker：<code>${DOCKER_STATE}</code>
@@ -981,7 +1102,7 @@ EOF
 monitor_alert_traffic_check() {
     [ "${MON_TRAFFIC_ENABLED:-no}" = "yes" ] || return 0
     monitor_traffic_ensure_baseline
-    local USED_RX USED_TX USED_BYTES USED_GB LIMIT_GB DAILY_TEXT
+    local USED_RX USED_TX USED_BYTES USED_GB LIMIT_GB DAILY_TEXT LEVEL LEVEL_LABEL LEVEL_ICON
     read -r USED_RX USED_TX USED_BYTES <<EOF
 $(monitor_traffic_usage_triplet daily)
 EOF
@@ -989,6 +1110,12 @@ EOF
     DAILY_TEXT=$(monitor_traffic_usage_text daily)
     LIMIT_GB="${MON_TRAFFIC_LIMIT_GB:-50}"
     if awk "BEGIN{exit !($USED_GB >= $LIMIT_GB)}"; then
+        LEVEL=warning
+        if awk "BEGIN{exit !($USED_GB >= $LIMIT_GB * 1.2)}"; then
+            LEVEL=critical
+        fi
+        LEVEL_LABEL=$(monitor_alert_level_label "$LEVEL")
+        LEVEL_ICON=$(monitor_alert_level_icon "$LEVEL")
         local SIG CUR_TS LAST_SIG LAST_TS PREV_STATE COOLDOWN
         CUR_TS=$(date +%s)
         COOLDOWN=$(monitor_alert_cooldown_seconds)
@@ -1004,11 +1131,17 @@ EOF
             monitor_alert_state_set TRAFFIC_STATE alert
             monitor_alert_state_set TRAFFIC_SIG "$SIG"
             monitor_alert_state_set TRAFFIC_TS "$CUR_TS"
-            monitor_alert_history_add SILENCED "流量超限：${USED_GB}GB / ${LIMIT_GB}GB"
+            monitor_alert_history_add SILENCED "${LEVEL_LABEL} 流量超限：${USED_GB}GB / ${LIMIT_GB}GB"
             return 0
         fi
-        monitor_alert_notify "⚠️ <b>流量超限告警</b>" "今日流量：${DAILY_TEXT}\n阈值：<code>${LIMIT_GB} GB</code>\n主机：<code>$(monitor_alert_host_label)</code>"
-        [ "$PREV_STATE" = alert ] || monitor_alert_history_add ALERT "流量超限：${USED_GB}GB / ${LIMIT_GB}GB"
+        monitor_alert_notify "${LEVEL_ICON} <b>流量超限${LEVEL_LABEL}</b>" "$(cat <<EOF
+级别：<code>${LEVEL_LABEL}</code>
+主机：<code>$(monitor_alert_host_label)</code>
+今日流量：${DAILY_TEXT}
+阈值：<code>${LIMIT_GB} GB</code>
+EOF
+)"
+        [ "$PREV_STATE" = alert ] || monitor_alert_history_add ALERT "${LEVEL_LABEL} 流量超限：${USED_GB}GB / ${LIMIT_GB}GB"
         monitor_alert_state_set TRAFFIC_STATE alert
         monitor_alert_state_set TRAFFIC_SIG "$SIG"
         monitor_alert_state_set TRAFFIC_TS "$CUR_TS"
@@ -1025,7 +1158,7 @@ EOF
 
 monitor_alert_renew_check() {
     [ "${MON_RENEW_ENABLED:-no}" = "yes" ] || return 0
-    local NEXT="${MON_RENEW_NEXT_DATE:-}" TODAY DAYS_LEFT
+    local NEXT="${MON_RENEW_NEXT_DATE:-}" TODAY DAYS_LEFT LEVEL LEVEL_LABEL LEVEL_ICON
     TODAY=$(date +%F)
     if [ -z "$NEXT" ]; then
         NEXT="$TODAY"
@@ -1034,6 +1167,11 @@ monitor_alert_renew_check() {
     if ! monitor_renew_notice_match "$DAYS_LEFT" "${MON_RENEW_NOTICE_DAYS:-30,7,3,1}"; then
         return 0
     fi
+    LEVEL=notice
+    [ "$DAYS_LEFT" -le 3 ] && LEVEL=warning
+    [ "$DAYS_LEFT" -le 0 ] && LEVEL=critical
+    LEVEL_LABEL=$(monitor_alert_level_label "$LEVEL")
+    LEVEL_ICON=$(monitor_alert_level_icon "$LEVEL")
     local SIG CUR_TS LAST_SIG LAST_TS
     CUR_TS=$(date +%s)
     SIG=$(printf 'renew|%s|%s|%s' "$(monitor_alert_host_label)" "$NEXT" "$DAYS_LEFT" | sha256sum 2>/dev/null | awk '{print $1}')
@@ -1045,11 +1183,17 @@ monitor_alert_renew_check() {
     fi
     if monitor_alert_in_silence; then
         monitor_alert_state_set RENEW_STATE alert
-        monitor_alert_history_add SILENCED "续费提醒：$NEXT，剩余 $DAYS_LEFT 天"
+        monitor_alert_history_add SILENCED "${LEVEL_LABEL} 续费提醒：$NEXT，剩余 $DAYS_LEFT 天"
         return 0
     fi
-    monitor_alert_notify "⏰ <b>续费提醒</b>" "下次续费日期：<code>${NEXT}</code>\n剩余天数：<code>${DAYS_LEFT}</code>\n主机：<code>$(monitor_alert_host_label)</code>"
-    monitor_alert_history_add ALERT "续费提醒：$NEXT，剩余 $DAYS_LEFT 天"
+    monitor_alert_notify "${LEVEL_ICON} <b>续费${LEVEL_LABEL}</b>" "$(cat <<EOF
+级别：<code>${LEVEL_LABEL}</code>
+主机：<code>$(monitor_alert_host_label)</code>
+下次续费日期：<code>${NEXT}</code>
+剩余天数：<code>${DAYS_LEFT}</code>
+EOF
+)"
+    monitor_alert_history_add ALERT "${LEVEL_LABEL} 续费提醒：$NEXT，剩余 $DAYS_LEFT 天"
     monitor_alert_state_set RENEW_SIG "$SIG"
     monitor_alert_state_set RENEW_TS "$CUR_TS"
     monitor_alert_state_set RENEW_STATE alert
@@ -1080,6 +1224,7 @@ monitor_alert_check() {
     . "$CFG"
     [ "${ENABLED:-no}" = "yes" ] || return 0
     monitor_alert_load_cfg
+    monitor_alert_metrics_sample
     monitor_alert_resource_check
     monitor_alert_traffic_check
     monitor_alert_renew_check
