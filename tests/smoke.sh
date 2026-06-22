@@ -6,7 +6,7 @@ export VPS_TOOLS_TEST_MODE=1
 # shellcheck source=/dev/null
 source "$ROOT/SSH-Hardening.sh"
 
-for fn in main_menu ssh_tools_menu fail2ban_menu bbr_menu firewall_menu dns_menu \
+for fn in show_cli_help main_menu ssh_tools_menu fail2ban_menu bbr_menu firewall_menu dns_menu \
     ip_config_menu caddy_menu nft_menu ddns_menu ddns_install ddns_run_now ddns_view_logs ddns_status system_toolbox_menu \
     resource_health_check system_update_manager config_backup_create self_update docker_menu; do
     declare -F "$fn" >/dev/null || { echo "Missing function: $fn" >&2; exit 1; }
@@ -30,6 +30,10 @@ done
 
 [[ "$(software_group_packages apt base)" = *curl* ]] || { echo "APT base package mapping is incomplete" >&2; exit 1; }
 [[ "$(software_group_packages apk network)" = *mtr* ]] || { echo "APK network package mapping is incomplete" >&2; exit 1; }
+CLI_HELP=$(show_cli_help)
+[[ "$CLI_HELP" = *"--ssh-menu"* ]] || { echo "CLI help missing SSH entry" >&2; exit 1; }
+[[ "$CLI_HELP" = *"--docker-menu"* ]] || { echo "CLI help missing Docker entry" >&2; exit 1; }
+[[ "$CLI_HELP" = *"--monitor-home"* ]] || { echo "CLI help missing monitor entry" >&2; exit 1; }
 [[ "$(monitor_int_normalize 1.24682e+11)" = "124682000000" ]] || { echo "Scientific notation normalization failed" >&2; exit 1; }
 monitor_traffic_reset_day_valid 31 || { echo "Reset day 31 should be valid" >&2; exit 1; }
 ! monitor_traffic_reset_day_valid 32 || { echo "Reset day 32 should be invalid" >&2; exit 1; }

@@ -25,6 +25,45 @@ self_check_update() {
     echo "$REMOTE_VER" > /tmp/.vps_new_version 2>/dev/null
 }
 
+show_cli_help() {
+    cat <<'EOF'
+VPS 开荒脚本 CLI
+
+用法:
+  bash SSH-Hardening.sh [命令]
+
+常用命令:
+  --help                 显示此帮助
+  --ssh-menu             SSH 工具集
+  --fail2ban-menu        Fail2ban 管理
+  --bbr-menu             BBR TCP 调优
+  --firewall-menu        防火墙管理
+  --dns-menu             DNS 优化
+  --ddns-menu            Cloudflare DDNS 菜单
+  --ddns-install         安装 / 配置 DDNS
+  --ddns-run             立即更新 DDNS
+  --ddns-status          查看 DDNS 状态
+  --ddns-log             查看 DDNS 日志
+  --mirror-menu          系统换源
+  --ip-menu              IPv4 / IPv6 配置
+  --caddy-menu           Caddy 管理
+  --nft-menu             NFT 转发
+  --time-menu            时间与时区
+  --swap-menu            Swap 管理
+  --system-toolbox-menu  安全与诊断
+  --docker-menu          Docker 管理
+  --software-menu        软件与重装
+  --self-manage-menu     脚本管理
+  --monitor-home         监控告警中心
+  --monitor-config       监控告警配置
+  --config-backup-menu   配置备份
+  --config-transfer-menu 配置迁移
+  --rollback-center-menu 回滚中心
+  --nft-refresh-ddns     NFT DDNS 刷新内部入口
+  --monitor-alert        监控告警内部入口
+EOF
+}
+
 main_menu() {
     while true; do
         local CUR_PORT CUR_PWD CUR_PUBKEY KEYCOUNT
@@ -39,7 +78,7 @@ main_menu() {
         volcano_art_banner
         echo ""
         box_top
-        echo -e "  ${BOLD}${CYAN}VPS 开荒脚本${NC}  ${DIM}V3.9.12 · 银趴火山帮${NC}"
+        echo -e "  ${BOLD}${CYAN}VPS 开荒脚本${NC}  ${DIM}V3.9.13 · 银趴火山帮${NC}"
         echo ""
         # 收集状态数据
         local FW_TYPE FW_STAT FW_STATE
@@ -156,6 +195,30 @@ fi
 
 # CLI 处理：systemd timer 调用 DDNS 刷新（非交互）
 case "${1:-}" in
+    --help|-h|help)
+        show_cli_help
+        exit 0
+        ;;
+    --ssh-menu)
+        ssh_tools_menu
+        exit $?
+        ;;
+    --fail2ban-menu)
+        fail2ban_menu
+        exit $?
+        ;;
+    --bbr-menu)
+        bbr_menu
+        exit $?
+        ;;
+    --firewall-menu)
+        firewall_menu
+        exit $?
+        ;;
+    --dns-menu)
+        dns_menu
+        exit $?
+        ;;
     --nft-refresh-ddns)
         nft_refresh_ddns
         exit $?
@@ -182,6 +245,66 @@ case "${1:-}" in
         ;;
     --ddns-log)
         ddns_view_logs
+        exit $?
+        ;;
+    --mirror-menu)
+        mirror_menu
+        exit $?
+        ;;
+    --ip-menu)
+        ip_config_menu
+        exit $?
+        ;;
+    --caddy-menu)
+        caddy_menu
+        exit $?
+        ;;
+    --nft-menu)
+        nft_menu
+        exit $?
+        ;;
+    --time-menu)
+        timesync_menu
+        exit $?
+        ;;
+    --swap-menu)
+        swap_menu
+        exit $?
+        ;;
+    --system-toolbox-menu)
+        system_toolbox_menu
+        exit $?
+        ;;
+    --docker-menu)
+        docker_menu
+        exit $?
+        ;;
+    --software-menu)
+        software_reinstall_menu
+        exit $?
+        ;;
+    --self-manage-menu)
+        self_manage_menu
+        exit $?
+        ;;
+    --monitor-home)
+        monitor_alert_home_menu
+        exit $?
+        ;;
+    --monitor-config)
+        monitor_alert_config_menu
+        exit $?
+        ;;
+    --config-backup-menu)
+        config_backup_menu
+        exit $?
+        ;;
+    --config-transfer-menu)
+        config_transfer_menu
+        exit $?
+        ;;
+    --rollback-center-menu)
+        rollback_center_menu
         exit $?
         ;;
 esac

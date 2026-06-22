@@ -1,4 +1,4 @@
-# VPS 开荒脚本 V3.9.12
+# VPS 开荒脚本 V3.9.13
 
 > **银趴火山帮** 出品 · SSH · BBR · DDNS · Caddy · Firewall · NFT 转发
 
@@ -13,6 +13,44 @@
 ```bash
 bash <(curl -fsSL https://raw.githubusercontent.com/chnnic/SSH-Hardening/refs/heads/main/SSH-Hardening.sh)
 ```
+
+## 命令行合集
+
+所有入口都可以直接从 GitHub 调用，也可以在安装到本地后用 `v --命令` 调用。
+
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/chnnic/SSH-Hardening/refs/heads/main/SSH-Hardening.sh) --help
+```
+
+| 命令 | 功能 |
+|------|------|
+| `--ssh-menu` | SSH 工具集 |
+| `--fail2ban-menu` | Fail2ban 管理 |
+| `--bbr-menu` | BBR TCP 调优 |
+| `--firewall-menu` | 防火墙管理 |
+| `--dns-menu` | DNS 优化 |
+| `--ddns-menu` | Cloudflare DDNS 菜单 |
+| `--ddns-install` | 安装 / 配置 DDNS |
+| `--ddns-run` | 立即更新 DDNS |
+| `--ddns-status` | 查看 DDNS 状态 |
+| `--ddns-log` | 查看 DDNS 日志 |
+| `--mirror-menu` | 系统换源 |
+| `--ip-menu` | IPv4 / IPv6 配置 |
+| `--caddy-menu` | Caddy 管理 |
+| `--nft-menu` | NFT 转发 |
+| `--time-menu` | 时间与时区 |
+| `--swap-menu` | Swap 管理 |
+| `--system-toolbox-menu` | 安全与诊断 |
+| `--docker-menu` | Docker 管理 |
+| `--software-menu` | 软件与重装 |
+| `--self-manage-menu` | 脚本管理 |
+| `--monitor-home` | 监控告警中心 |
+| `--monitor-config` | 监控告警配置 |
+| `--config-backup-menu` | 配置备份 |
+| `--config-transfer-menu` | 配置迁移 |
+| `--rollback-center-menu` | 回滚中心 |
+| `--monitor-alert` | 监控告警定时任务入口 |
+| `--nft-refresh-ddns` | NFT DDNS 刷新内部入口 |
 
 **安装到本地后用快捷键 `v` / `V` 呼出：**
 
@@ -30,7 +68,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/chnnic/SSH-Hardening/refs/he
    ...
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  VPS 开荒脚本  V3.9.12 · 银趴火山帮
+  VPS 开荒脚本  V3.9.13 · 银趴火山帮
 
   ◆ 系统概览
   ● SSH  22 · 1 公钥          ● 认证  仅密钥
@@ -556,6 +594,7 @@ GitHub Actions 还会在 Debian、Ubuntu、Alpine、Rocky Linux 容器中加载�
 | V3.1.6 | Alpine ash 兼容（去除 bash 专属语法） |
 | V3.0.4 | 快捷键改用纯软链接，不写 alias，避免冲突其他脚本 |
 | V3.0.0 | 主菜单与 fork 同步，整合 BBR 智能向导 + DDNS 双栈 + Telegram |
+| **V3.9.13** | 新增全模块 CLI 菜单入口和 `--help` 命令，并在 README 汇总命令行合集 |
 | **V3.9.12** | 新增 DDNS 独立 CLI 入口，支持从 GitHub 直接拉起 DDNS 菜单、安装、运行和日志查看 |
 | **V3.9.11** | 续费提醒页面按模式显示字段，避免每月固定日与周期天数同时出现 |
 | **V3.9.10** | 流量重置日遇到短月时顺延到下月 `1` 日，避免 `31` 被提前到月底 |
