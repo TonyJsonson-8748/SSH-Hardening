@@ -39,7 +39,7 @@ main_menu() {
         volcano_art_banner
         echo ""
         box_top
-        echo -e "  ${BOLD}${CYAN}VPS 开荒脚本${NC}  ${DIM}V3.9.11 · 银趴火山帮${NC}"
+        echo -e "  ${BOLD}${CYAN}VPS 开荒脚本${NC}  ${DIM}V3.9.12 · 银趴火山帮${NC}"
         echo ""
         # 收集状态数据
         local FW_TYPE FW_STAT FW_STATE
@@ -150,18 +150,41 @@ main_menu() {
 
 # 测试模式只加载函数，不启动菜单或后台任务。
 if [ "${VPS_TOOLS_TEST_MODE:-0}" = "1" ]; then
+    # shellcheck disable=SC2317 # exit fallback is used when the script is executed instead of sourced
     return 0 2>/dev/null || exit 0
 fi
 
 # CLI 处理：systemd timer 调用 DDNS 刷新（非交互）
-if [ "${1:-}" = "--nft-refresh-ddns" ]; then
-    nft_refresh_ddns
-    exit $?
-fi
-if [ "${1:-}" = "--monitor-alert" ]; then
-    monitor_alert_check
-    exit $?
-fi
+case "${1:-}" in
+    --nft-refresh-ddns)
+        nft_refresh_ddns
+        exit $?
+        ;;
+    --monitor-alert)
+        monitor_alert_check
+        exit $?
+        ;;
+    --ddns-menu)
+        ddns_menu
+        exit $?
+        ;;
+    --ddns-install)
+        ddns_install
+        exit $?
+        ;;
+    --ddns-run)
+        ddns_run_now
+        exit $?
+        ;;
+    --ddns-status)
+        ddns_status
+        exit $?
+        ;;
+    --ddns-log)
+        ddns_view_logs
+        exit $?
+        ;;
+esac
 
 self_check_first_run
 # 后台检测新版本（不阻塞主菜单）

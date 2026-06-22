@@ -7,7 +7,7 @@ export VPS_TOOLS_TEST_MODE=1
 source "$ROOT/SSH-Hardening.sh"
 
 for fn in main_menu ssh_tools_menu fail2ban_menu bbr_menu firewall_menu dns_menu \
-    ip_config_menu caddy_menu nft_menu ddns_menu system_toolbox_menu \
+    ip_config_menu caddy_menu nft_menu ddns_menu ddns_install ddns_run_now ddns_view_logs ddns_status system_toolbox_menu \
     resource_health_check system_update_manager config_backup_create self_update docker_menu; do
     declare -F "$fn" >/dev/null || { echo "Missing function: $fn" >&2; exit 1; }
 done
