@@ -799,13 +799,27 @@ monitor_alert_notify() {
 
 monitor_alert_service_state() {
     local SVC="$1"
-    if command -v systemctl >/dev/null 2>&1 && pidof systemd >/dev/null 2>&1; then
+    if command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then
         systemctl is-active --quiet "$SVC" 2>/dev/null && echo running || echo stopped
     elif command -v rc-service >/dev/null 2>&1; then
         rc-service "$SVC" status >/dev/null 2>&1 && echo running || echo stopped
     else
         echo unknown
     fi
+}
+
+monitor_alert_any_service_state() {
+    local SVC STATE SEEN_STOPPED=no
+    for SVC in "$@"; do
+        STATE=$(monitor_alert_service_state "$SVC")
+        [ "$STATE" = running ] && { echo running; return 0; }
+        [ "$STATE" = stopped ] && SEEN_STOPPED=yes
+    done
+    [ "$SEEN_STOPPED" = yes ] && echo stopped || echo unknown
+}
+
+monitor_alert_ssh_state() {
+    monitor_alert_any_service_state ssh sshd
 }
 
 monitor_alert_resource_check() {
@@ -821,7 +835,7 @@ monitor_alert_resource_check() {
     if [ "${DISK_PCT:-0}" -ge "${MON_DISK_WARN:-85}" ]; then ISSUES="${ISSUES}磁盘 ${DISK_PCT}%  "; fi
     if [ "${MEM_PCT:-0}" -ge "${MON_MEM_WARN:-85}" ]; then ISSUES="${ISSUES}内存 ${MEM_PCT}%  "; fi
     if awk "BEGIN{exit !($LOAD1 >= $LOAD_WARN_VALUE)}"; then ISSUES="${ISSUES}负载 ${LOAD1}  "; fi
-    if [ "$(monitor_alert_service_state ssh)" != running ]; then ISSUES="${ISSUES}SSH 服务异常  "; fi
+    if [ "$(monitor_alert_ssh_state)" != running ]; then ISSUES="${ISSUES}SSH 服务异常  "; fi
     if command -v fail2ban-client >/dev/null 2>&1 && [ "$(f2b_status 2>/dev/null || echo stopped)" != running ]; then ISSUES="${ISSUES}Fail2ban 异常  "; fi
     if command -v docker >/dev/null 2>&1 && [ "$(docker_status 2>/dev/null || echo not_installed)" = stopped ]; then ISSUES="${ISSUES}Docker 服务异常  "; fi
     if command -v caddy >/dev/null 2>&1 && [ "$(caddy_status 2>/dev/null || echo not_installed)" = stopped ]; then ISSUES="${ISSUES}Caddy 服务异常  "; fi
@@ -853,7 +867,7 @@ monitor_alert_test_snapshot() {
     CPU_COUNT=$(getconf _NPROCESSORS_ONLN 2>/dev/null || nproc 2>/dev/null || echo 1)
     LOAD_WARN_VALUE="${MON_LOAD_WARN:-}"
     [ -n "$LOAD_WARN_VALUE" ] || LOAD_WARN_VALUE=$(awk "BEGIN{printf \"%.1f\", $CPU_COUNT*1.5}")
-    SSH_STATE=$(monitor_alert_service_state ssh)
+    SSH_STATE=$(monitor_alert_ssh_state)
     F2B_STATE="未安装"
     command -v fail2ban-client >/dev/null 2>&1 && F2B_STATE=$(f2b_status 2>/dev/null || echo unknown)
     DOCKER_STATE="未安装"

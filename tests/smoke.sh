@@ -16,7 +16,7 @@ for fn in docker_install docker_status docker_select_container docker_upgrade_co
     declare -F "$fn" >/dev/null || { echo "Missing Docker function: $fn" >&2; exit 1; }
 done
 
-for fn in self_offline_bundle_create self_offline_bundle_install self_update monitor_alert_check monitor_alert_config_menu monitor_alert_home_menu monitor_alert_daily_report monitor_alert_host_label monitor_time_normalize monitor_date_normalize monitor_int_normalize monitor_traffic_reset_day_valid monitor_traffic_totals monitor_traffic_usage_triplet monitor_traffic_usage_text monitor_traffic_set_cycle_usage_split_gb monitor_alert_test_snapshot monitor_alert_notify; do
+for fn in self_offline_bundle_create self_offline_bundle_install self_update monitor_alert_check monitor_alert_config_menu monitor_alert_home_menu monitor_alert_daily_report monitor_alert_host_label monitor_time_normalize monitor_date_normalize monitor_int_normalize monitor_traffic_reset_day_valid monitor_traffic_totals monitor_traffic_usage_triplet monitor_traffic_usage_text monitor_traffic_set_cycle_usage_split_gb monitor_alert_service_state monitor_alert_any_service_state monitor_alert_ssh_state monitor_alert_test_snapshot monitor_alert_notify; do
     declare -F "$fn" >/dev/null || { echo "Missing new function: $fn" >&2; exit 1; }
 done
 
@@ -34,6 +34,8 @@ CLI_HELP=$(show_cli_help)
 [[ "$CLI_HELP" = *"--ssh-menu"* ]] || { echo "CLI help missing SSH entry" >&2; exit 1; }
 [[ "$CLI_HELP" = *"--docker-menu"* ]] || { echo "CLI help missing Docker entry" >&2; exit 1; }
 [[ "$CLI_HELP" = *"--monitor-home"* ]] || { echo "CLI help missing monitor entry" >&2; exit 1; }
+monitor_alert_service_state() { case "$1" in ssh) echo stopped ;; sshd) echo running ;; *) echo unknown ;; esac; }
+[[ "$(monitor_alert_ssh_state)" = "running" ]] || { echo "SSH service alias check failed" >&2; exit 1; }
 [[ "$(monitor_int_normalize 1.24682e+11)" = "124682000000" ]] || { echo "Scientific notation normalization failed" >&2; exit 1; }
 monitor_traffic_reset_day_valid 31 || { echo "Reset day 31 should be valid" >&2; exit 1; }
 ! monitor_traffic_reset_day_valid 32 || { echo "Reset day 32 should be invalid" >&2; exit 1; }

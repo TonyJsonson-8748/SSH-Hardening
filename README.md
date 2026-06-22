@@ -1,4 +1,4 @@
-# VPS 开荒脚本 V3.9.14
+# VPS 开荒脚本 V3.9.15
 
 > **银趴火山帮** 出品 · SSH · BBR · DDNS · Caddy · Firewall · NFT 转发
 
@@ -68,7 +68,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/chnnic/SSH-Hardening/refs/he
    ...
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  VPS 开荒脚本  V3.9.14 · 银趴火山帮
+  VPS 开荒脚本  V3.9.15 · 银趴火山帮
 
   ◆ 系统概览
   ● SSH  22 · 1 公钥          ● 认证  仅密钥
@@ -550,6 +550,7 @@ GitHub Actions 还会在 Debian、Ubuntu、Alpine、Rocky Linux 容器中加载�
 
 | 版本 | 主要变更 |
 |------|---------|
+| **V3.9.15** | 监控告警 SSH 状态同时兼容 `ssh` / `sshd`，并移除 cron 环境下易误判的 `pidof systemd` 依赖 |
 | **V3.9.14** | 整理 README 版本沿革为单一倒序表，去除 V3.9.x 重复追加导致的排序混乱 |
 | **V3.9.13** | 新增全模块 CLI 菜单入口和 `--help` 命令，并在 README 汇总命令行合集 |
 | **V3.9.12** | 新增 DDNS 独立 CLI 入口，支持从 GitHub 直接拉起 DDNS 菜单、安装、运行和日志查看 |
