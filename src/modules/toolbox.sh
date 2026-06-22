@@ -1203,6 +1203,58 @@ EOF
 )"
 }
 
+monitor_alert_resource_snapshot() {
+    monitor_alert_test_snapshot
+}
+
+monitor_alert_traffic_snapshot() {
+    local HOST TODAY_TEXT CYCLE_TEXT LIMIT_GB RESET_DAY CYCLE_START
+    HOST=$(monitor_alert_host_label)
+    monitor_traffic_ensure_baseline
+    monitor_traffic_cycle_ensure_baseline
+    TODAY_TEXT=$(monitor_traffic_usage_text daily)
+    CYCLE_TEXT=$(monitor_traffic_usage_text cycle)
+    LIMIT_GB="${MON_TRAFFIC_LIMIT_GB:-50}"
+    RESET_DAY="${MON_TRAFFIC_RESET_DAY:-1}"
+    CYCLE_START="${MON_TRAFFIC_CYCLE_BASELINE_DATE:-$(monitor_traffic_current_cycle_start "$RESET_DAY" "$(date +%F)")}"
+    monitor_alert_notify "📡 <b>VPS 流量快照</b>" "$(cat <<EOF
+主机：<code>${HOST}</code>
+时间：<code>$(date '+%Y-%m-%d %H:%M:%S')</code>
+今日流量：${TODAY_TEXT}
+当前周期：${CYCLE_TEXT}
+日阈值：<code>${LIMIT_GB} GB</code>
+重置日：<code>${RESET_DAY}</code>
+周期起点：<code>${CYCLE_START}</code>
+EOF
+)"
+}
+
+monitor_alert_renew_snapshot() {
+    local HOST NEXT DAYS_LEFT MODE NOTICE EXTRA
+    HOST=$(monitor_alert_host_label)
+    MODE="${MON_RENEW_MODE:-interval}"
+    NEXT="${MON_RENEW_NEXT_DATE:-}"
+    NOTICE="${MON_RENEW_NOTICE_DAYS:-30,7,3,1}"
+    [ -n "$NEXT" ] && DAYS_LEFT=$(monitor_renew_days_left "$NEXT" 2>/dev/null || echo "未设置") || DAYS_LEFT="未设置"
+    case "$MODE" in
+        interval) EXTRA="周期：<code>${MON_RENEW_INTERVAL_DAYS:-365} 天</code>" ;;
+        monthly) EXTRA="每月固定日：<code>${MON_RENEW_MONTH_DAY:-1}</code>" ;;
+        manual) EXTRA="类型：<code>固定日期一次性提醒</code>" ;;
+        *) EXTRA="模式：<code>${MODE}</code>" ;;
+    esac
+    monitor_alert_notify "🧾 <b>VPS 续费快照</b>" "$(cat <<EOF
+主机：<code>${HOST}</code>
+时间：<code>$(date '+%Y-%m-%d %H:%M:%S')</code>
+状态：<code>$([ "${MON_RENEW_ENABLED:-no}" = yes ] && echo '已启用' || echo '未启用')</code>
+模式：<code>${MODE}</code>
+下次续费：<code>${NEXT:-未设置}</code>
+剩余天数：<code>${DAYS_LEFT}</code>
+提醒天数：<code>${NOTICE}</code>
+${EXTRA}
+EOF
+)"
+}
+
 monitor_alert_traffic_check() {
     [ "${MON_TRAFFIC_ENABLED:-no}" = "yes" ] || return 0
     monitor_traffic_ensure_baseline
@@ -1396,9 +1448,10 @@ monitor_alert_resource_menu() {
         menu_item "2" "设置内存阈值" "$GREEN"
         menu_item "3" "设置负载阈值" "$CYAN"
         menu_item "4" "服务检查开关" "$YELLOW"
+        menu_item "5" "立即发送一次" "$GREEN"
         menu_item "0" "返回上级" "$RED"
         menu_div; echo ""
-        read -rp "$(ui_prompt '选择操作 [0-4]: ')" CH
+        read -rp "$(ui_prompt '选择操作 [0-5]: ')" CH
         case "$CH" in
             1)
                 read -rp "$(ui_prompt "磁盘阈值 [${MON_DISK_WARN}%]: ")" DISK_WARN_IN
@@ -1420,6 +1473,10 @@ monitor_alert_resource_menu() {
                 ;;
             4)
                 monitor_alert_service_checks_menu
+                ;;
+            5)
+                monitor_alert_resource_snapshot
+                info "资源快照已发送（如已配置 Telegram）"
                 ;;
             0) return ;;
             *) warn "无效选项"; sleep 1 ;;
@@ -1484,9 +1541,10 @@ EOF
         menu_item "3" "设置流量重置日" "$GREEN"
         menu_item "4" "校准当前周期流量" "$YELLOW"
         menu_item "5" "重置今日统计" "$YELLOW"
+        menu_item "6" "立即发送一次" "$GREEN"
         menu_item "0" "返回上级" "$RED"
         menu_div; echo ""
-        read -rp "$(ui_prompt '选择操作 [0-5]: ')" CH
+        read -rp "$(ui_prompt '选择操作 [0-6]: ')" CH
         case "$CH" in
             1)
                 if [ "$MON_TRAFFIC_ENABLED" = yes ]; then
@@ -1559,6 +1617,10 @@ EOF
                 MON_TRAFFIC_BASELINE_TX_BYTES="$CUR_TX"
                 monitor_alert_save_cfg
                 info "今日基线已重置"
+                ;;
+            6)
+                monitor_alert_traffic_snapshot
+                info "流量快照已发送（如已配置 Telegram）"
                 ;;
             0) return ;;
             *) warn "无效选项"; sleep 1 ;;
@@ -1647,9 +1709,10 @@ monitor_alert_renew_menu() {
         menu_item "3" "按周期循环" "$YELLOW"
         menu_item "4" "设置提醒天数" "$GREEN"
         menu_item "5" "关闭续费提醒" "$RED"
+        menu_item "6" "立即发送一次" "$GREEN"
         menu_item "0" "返回上级" "$RED"
         menu_div; echo ""
-        read -rp "$(ui_prompt '选择操作 [0-5]: ')" CH
+        read -rp "$(ui_prompt '选择操作 [0-6]: ')" CH
         case "$CH" in
             1)
                 local NORMAL_DATE
@@ -1697,6 +1760,10 @@ monitor_alert_renew_menu() {
                 MON_RENEW_ENABLED=no
                 monitor_alert_save_cfg
                 info "续费提醒已关闭"
+                ;;
+            6)
+                monitor_alert_renew_snapshot
+                info "续费快照已发送（如已配置 Telegram）"
                 ;;
             0) return ;;
             *) warn "无效选项"; sleep 1 ;;
