@@ -3,6 +3,8 @@ set -euo pipefail
 
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 OUTPUT="$ROOT/SSH-Hardening.sh"
+CHECKSUM="$ROOT/SSH-Hardening.sh.sha256"
+MANIFEST="$ROOT/SSH-Hardening.manifest.json"
 MODE="${1:-build}"
 
 PARTS=(
@@ -54,7 +56,24 @@ if command -v sha256sum >/dev/null 2>&1; then
     (cd "$ROOT" && sha256sum SSH-Hardening.sh > SSH-Hardening.sh.sha256)
 else
     HASH=$(shasum -a 256 "$OUTPUT" | awk '{print $1}')
-    printf '%s  SSH-Hardening.sh\n' "$HASH" > "$ROOT/SSH-Hardening.sh.sha256"
+    printf '%s  SSH-Hardening.sh\n' "$HASH" > "$CHECKSUM"
 fi
 
-echo "Built SSH-Hardening.sh and refreshed SHA256."
+HASH=$(awk 'NR==1{print $1}' "$CHECKSUM")
+VERSION=$(grep -oE 'V[0-9]+\.[0-9]+\.[0-9]+|V[0-9]+\.[0-9]+' "$OUTPUT" | head -1)
+cat > "$MANIFEST" <<EOF
+{
+  "name": "SSH-Hardening",
+  "version": "${VERSION:-unknown}",
+  "file": "SSH-Hardening.sh",
+  "sha256": "$HASH",
+  "generated_at": "$(date -u '+%Y-%m-%dT%H:%M:%SZ')",
+  "urls": [
+    "https://raw.githubusercontent.com/chnnic/SSH-Hardening/refs/heads/main/SSH-Hardening.sh",
+    "https://github.com/chnnic/SSH-Hardening/raw/refs/heads/main/SSH-Hardening.sh",
+    "https://cdn.jsdelivr.net/gh/chnnic/SSH-Hardening@main/SSH-Hardening.sh"
+  ]
+}
+EOF
+
+echo "Built SSH-Hardening.sh and refreshed SHA256/manifest."

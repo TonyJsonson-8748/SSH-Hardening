@@ -4,6 +4,7 @@
 
 SCRIPT_URL="https://raw.githubusercontent.com/chnnic/SSH-Hardening/refs/heads/main/SSH-Hardening.sh"
 CHECKSUM_URL="https://raw.githubusercontent.com/chnnic/SSH-Hardening/refs/heads/main/SSH-Hardening.sh.sha256"
+MANIFEST_URL="https://raw.githubusercontent.com/chnnic/SSH-Hardening/refs/heads/main/SSH-Hardening.manifest.json"
 LOCAL_SCRIPT="/usr/local/bin/vps-tools"
 
 file_sha256() {
@@ -12,6 +13,11 @@ file_sha256() {
     elif command -v openssl >/dev/null 2>&1; then openssl dgst -sha256 "$1" | awk '{print $NF}'
     else return 1
     fi
+}
+
+self_manifest_value() {
+    local FILE="$1" KEY="$2"
+    sed -n 's/.*"'$KEY'"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$FILE" | head -1
 }
 
 # ── 安装脚本到本地（设置快捷键 v）────────────────────────
@@ -64,10 +70,10 @@ self_update() {
     echo -e "  ${DIM}${SCRIPT_URL}${NC}"
     echo ""
 
-    local TMP_FILE CHECKSUM_FILE; TMP_FILE="/tmp/vps_update_$$.sh"; CHECKSUM_FILE="/tmp/vps_update_$$.sha256"
+    local TMP_FILE CHECKSUM_FILE MANIFEST_FILE; TMP_FILE="/tmp/vps_update_$$.sh"; CHECKSUM_FILE="/tmp/vps_update_$$.sha256"; MANIFEST_FILE="/tmp/vps_update_$$.manifest.json"
 
     info "正在下载最新版本..."
-    local TRY EXPECTED_HASH ACTUAL_HASH DOWNLOAD_OK SCRIPT_FETCH_URL CHECKSUM_FETCH_URL TS
+    local TRY EXPECTED_HASH ACTUAL_HASH DOWNLOAD_OK SCRIPT_FETCH_URL CHECKSUM_FETCH_URL MANIFEST_FETCH_URL TS
     DOWNLOAD_OK=0
     for TRY in 1 2 3 4; do
         TS=$(date +%s)
@@ -75,26 +81,36 @@ self_update() {
             1)
                 SCRIPT_FETCH_URL="$SCRIPT_URL"
                 CHECKSUM_FETCH_URL="$CHECKSUM_URL"
+                MANIFEST_FETCH_URL="$MANIFEST_URL"
                 ;;
             2)
                 SCRIPT_FETCH_URL="$SCRIPT_URL?ts=$TS"
                 CHECKSUM_FETCH_URL="$CHECKSUM_URL?ts=$TS"
+                MANIFEST_FETCH_URL="$MANIFEST_URL?ts=$TS"
                 ;;
             3)
                 SCRIPT_FETCH_URL="https://github.com/chnnic/SSH-Hardening/raw/refs/heads/main/SSH-Hardening.sh"
                 CHECKSUM_FETCH_URL="https://github.com/chnnic/SSH-Hardening/raw/refs/heads/main/SSH-Hardening.sh.sha256"
+                MANIFEST_FETCH_URL="https://github.com/chnnic/SSH-Hardening/raw/refs/heads/main/SSH-Hardening.manifest.json"
                 ;;
             *)
                 SCRIPT_FETCH_URL="https://cdn.jsdelivr.net/gh/chnnic/SSH-Hardening@main/SSH-Hardening.sh"
                 CHECKSUM_FETCH_URL="https://cdn.jsdelivr.net/gh/chnnic/SSH-Hardening@main/SSH-Hardening.sh.sha256"
+                MANIFEST_FETCH_URL="https://cdn.jsdelivr.net/gh/chnnic/SSH-Hardening@main/SSH-Hardening.manifest.json"
                 ;;
         esac
-        rm -f "$TMP_FILE" "$CHECKSUM_FILE"
+        rm -f "$TMP_FILE" "$CHECKSUM_FILE" "$MANIFEST_FILE"
         if curl -fsSL --retry 2 --retry-delay 1 -H 'Cache-Control: no-cache' -H 'Pragma: no-cache' \
             "$SCRIPT_FETCH_URL" -o "$TMP_FILE" 2>/dev/null \
             && curl -fsSL --retry 2 --retry-delay 1 -H 'Cache-Control: no-cache' -H 'Pragma: no-cache' \
             "$CHECKSUM_FETCH_URL" -o "$CHECKSUM_FILE" 2>/dev/null; then
             EXPECTED_HASH=$(awk 'NR==1 {print $1}' "$CHECKSUM_FILE")
+            if curl -fsSL --retry 1 --retry-delay 1 -H 'Cache-Control: no-cache' -H 'Pragma: no-cache' \
+                "$MANIFEST_FETCH_URL" -o "$MANIFEST_FILE" 2>/dev/null; then
+                local MANIFEST_HASH
+                MANIFEST_HASH=$(self_manifest_value "$MANIFEST_FILE" sha256)
+                [ -n "$MANIFEST_HASH" ] && EXPECTED_HASH="$MANIFEST_HASH"
+            fi
             ACTUAL_HASH=$(file_sha256 "$TMP_FILE" 2>/dev/null || true)
             if [ -n "$ACTUAL_HASH" ] && [ "$ACTUAL_HASH" = "$EXPECTED_HASH" ]; then
                 DOWNLOAD_OK=1
@@ -107,7 +123,7 @@ self_update() {
         fi
         sleep 1
     done
-    rm -f "$CHECKSUM_FILE"
+    rm -f "$CHECKSUM_FILE" "$MANIFEST_FILE"
     if [ "$DOWNLOAD_OK" -ne 1 ]; then
         rm -f "$TMP_FILE"
         error "SHA256 校验失败，已拒绝更新"

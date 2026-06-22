@@ -1438,6 +1438,101 @@ resource_health_check() {
     audit_action "执行系统资源健康检查" SUCCESS
 }
 
+config_health_check() {
+    print_header "配置体检"
+    local WARNINGS=0
+    echo -e "  ${BOLD}脚本基础${NC}"
+    [ -x "${LOCAL_SCRIPT:-/usr/local/bin/vps-tools}" ] && info "本地脚本可执行" || { warn "本地脚本不可执行或不存在"; WARNINGS=$((WARNINGS+1)); }
+    [ -f "$VPS_AUDIT_LOG" ] && info "审计日志存在" || warn "审计日志尚未生成"
+    if command -v bash >/dev/null 2>&1; then info "bash 已可用"; else warn "未检测到 bash"; WARNINGS=$((WARNINGS+1)); fi
+
+    echo ""; echo -e "  ${BOLD}系统服务${NC}"
+    if command -v sshd >/dev/null 2>&1 && sshd -t 2>/dev/null; then info "SSH 配置语法正常"; else warn "SSH 配置语法检查失败"; WARNINGS=$((WARNINGS+1)); fi
+    if systemd_available; then
+        if systemctl is-active --quiet ssh 2>/dev/null || systemctl is-active --quiet sshd 2>/dev/null; then info "SSH 服务运行中"; else warn "SSH 服务未运行"; WARNINGS=$((WARNINGS+1)); fi
+        if command -v fail2ban-client >/dev/null 2>&1; then
+            [ "$(f2b_status 2>/dev/null || echo stopped)" = running ] && info "Fail2ban 正常" || { warn "Fail2ban 未运行"; WARNINGS=$((WARNINGS+1)); }
+        fi
+    fi
+
+    echo ""; echo -e "  ${BOLD}监控配置${NC}"
+    if [ -f "$(monitor_alert_cfg 2>/dev/null)" ]; then
+        monitor_alert_load_cfg
+        [ -n "${MON_BOT_TOKEN:-}" ] && [ -n "${MON_CHAT_ID:-}" ] && info "监控 Bot 已配置" || { warn "监控 Bot 未完整配置"; WARNINGS=$((WARNINGS+1)); }
+        [ "$MON_ENABLED" = yes ] && info "监控告警已启用" || warn "监控告警未启用"
+        [ "$MON_TRAFFIC_ENABLED" = yes ] && info "流量监控已启用" || warn "流量监控未启用"
+        [ "$MON_DAILY_REPORT_ENABLED" = yes ] && info "每日日报已启用" || warn "每日日报未启用"
+    else
+        warn "尚未配置监控中心"
+        WARNINGS=$((WARNINGS+1))
+    fi
+
+    echo ""; echo -e "  ${BOLD}更新与备份${NC}"
+    [ -f "${LOCAL_SCRIPT:-/usr/local/bin/vps-tools}.sha256" ] && info "更新校验文件存在" || warn "本地校验文件不存在"
+    [ -d "$VPS_VERSION_DIR" ] && info "历史版本目录存在" || warn "历史版本目录不存在"
+    [ -d "$VPS_BACKUP_DIR" ] && info "配置备份目录存在" || warn "配置备份目录不存在"
+
+    echo ""; menu_div
+    if [ "$WARNINGS" -eq 0 ]; then info "未发现明显配置问题"; else warn "发现 $WARNINGS 项需要关注"; fi
+    audit_action "执行配置体检，警告 $WARNINGS 项" SUCCESS
+}
+
+diagnostic_bundle_create() {
+    print_header "生成诊断包"
+    local OUTDIR TMPDIR BUNDLE
+    OUTDIR="$VPS_DATA_DIR/diagnostics"
+    TMPDIR=$(mktemp -d "${TMPDIR:-/tmp}/vps-diagnostic.XXXXXX") || return 1
+    mkdir -p "$OUTDIR" 2>/dev/null || { rm -rf "$TMPDIR"; error "无法创建诊断包目录"; return 1; }
+    BUNDLE="$OUTDIR/diagnostic_$(date +%Y%m%d_%H%M%S).tar.gz"
+
+    {
+        echo "VPS-Hardening diagnostic bundle"
+        echo "Generated: $(date '+%Y-%m-%d %H:%M:%S')"
+        echo "Host: $(hostname 2>/dev/null || echo unknown)"
+        echo "Kernel: $(uname -a 2>/dev/null || true)"
+        echo
+        echo "[Services]"
+        if systemd_available; then
+            systemctl is-active ssh 2>/dev/null || systemctl is-active sshd 2>/dev/null || true
+            systemctl is-active fail2ban 2>/dev/null || true
+            systemctl is-active caddy 2>/dev/null || true
+            systemctl is-active nftables 2>/dev/null || true
+        fi
+        echo
+        echo "[Disk]"
+        df -hP 2>/dev/null || true
+        echo
+        echo "[Memory]"
+        free -h 2>/dev/null || true
+        echo
+        echo "[Network]"
+        ip route 2>/dev/null || true
+        ip -6 route 2>/dev/null || true
+        echo
+        echo "[Recent audit]"
+        tail -100 "$VPS_AUDIT_LOG" 2>/dev/null || true
+    } > "$TMPDIR/summary.txt"
+
+    [ -f "$SSHD_CONFIG" ] && cp "$SSHD_CONFIG" "$TMPDIR/sshd_config" 2>/dev/null || true
+    [ -d /etc/ssh/sshd_config.d ] && { mkdir -p "$TMPDIR/ssh" && cp -a /etc/ssh/sshd_config.d "$TMPDIR/ssh/" 2>/dev/null || true; }
+    [ -f /etc/caddy/Caddyfile ] && cp /etc/caddy/Caddyfile "$TMPDIR/" 2>/dev/null || true
+    [ -f /etc/nftables.conf ] && cp /etc/nftables.conf "$TMPDIR/" 2>/dev/null || true
+    [ -f /etc/sysctl.d/99-vps-bbr.conf ] && cp /etc/sysctl.d/99-vps-bbr.conf "$TMPDIR/" 2>/dev/null || true
+    [ -d "$VPS_VERSION_DIR" ] && ls -1 "$VPS_VERSION_DIR" > "$TMPDIR/version-files.txt" 2>/dev/null || true
+    [ -d "$VPS_BACKUP_DIR" ] && ls -1 "$VPS_BACKUP_DIR" > "$TMPDIR/backup-files.txt" 2>/dev/null || true
+    if [ -f "$TMPDIR/summary.txt" ]; then
+        sed -E 's/((BOT_TOKEN|CHAT_ID|PASSWORD|SECRET|PRIVATE_KEY|API_TOKEN)[[:space:]]*[:=][[:space:]]*).*/\1[REDACTED]/I' "$TMPDIR/summary.txt" > "$TMPDIR/summary.redacted" 2>/dev/null || cp "$TMPDIR/summary.txt" "$TMPDIR/summary.redacted"
+        mv "$TMPDIR/summary.redacted" "$TMPDIR/summary.txt"
+    fi
+
+    tar -czf "$BUNDLE" -C "$TMPDIR" . >/dev/null 2>&1 || { rm -rf "$TMPDIR"; error "诊断包打包失败"; return 1; }
+    rm -rf "$TMPDIR"
+    chmod 600 "$BUNDLE" 2>/dev/null || true
+    audit_action "生成诊断包 $(basename "$BUNDLE")" SUCCESS
+    info "诊断包已生成：$BUNDLE"
+    printf '%s\n' "$BUNDLE"
+}
+
 system_update_manager() {
     while true; do
         print_header "系统更新管理"
@@ -1538,11 +1633,12 @@ system_toolbox_menu() {
         menu_pair "5" "脚本操作记录" "6" "系统资源健康"
         menu_pair "7" "系统更新管理" "8" "配置导出 / 导入"
         menu_pair "9" "统一回滚中心" "10" "监控告警中心" "$CYAN" "$CYAN"
+        menu_pair "11" "配置体检中心" "12" "生成诊断包" "$GREEN" "$YELLOW"
         menu_item "0" "返回主菜单" "$RED"
         menu_div
         ui_hint "SSH、防火墙、DNS 和 IP 修改均有防断联保护"
         echo ""
-        read -rp "$(ui_prompt '选择工具 [0-10]: ')" CH
+        read -rp "$(ui_prompt '选择工具 [0-12]: ')" CH
         case "$CH" in
             1) security_audit ;;
             2) login_security_logs; continue ;;
@@ -1554,6 +1650,8 @@ system_toolbox_menu() {
             8) config_transfer_menu; continue ;;
             9) rollback_center_menu; continue ;;
             10) monitor_alert_home_menu ;;
+            11) config_health_check ;;
+            12) diagnostic_bundle_create ;;
             0) return ;;
             *) warn "无效选项"; sleep 1; continue ;;
         esac

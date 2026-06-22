@@ -1,4 +1,4 @@
-# VPS 开荒脚本 V3.9.17
+# VPS 开荒脚本 V3.9.18
 
 > **银趴火山帮** 出品 · SSH · BBR · DDNS · Caddy · Firewall · NFT 转发
 
@@ -68,7 +68,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/chnnic/SSH-Hardening/refs/he
    ...
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  VPS 开荒脚本  V3.9.17 · 银趴火山帮
+  VPS 开荒脚本  V3.9.18 · 银趴火山帮
 
   ◆ 系统概览
   ● SSH  22 · 1 公钥          ● 认证  仅密钥
@@ -414,6 +414,8 @@ LXC / OpenVZ 容器自动提示可能不支持。
 | 操作记录 | 将关键操作、来源 IP 和结果写入 `/var/log/vps-tools-audit.log` |
 | 系统资源健康 | CPU、负载、内存、磁盘、inode、连接、进程及失败服务 |
 | 系统更新管理 | 检查更新、安全更新、完整更新、自动安全更新和缓存清理 |
+| 配置体检中心 | 汇总检查本地脚本、SSH、Fail2ban、监控 Bot、流量监控、日报、备份与历史版本 |
+| 生成诊断包 | 导出脱敏诊断包，包含系统概览、服务状态、路由、资源、最近审计记录和关键配置快照 |
 
 SSH、防火墙、DNS、IP 优先级及 IPv6 修改会启动 180 秒防断联保护。用户未确认新连接正常时，脚本自动恢复修改前配置和服务状态。
 
@@ -454,7 +456,7 @@ DNS 设置会自动识别 `systemd-resolved`、NetworkManager、resolvconf 或�
 | 功能 | 说明 |
 |------|------|
 | 安装 + 设置快捷键 | `/usr/local/bin/vps-tools` + `v` / `V` 软链接 |
-| 从 GitHub 更新 | SHA256 + Bash 语法校验、保存旧版本、覆盖并自动重启 |
+| 从 GitHub 更新 | Manifest / SHA256 + Bash 语法校验、保存旧版本、覆盖并自动重启 |
 | 回滚脚本版本 | 从 `/var/lib/vps-tools/versions` 选择更新前版本恢复 |
 | 删除本地脚本 | 仅删除指向本脚本的软链接，不影响其他脚本 |
 
@@ -550,6 +552,7 @@ GitHub Actions 还会在 Debian、Ubuntu、Alpine、Rocky Linux 容器中加载�
 
 | 版本 | 主要变更 |
 |------|---------|
+| **V3.9.18** | 新增配置体检与诊断包入口，并引入 manifest 支撑更新校验 |
 | **V3.9.17** | 服务管理统一使用 `systemd_available` 检测，减少 cron / 容器环境下的 systemd 误判 |
 | **V3.9.16** | 流量监控阈值设置与启用逻辑拆分，修改阈值不再重置今日与周期累计 |
 | **V3.9.15** | 监控告警 SSH 状态同时兼容 `ssh` / `sshd`，并移除 cron 环境下易误判的 `pidof systemd` 依赖 |
