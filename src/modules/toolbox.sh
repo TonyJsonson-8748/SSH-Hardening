@@ -526,6 +526,41 @@ EOF
     fi
 }
 
+monitor_traffic_reset_baselines() {
+    local TODAY RX TX CURRENT CYCLE_START
+    TODAY=$(date +%F)
+    read -r RX TX CURRENT <<EOF
+$(monitor_traffic_totals)
+EOF
+    CYCLE_START=$(monitor_traffic_current_cycle_start "${MON_TRAFFIC_RESET_DAY:-1}" "$TODAY")
+    MON_TRAFFIC_BASELINE_DATE="$TODAY"
+    MON_TRAFFIC_BASELINE_BYTES="$CURRENT"
+    MON_TRAFFIC_BASELINE_RX_BYTES="$RX"
+    MON_TRAFFIC_BASELINE_TX_BYTES="$TX"
+    MON_TRAFFIC_CYCLE_BASELINE_DATE="$CYCLE_START"
+    MON_TRAFFIC_CYCLE_BASELINE_BYTES="$CURRENT"
+    MON_TRAFFIC_CYCLE_BASELINE_RX_BYTES="$RX"
+    MON_TRAFFIC_CYCLE_BASELINE_TX_BYTES="$TX"
+    MON_TRAFFIC_CYCLE_OFFSET_BYTES=0
+    MON_TRAFFIC_CYCLE_OFFSET_RX_BYTES=0
+    MON_TRAFFIC_CYCLE_OFFSET_TX_BYTES=0
+}
+
+monitor_traffic_enable_with_prompt() {
+    local CLEAR_OLD
+    read -rp "$(ui_prompt '是否清除旧流量记录并从当前流量重新统计？[y/N]: ')" CLEAR_OLD
+    MON_TRAFFIC_ENABLED=yes
+    if [[ "$CLEAR_OLD" =~ ^[Yy]$ ]]; then
+        monitor_traffic_reset_baselines
+        info "流量监控已启用，旧记录已清除"
+    else
+        monitor_traffic_ensure_baseline
+        monitor_traffic_cycle_ensure_baseline
+        info "流量监控已启用，已保留旧记录"
+    fi
+    monitor_alert_save_cfg
+}
+
 monitor_traffic_used_bytes() {
     local CURRENT BASE USED
     CURRENT=$(monitor_int_normalize "$(monitor_traffic_total_bytes)")
@@ -1588,23 +1623,7 @@ EOF
                     MON_TRAFFIC_ENABLED=no
                     info "流量监控已关闭"
                 else
-                    local CUR_RX CUR_TX CUR_TOTAL
-                    read -r CUR_RX CUR_TX CUR_TOTAL <<EOF
-$(monitor_traffic_totals)
-EOF
-                    MON_TRAFFIC_ENABLED=yes
-                    MON_TRAFFIC_BASELINE_DATE=$(date +%F)
-                    MON_TRAFFIC_BASELINE_BYTES="$CUR_TOTAL"
-                    MON_TRAFFIC_BASELINE_RX_BYTES="$CUR_RX"
-                    MON_TRAFFIC_BASELINE_TX_BYTES="$CUR_TX"
-                    MON_TRAFFIC_CYCLE_BASELINE_DATE=$(monitor_traffic_current_cycle_start "${MON_TRAFFIC_RESET_DAY:-1}" "$(date +%F)")
-                    MON_TRAFFIC_CYCLE_BASELINE_BYTES="$CUR_TOTAL"
-                    MON_TRAFFIC_CYCLE_BASELINE_RX_BYTES="$CUR_RX"
-                    MON_TRAFFIC_CYCLE_BASELINE_TX_BYTES="$CUR_TX"
-                    MON_TRAFFIC_CYCLE_OFFSET_BYTES=0
-                    MON_TRAFFIC_CYCLE_OFFSET_RX_BYTES=0
-                    MON_TRAFFIC_CYCLE_OFFSET_TX_BYTES=0
-                    info "流量监控已启用"
+                    monitor_traffic_enable_with_prompt
                 fi
                 monitor_alert_save_cfg
                 ;;
@@ -1901,7 +1920,7 @@ monitor_alert_quick_setup_menu() {
             4)
                 read -rp "$(ui_prompt "流量阈值（GB/日） [${MON_TRAFFIC_LIMIT_GB}]: ")" LIMIT_IN
                 [ -n "$LIMIT_IN" ] && MON_TRAFFIC_LIMIT_GB="$LIMIT_IN"
-                MON_TRAFFIC_ENABLED=yes
+                [ "${MON_TRAFFIC_ENABLED:-no}" = yes ] || monitor_traffic_enable_with_prompt
                 monitor_alert_save_cfg
                 info "流量阈值已保存"
                 ;;
@@ -2016,23 +2035,7 @@ EOF
                             MON_TRAFFIC_ENABLED=no
                             info "流量监控已关闭"
                         else
-                            local CUR_RX CUR_TX CUR_TOTAL
-                            read -r CUR_RX CUR_TX CUR_TOTAL <<EOF
-$(monitor_traffic_totals)
-EOF
-                            MON_TRAFFIC_ENABLED=yes
-                            MON_TRAFFIC_BASELINE_DATE=$(date +%F)
-                            MON_TRAFFIC_BASELINE_BYTES="$CUR_TOTAL"
-                            MON_TRAFFIC_BASELINE_RX_BYTES="$CUR_RX"
-                            MON_TRAFFIC_BASELINE_TX_BYTES="$CUR_TX"
-                            MON_TRAFFIC_CYCLE_BASELINE_DATE=$(monitor_traffic_current_cycle_start "${MON_TRAFFIC_RESET_DAY:-1}" "$(date +%F)")
-                            MON_TRAFFIC_CYCLE_BASELINE_BYTES="$CUR_TOTAL"
-                            MON_TRAFFIC_CYCLE_BASELINE_RX_BYTES="$CUR_RX"
-                            MON_TRAFFIC_CYCLE_BASELINE_TX_BYTES="$CUR_TX"
-                            MON_TRAFFIC_CYCLE_OFFSET_BYTES=0
-                            MON_TRAFFIC_CYCLE_OFFSET_RX_BYTES=0
-                            MON_TRAFFIC_CYCLE_OFFSET_TX_BYTES=0
-                            info "流量监控已启用"
+                            monitor_traffic_enable_with_prompt
                         fi
                         monitor_alert_save_cfg
                         ;;
