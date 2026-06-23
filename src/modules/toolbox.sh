@@ -5,6 +5,7 @@
 config_backup_paths() {
     local p
     for p in \
+        etc/hostname etc/hosts \
         etc/ssh/sshd_config etc/ssh/sshd_config.d root/.ssh/authorized_keys \
         etc/fail2ban etc/ufw etc/firewalld etc/nftables.conf etc/nft-port-forward \
         etc/sysctl.conf etc/sysctl.d/99-vps-bbr.conf etc/sysctl.d/99-ipv6-disable.conf \
@@ -2500,8 +2501,8 @@ config_health_check() {
     print_header "配置体检"
     local WARNINGS=0
     echo -e "  ${BOLD}脚本基础${NC}"
-    [ -x "${LOCAL_SCRIPT:-/usr/local/bin/vps-tools}" ] && info "本地脚本可执行" || { warn "本地脚本不可执行或不存在"; WARNINGS=$((WARNINGS+1)); }
-    [ -f "$VPS_AUDIT_LOG" ] && info "审计日志存在" || warn "审计日志尚未生成"
+    if [ -x "${LOCAL_SCRIPT:-/usr/local/bin/vps-tools}" ]; then info "本地脚本可执行"; else warn "本地脚本不可执行或不存在"; WARNINGS=$((WARNINGS+1)); fi
+    if [ -f "$VPS_AUDIT_LOG" ]; then info "审计日志存在"; else warn "审计日志尚未生成"; fi
     if command -v bash >/dev/null 2>&1; then info "bash 已可用"; else warn "未检测到 bash"; WARNINGS=$((WARNINGS+1)); fi
 
     echo ""; echo -e "  ${BOLD}系统服务${NC}"
@@ -2509,26 +2510,26 @@ config_health_check() {
     if systemd_available; then
         if systemctl is-active --quiet ssh 2>/dev/null || systemctl is-active --quiet sshd 2>/dev/null; then info "SSH 服务运行中"; else warn "SSH 服务未运行"; WARNINGS=$((WARNINGS+1)); fi
         if command -v fail2ban-client >/dev/null 2>&1; then
-            [ "$(f2b_status 2>/dev/null || echo stopped)" = running ] && info "Fail2ban 正常" || { warn "Fail2ban 未运行"; WARNINGS=$((WARNINGS+1)); }
+            if [ "$(f2b_status 2>/dev/null || echo stopped)" = running ]; then info "Fail2ban 正常"; else warn "Fail2ban 未运行"; WARNINGS=$((WARNINGS+1)); fi
         fi
     fi
 
     echo ""; echo -e "  ${BOLD}监控配置${NC}"
     if [ -f "$(monitor_alert_cfg 2>/dev/null)" ]; then
         monitor_alert_load_cfg
-        [ -n "${MON_BOT_TOKEN:-}" ] && [ -n "${MON_CHAT_ID:-}" ] && info "监控 Bot 已配置" || { warn "监控 Bot 未完整配置"; WARNINGS=$((WARNINGS+1)); }
-        [ "$MON_ENABLED" = yes ] && info "监控告警已启用" || warn "监控告警未启用"
-        [ "$MON_TRAFFIC_ENABLED" = yes ] && info "流量监控已启用" || warn "流量监控未启用"
-        [ "$MON_DAILY_REPORT_ENABLED" = yes ] && info "每日日报已启用" || warn "每日日报未启用"
+        if [ -n "${MON_BOT_TOKEN:-}" ] && [ -n "${MON_CHAT_ID:-}" ]; then info "监控 Bot 已配置"; else warn "监控 Bot 未完整配置"; WARNINGS=$((WARNINGS+1)); fi
+        if [ "$MON_ENABLED" = yes ]; then info "监控告警已启用"; else warn "监控告警未启用"; fi
+        if [ "$MON_TRAFFIC_ENABLED" = yes ]; then info "流量监控已启用"; else warn "流量监控未启用"; fi
+        if [ "$MON_DAILY_REPORT_ENABLED" = yes ]; then info "每日日报已启用"; else warn "每日日报未启用"; fi
     else
         warn "尚未配置监控中心"
         WARNINGS=$((WARNINGS+1))
     fi
 
     echo ""; echo -e "  ${BOLD}更新与备份${NC}"
-    [ -f "${LOCAL_SCRIPT:-/usr/local/bin/vps-tools}.sha256" ] && info "更新校验文件存在" || warn "本地校验文件不存在"
-    [ -d "$VPS_VERSION_DIR" ] && info "历史版本目录存在" || warn "历史版本目录不存在"
-    [ -d "$VPS_BACKUP_DIR" ] && info "配置备份目录存在" || warn "配置备份目录不存在"
+    if [ -f "${LOCAL_SCRIPT:-/usr/local/bin/vps-tools}.sha256" ]; then info "更新校验文件存在"; else warn "本地校验文件不存在"; fi
+    if [ -d "$VPS_VERSION_DIR" ]; then info "历史版本目录存在"; else warn "历史版本目录不存在"; fi
+    if [ -d "$VPS_BACKUP_DIR" ]; then info "配置备份目录存在"; else warn "配置备份目录不存在"; fi
 
     echo ""; menu_div
     if [ "$WARNINGS" -eq 0 ]; then info "未发现明显配置问题"; else warn "发现 $WARNINGS 项需要关注"; fi
@@ -2589,6 +2590,91 @@ diagnostic_bundle_create() {
     audit_action "生成诊断包 $(basename "$BUNDLE")" SUCCESS
     info "诊断包已生成：$BUNDLE"
     printf '%s\n' "$BUNDLE"
+}
+
+system_hostname_current() {
+    hostnamectl --static 2>/dev/null || cat /etc/hostname 2>/dev/null || hostname 2>/dev/null || echo unknown
+}
+
+system_hostname_valid() {
+    local NAME="$1" PART
+    local -a HOSTNAME_PARTS
+    [ -n "$NAME" ] || return 1
+    [ "${#NAME}" -le 253 ] || return 1
+    [[ "$NAME" != .* && "$NAME" != *. ]] || return 1
+    [[ "$NAME" != *..* ]] || return 1
+    [[ "$NAME" =~ ^[A-Za-z0-9.-]+$ ]] || return 1
+    IFS='.' read -r -a HOSTNAME_PARTS <<< "$NAME"
+    for PART in "${HOSTNAME_PARTS[@]}"; do
+        [ -n "$PART" ] || return 1
+        [ "${#PART}" -le 63 ] || return 1
+        [[ "$PART" =~ ^[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?$ ]] || return 1
+    done
+    return 0
+}
+
+system_hostname_sed_escape() {
+    printf '%s' "$1" | sed 's/[][\/.^$*+?{}|()]/\\&/g'
+}
+
+system_hostname_sync_hosts() {
+    local OLD_NAME="$1" NEW_NAME="$2" OLD_ESC NEW_ESC
+    [ -f /etc/hosts ] || printf '127.0.0.1 localhost\n' > /etc/hosts
+    if [ -n "$OLD_NAME" ] && [ "$OLD_NAME" != "$NEW_NAME" ]; then
+        OLD_ESC=$(system_hostname_sed_escape "$OLD_NAME")
+        NEW_ESC=$(system_hostname_sed_escape "$NEW_NAME")
+        sed -i.vps-hostname.bak -E "s/(^|[[:space:]])${OLD_ESC}([[:space:]#]|$)/\\1${NEW_NAME}\\2/g" /etc/hosts 2>/dev/null || true
+    fi
+    NEW_ESC=$(system_hostname_sed_escape "$NEW_NAME")
+    if grep -Eq "(^|[[:space:]])${NEW_ESC}([[:space:]]|$)" /etc/hosts 2>/dev/null; then
+        return 0
+    fi
+    if grep -qE '^[[:space:]]*127\.0\.1\.1[[:space:]]' /etc/hosts 2>/dev/null; then
+        sed -i.vps-hostname.bak -E "/^[[:space:]]*127\.0\.1\.1[[:space:]]/s/$/ ${NEW_NAME}/" /etc/hosts 2>/dev/null \
+            || printf '127.0.1.1 %s\n' "$NEW_NAME" >> /etc/hosts
+    else
+        printf '127.0.1.1 %s\n' "$NEW_NAME" >> /etc/hosts
+    fi
+}
+
+system_hostname_apply() {
+    local OLD_NAME NEW_NAME
+    OLD_NAME=$(system_hostname_current)
+    print_header "修改系统 Hostname"
+    echo -e "  当前 hostname：${BOLD}${OLD_NAME}${NC}"
+    echo -e "  示例：${DIM}GreenCloud.HK6666 / ali-hkg-01 / relay01${NC}"
+    menu_div
+    read -rp "$(ui_prompt '新的系统 hostname: ')" NEW_NAME
+    NEW_NAME=${NEW_NAME//[[:space:]]/}
+    [ -n "$NEW_NAME" ] || { warn "已取消"; return; }
+    if ! system_hostname_valid "$NEW_NAME"; then
+        error "hostname 格式不合法：仅支持字母、数字、点和短横线；不能以点/短横线开头或结尾"
+        return 1
+    fi
+    if [ "$OLD_NAME" = "$NEW_NAME" ]; then
+        info "hostname 未变化"
+        return 0
+    fi
+    confirm_change_preview "修改系统 hostname" \
+        "当前：$OLD_NAME" \
+        "修改为：$NEW_NAME" \
+        "写入 /etc/hostname，并同步 /etc/hosts 中的本机映射" \
+        "SSH 连接不会因此断开，但新终端提示符、日志和 hostname 命令会显示新名称" || { warn "已取消"; return; }
+    [ "$(id -u)" = "0" ] || { error "需要 root 权限"; return 1; }
+    config_backup_create before_hostname_change true >/dev/null || warn "配置备份失败，仍继续尝试修改"
+    if command -v hostnamectl >/dev/null 2>&1; then
+        hostnamectl set-hostname "$NEW_NAME" 2>/dev/null || {
+            printf '%s\n' "$NEW_NAME" > /etc/hostname || return 1
+            hostname "$NEW_NAME" 2>/dev/null || true
+        }
+    else
+        printf '%s\n' "$NEW_NAME" > /etc/hostname || return 1
+        hostname "$NEW_NAME" 2>/dev/null || true
+    fi
+    system_hostname_sync_hosts "$OLD_NAME" "$NEW_NAME"
+    audit_action "修改系统 hostname：$OLD_NAME -> $NEW_NAME" SUCCESS
+    info "系统 hostname 已修改为：$NEW_NAME"
+    warn "已打开的 SSH 会话提示符可能不会立刻刷新，重新登录后会看到新名称"
 }
 
 system_update_manager() {
@@ -2692,11 +2778,12 @@ system_toolbox_menu() {
         menu_pair "7" "系统更新管理" "8" "配置导出 / 导入"
         menu_pair "9" "统一回滚中心" "10" "监控告警中心" "$CYAN" "$CYAN"
         menu_pair "11" "配置体检中心" "12" "生成诊断包" "$GREEN" "$YELLOW"
+        menu_item "13" "修改系统 Hostname" "$CYAN"
         menu_item "0" "返回主菜单" "$RED"
         menu_div
-        ui_hint "SSH、防火墙、DNS 和 IP 修改均有防断联保护"
+        ui_hint "Hostname 是系统名，会影响 root@主机名 提示符；推送显示名仍在监控通知设置中配置"
         echo ""
-        read -rp "$(ui_prompt '选择工具 [0-12]: ')" CH
+        read -rp "$(ui_prompt '选择工具 [0-13]: ')" CH
         case "$CH" in
             1) security_audit ;;
             2) login_security_logs; continue ;;
@@ -2710,6 +2797,7 @@ system_toolbox_menu() {
             10) monitor_alert_home_menu ;;
             11) config_health_check ;;
             12) diagnostic_bundle_create ;;
+            13) system_hostname_apply ;;
             0) return ;;
             *) warn "无效选项"; sleep 1; continue ;;
         esac

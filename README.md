@@ -1,4 +1,4 @@
-# VPS 开荒脚本 V3.9.24
+# VPS 开荒脚本 V3.9.25
 
 > **银趴火山帮** 出品 · SSH · BBR · DDNS · Caddy · Firewall · NFT 转发
 
@@ -41,6 +41,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/chnnic/SSH-Hardening/refs/he
 | `--time-menu` | 时间与时区 |
 | `--swap-menu` | Swap 管理 |
 | `--system-toolbox-menu` | 安全与诊断 |
+| `--hostname-menu` | 修改系统 hostname |
 | `--docker-menu` | Docker 管理 |
 | `--software-menu` | 软件与重装 |
 | `--self-manage-menu` | 脚本管理 |
@@ -68,7 +69,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/chnnic/SSH-Hardening/refs/he
    ...
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  VPS 开荒脚本  V3.9.24 · 银趴火山帮
+  VPS 开荒脚本  V3.9.25 · 银趴火山帮
 
   ◆ 系统概览
   ● SSH  22 · 1 公钥          ● 认证  仅密钥
@@ -414,6 +415,7 @@ LXC / OpenVZ 容器自动提示可能不支持。
 | 操作记录 | 将关键操作、来源 IP 和结果写入 `/var/log/vps-tools-audit.log` |
 | 系统资源健康 | CPU、负载、内存、磁盘、inode、连接、进程及失败服务 |
 | 系统更新管理 | 检查更新、安全更新、完整更新、自动安全更新和缓存清理 |
+| 修改系统 Hostname | 修改系统 hostname，并同步 `/etc/hostname` 与 `/etc/hosts`；用于改变 `root@主机名` 里的系统名 |
 | 配置体检中心 | 汇总检查本地脚本、SSH、Fail2ban、监控 Bot、流量监控、日报、备份与历史版本 |
 | 生成诊断包 | 导出脱敏诊断包，包含系统概览、服务状态、路由、资源、最近审计记录和关键配置快照 |
 
@@ -568,6 +570,7 @@ GitHub Actions 还会在 Debian、Ubuntu、Alpine、Rocky Linux 容器中加载�
 
 | 版本 | 主要变更 |
 |------|---------|
+| **V3.9.25** | 安全与诊断工具箱新增“修改系统 Hostname”，支持校验后写入 `/etc/hostname` 并同步 `/etc/hosts`，用于修改 SSH 提示符中的系统主机名 |
 | **V3.9.24** | 续费提醒新增“我已续费”，确认后跳过当前周期并从下一周期继续提醒 |
 | **V3.9.23** | 日报、流量、续费和资源告警子页统一增加“立即发送一次”，可手动推送对应模块的实时快照 |
 | **V3.9.22** | 重排监控告警中心流程，新增快速启用、通知、日报、流量、续费、资源、高级策略和后台监控独立页面，保留旧配置兼容 |

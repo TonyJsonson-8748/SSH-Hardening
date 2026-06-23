@@ -14,6 +14,7 @@ confirm_change_preview "test" "accept" <<< "y" >/dev/null 2>&1 || { echo "Previe
 # Reinstall must reject container environments and malformed downloads.
 systemd-detect-virt() { echo lxc; }
 reinstall_is_container || { echo "Container detection did not reject LXC" >&2; exit 1; }
+# shellcheck disable=SC2329 # test stub used indirectly by download helpers
 curl() {
     local OUT="" PREV="" arg
     for arg in "$@"; do [ "$PREV" = "-o" ] && OUT="$arg"; PREV="$arg"; done
@@ -58,6 +59,7 @@ grep -qx 'Port 22' "$SSHD_CONFIG" || { echo "SSH rollback did not restore backup
 VPS_DATA_DIR="$TMP/data"
 VPS_BACKUP_DIR="$VPS_DATA_DIR/backups"
 export VPS_AUDIT_LOG="$TMP/audit.log"
+# shellcheck disable=SC2329 # test stub overrides the sourced function for config_backup_create
 config_backup_paths() { printf 'tmp/does-not-exist-vps-tools-test\n'; }
 config_backup_create injected_failure true >/dev/null 2>&1 && { echo "Expected backup failure" >&2; exit 1; }
 if find "$VPS_BACKUP_DIR" -type f -name '*.tar.gz' 2>/dev/null | grep -q .; then
