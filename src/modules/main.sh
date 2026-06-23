@@ -79,8 +79,9 @@ main_menu() {
         volcano_art_banner
         echo ""
         box_top
-        echo -e "  ${BOLD}${CYAN}VPS 开荒脚本${NC}  ${DIM}V3.9.26 · 银趴火山帮${NC}"
-        echo ""
+        app_header_line
+        echo -e "  ${BOLD}${CYAN}主菜单${NC}"
+        box_sep
         # 收集状态数据
         local FW_TYPE FW_STAT FW_STATE
         FW_TYPE=$(fw_detect)

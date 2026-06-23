@@ -463,10 +463,8 @@ fail2ban_menu() {
         safe_clear
         echo ""
         box_top
-        box_title "VPS 开荒脚本 V3.9.26"
-        box_title "· · 银趴火山帮 · ·"
-        box_sep
-        box_title "Fail2ban 管理"
+        app_header_line
+        echo -e "  ${BOLD}${CYAN}Fail2ban 管理${NC}"
         box_sep
         # 读取当前参数
         local CUR_BAN CUR_FIND CUR_MAX CUR_PORT
