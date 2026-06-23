@@ -80,7 +80,8 @@ main_menu() {
         echo ""
         box_top
         app_header_line
-        echo -e "  ${BOLD}${CYAN}主菜单${NC}"
+        app_subtitle_line
+        echo -e "  ${DIM}SSH · BBR · DDNS · Caddy · Firewall · NFT · Monitor${NC}"
         box_sep
         # 收集状态数据
         local FW_TYPE FW_STAT FW_STATE
