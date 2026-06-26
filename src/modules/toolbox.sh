@@ -417,6 +417,26 @@ monitor_alert_host_label() {
     fi
 }
 
+monitor_alert_html_escape() {
+    local VALUE="${1:-}"
+    VALUE=${VALUE//&/&amp;}
+    VALUE=${VALUE//</&lt;}
+    VALUE=${VALUE//>/&gt;}
+    printf '%s' "$VALUE"
+}
+
+monitor_alert_host_label_html() {
+    monitor_alert_html_escape "$(monitor_alert_host_label)"
+}
+
+monitor_alert_set_host_label() {
+    local HOST_LABEL_IN
+    read -rp "$(ui_prompt "推送中显示的主机名 [${MON_HOST_LABEL:-自动使用 hostname}]: ")" HOST_LABEL_IN
+    MON_HOST_LABEL="$HOST_LABEL_IN"
+    monitor_alert_save_cfg
+    info "主机显示名称已保存"
+}
+
 monitor_int_normalize() {
     local VALUE="${1:-0}"
     awk -v value="$VALUE" 'BEGIN {
@@ -693,7 +713,7 @@ monitor_daily_report_due() {
 
 monitor_alert_daily_report() {
     local HOST TODAY DAILY_TEXT CYCLE_TEXT CYCLE_START RENEW_LEFT NEXT TREND_TEXT
-    HOST=$(monitor_alert_host_label)
+    HOST=$(monitor_alert_host_label_html)
     TODAY=$(date +%F)
     monitor_traffic_ensure_baseline
     monitor_traffic_cycle_ensure_baseline
@@ -722,16 +742,13 @@ EOF
 
 monitor_alert_daily_report_check() {
     [ "${MON_DAILY_REPORT_ENABLED:-no}" = "yes" ] || return 0
-    local TODAY CUR_TS LAST_DATE LAST_TS SIG
+    local TODAY CUR_TS LAST_DATE SIG
     TODAY=$(date +%F)
     monitor_daily_report_due "${MON_DAILY_REPORT_TIME:-08:00}" || return 0
     CUR_TS=$(date +%s)
     LAST_DATE=$(monitor_alert_state_get DAILY_REPORT_DATE 2>/dev/null || true)
-    LAST_TS=$(monitor_alert_state_get DAILY_REPORT_TS 2>/dev/null || echo 0)
     SIG=$(printf 'daily|%s|%s' "$(monitor_alert_host_label)" "$TODAY" | sha256sum 2>/dev/null | awk '{print $1}')
-    if [ "$LAST_DATE" = "$TODAY" ] && [ $((CUR_TS - LAST_TS)) -lt 43200 ]; then
-        return 0
-    fi
+    [ "$LAST_DATE" = "$TODAY" ] && return 0
     monitor_alert_daily_report
     monitor_alert_state_set DAILY_REPORT_DATE "$TODAY"
     monitor_alert_state_set DAILY_REPORT_TS "$CUR_TS"
@@ -1114,7 +1131,7 @@ monitor_alert_ssh_state() {
 
 monitor_alert_resource_check() {
     local HOST DISK_PCT MEM_PCT LOAD1 CPU_COUNT ISSUES="" LEVEL=notice
-    HOST=$(monitor_alert_host_label)
+    HOST=$(monitor_alert_host_label_html)
     DISK_PCT=$(df -P / 2>/dev/null | awk 'NR==2 {gsub("%","",$5); print $5+0}')
     MEM_PCT=$(awk '/^MemTotal:/ {t=$2} /^MemAvailable:/ {a=$2} END {if (t>0) printf "%.0f", (t-a)*100/t; else print 0}' /proc/meminfo 2>/dev/null)
     LOAD1=$(awk '{print $1}' /proc/loadavg 2>/dev/null || echo 0)
@@ -1171,7 +1188,7 @@ monitor_alert_resource_check() {
         monitor_alert_state_set RESOURCE_SIG ""
         return 0
     fi
-    SIG=$(printf '%s|%s|%s' "$HOST" "$ISSUES" "$DISK_PCT" | sha256sum 2>/dev/null | awk '{print $1}')
+    SIG=$(printf '%s|%s|%s' "$(monitor_alert_host_label)" "$ISSUES" "$DISK_PCT" | sha256sum 2>/dev/null | awk '{print $1}')
     if [ "$SIG" = "$LAST_SIG" ] && [ $((CUR_TS - LAST_TS)) -lt "$COOLDOWN" ]; then
         return 0
     fi
@@ -1206,7 +1223,7 @@ EOF
 
 monitor_alert_test_snapshot() {
     local HOST DISK_PCT MEM_PCT LOAD1 CPU_COUNT LOAD_WARN_VALUE DAILY_TEXT TREND_TEXT SSH_STATE F2B_STATE DOCKER_STATE CADDY_STATE
-    HOST=$(monitor_alert_host_label)
+    HOST=$(monitor_alert_host_label_html)
     monitor_traffic_ensure_baseline
     DAILY_TEXT=$(monitor_traffic_usage_text daily)
     TREND_TEXT=$(monitor_alert_trend_summary)
@@ -1245,7 +1262,7 @@ monitor_alert_resource_snapshot() {
 
 monitor_alert_traffic_snapshot() {
     local HOST TODAY_TEXT CYCLE_TEXT LIMIT_GB RESET_DAY CYCLE_START
-    HOST=$(monitor_alert_host_label)
+    HOST=$(monitor_alert_host_label_html)
     monitor_traffic_ensure_baseline
     monitor_traffic_cycle_ensure_baseline
     TODAY_TEXT=$(monitor_traffic_usage_text daily)
@@ -1267,7 +1284,7 @@ EOF
 
 monitor_alert_renew_snapshot() {
     local HOST NEXT DAYS_LEFT MODE NOTICE EXTRA
-    HOST=$(monitor_alert_host_label)
+    HOST=$(monitor_alert_host_label_html)
     MODE="${MON_RENEW_MODE:-interval}"
     NEXT="${MON_RENEW_NEXT_DATE:-}"
     NOTICE="${MON_RENEW_NOTICE_DAYS:-30,7,3,1}"
@@ -1364,7 +1381,7 @@ EOF
         fi
         monitor_alert_notify "${LEVEL_ICON} <b>流量超限${LEVEL_LABEL}</b>" "$(cat <<EOF
 级别：<code>${LEVEL_LABEL}</code>
-主机：<code>$(monitor_alert_host_label)</code>
+主机：<code>$(monitor_alert_host_label_html)</code>
 今日流量：${DAILY_TEXT}
 阈值：<code>${LIMIT_GB} GB</code>
 EOF
@@ -1376,7 +1393,7 @@ EOF
         audit_action "发送流量超限告警：${USED_GB}GB / ${LIMIT_GB}GB" SUCCESS
     else
         if [ "$(monitor_alert_state_get TRAFFIC_STATE 2>/dev/null || echo ok)" = alert ] && [ "${MON_RECOVERY_ENABLED:-yes}" = yes ] && ! monitor_alert_in_silence; then
-            monitor_alert_notify "✅ <b>流量恢复</b>" "主机：<code>$(monitor_alert_host_label)</code>\n时间：<code>$(date '+%Y-%m-%d %H:%M:%S')</code>\n状态：<code>流量已回到阈值下</code>"
+            monitor_alert_notify "✅ <b>流量恢复</b>" "主机：<code>$(monitor_alert_host_label_html)</code>\n时间：<code>$(date '+%Y-%m-%d %H:%M:%S')</code>\n状态：<code>流量已回到阈值下</code>"
             monitor_alert_history_add RECOVER "流量恢复"
             audit_action "发送流量恢复通知" SUCCESS
         fi
@@ -1388,6 +1405,7 @@ monitor_alert_renew_check() {
     [ "${MON_RENEW_ENABLED:-no}" = "yes" ] || return 0
     local NEXT="${MON_RENEW_NEXT_DATE:-}" TODAY DAYS_LEFT LEVEL LEVEL_LABEL LEVEL_ICON
     TODAY=$(date +%F)
+    [ "${MON_RENEW_LAST_ALERT:-}" = "$TODAY" ] && return 0
     if [ -z "$NEXT" ]; then
         NEXT="$TODAY"
     fi
@@ -1411,12 +1429,16 @@ monitor_alert_renew_check() {
     fi
     if monitor_alert_in_silence; then
         monitor_alert_state_set RENEW_STATE alert
+        monitor_alert_state_set RENEW_SIG "$SIG"
+        monitor_alert_state_set RENEW_TS "$CUR_TS"
+        MON_RENEW_LAST_ALERT="$TODAY"
+        monitor_alert_save_cfg
         monitor_alert_history_add SILENCED "${LEVEL_LABEL} 续费提醒：$NEXT，剩余 $DAYS_LEFT 天"
         return 0
     fi
     monitor_alert_notify "${LEVEL_ICON} <b>续费${LEVEL_LABEL}</b>" "$(cat <<EOF
 级别：<code>${LEVEL_LABEL}</code>
-主机：<code>$(monitor_alert_host_label)</code>
+主机：<code>$(monitor_alert_host_label_html)</code>
 下次续费日期：<code>${NEXT}</code>
 剩余天数：<code>${DAYS_LEFT}</code>
 EOF
@@ -1485,10 +1507,7 @@ monitor_alert_notify_menu() {
                 info "Telegram 已配置"
                 ;;
             2)
-                read -rp "$(ui_prompt "推送中显示的主机名 [${MON_HOST_LABEL:-自动使用 hostname}]: ")" HOST_LABEL_IN
-                MON_HOST_LABEL="$HOST_LABEL_IN"
-                monitor_alert_save_cfg
-                info "主机显示名称已保存"
+                monitor_alert_set_host_label
                 ;;
             3)
                 monitor_alert_test_snapshot
@@ -1902,10 +1921,7 @@ monitor_alert_quick_setup_menu() {
         case "$CH" in
             1) monitor_alert_notify_menu ;;
             2)
-                read -rp "$(ui_prompt "推送中显示的主机名 [${MON_HOST_LABEL:-自动使用 hostname}]: ")" HOST_LABEL_IN
-                MON_HOST_LABEL="$HOST_LABEL_IN"
-                monitor_alert_save_cfg
-                info "主机显示名称已保存"
+                monitor_alert_set_host_label
                 ;;
             3)
                 local NORMAL_TIME
@@ -2222,10 +2238,7 @@ EOF
             done
             ;;
         5)
-            read -rp "$(ui_prompt "推送中显示的主机名 [${MON_HOST_LABEL:-自动使用 hostname}]: ")" HOST_LABEL_IN
-            MON_HOST_LABEL="$HOST_LABEL_IN"
-            monitor_alert_save_cfg
-            info "主机显示名称已保存"
+            monitor_alert_set_host_label
             ;;
         6)
             monitor_alert_test_snapshot
