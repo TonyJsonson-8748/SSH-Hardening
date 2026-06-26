@@ -118,6 +118,7 @@ generate_key() {
     echo ""
     info "正在生成 $KEY_TYPE 密钥对..."
 
+    # shellcheck disable=SC2086 # KEY_BITS intentionally expands to "-b 4096" for RSA only.
     if ! ssh-keygen -t "$KEY_TYPE" $KEY_BITS -C "$KEY_COMMENT" -f "$KEY_FILE" -N "" -q 2>/dev/null; then
         error "密钥生成失败。"; rm -rf "$TMP_DIR"; return
     fi
@@ -309,16 +310,31 @@ change_port() {
 
     echo ""
     menu_div
-    warn "新端口已生效，但【旧端口 ${OLD_PORT} 暂未关闭】——这是为防止你被锁在外面。"
+    warn "新端口已生效，自动回滚保护仍在。"
     echo ""
     echo -e "  请【保持当前连接不要断开】，新开一个终端测试新端口："
     echo ""
     echo -e "     ${BOLD}ssh -p $INPUT_PORT 用户名@服务器IP${NC}"
     echo ""
-    warn "确认新端口能登录后，再回来关闭旧端口。"
+    echo -e "  ${DIM}注意：如果 VPS 有云厂商安全组，也必须在安全组放行 ${INPUT_PORT}/tcp。${NC}"
+    echo ""
+    warn "只有确认新端口可登录后，脚本才会取消自动回滚。"
     menu_div
     echo ""
-    read -rp "  新端口已测试可登录，现在关闭旧端口 ${OLD_PORT}？(y/N，默认N): " CLOSE_OLD
+    read -rp "  新端口已测试可登录吗？(y/N，默认N): " NEW_OK
+    [ -z "$NEW_OK" ] && NEW_OK="n"
+    if ! echo "$NEW_OK" | grep -qiE '^y(es)?$'; then
+        warn "未确认新端口可用，自动回滚保护仍在。180 秒内未确认将恢复旧配置。"
+        return
+    fi
+
+    cancel_safety_timer
+    audit_action "确认 SSH 新端口 ${INPUT_PORT} 可登录，取消自动回滚" SUCCESS
+    info "已确认新端口可登录，自动回滚已取消。"
+
+    echo ""
+    warn "下面只清理旧端口 ${OLD_PORT}/tcp 的防火墙放行规则，不会再修改 SSH 监听端口。"
+    read -rp "  现在关闭旧端口防火墙规则 ${OLD_PORT}/tcp？(y/N，默认N): " CLOSE_OLD
     [ -z "$CLOSE_OLD" ] && CLOSE_OLD="n"
     if echo "$CLOSE_OLD" | grep -qiE '^y(es)?$'; then
         if [ "$OLD_PORT" != "$INPUT_PORT" ]; then
@@ -333,5 +349,4 @@ change_port() {
     else
         warn "旧端口 ${OLD_PORT} 保留开放。确认无误后可手动关闭，或重新进入本菜单。"
     fi
-    safety_confirm
 }
