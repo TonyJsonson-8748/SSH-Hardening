@@ -1,4 +1,4 @@
-# VPS 开荒脚本 V3.9.30
+# VPS 开荒脚本 V3.9.31
 
 > **银趴火山帮** 出品 · SSH · BBR · DDNS · Caddy · Firewall · NFT 转发
 
@@ -71,7 +71,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/chnnic/SSH-Hardening/refs/he
 /___/_/  /_/_/   /_/  |_/_/ |_| /_/     \____/_/    /____/
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  VPS TOOLS  ·  V3.9.30
+  VPS TOOLS  ·  V3.9.31
   VPS 开荒脚本 · 银趴火山帮
 ────────────────────────────────────────────────────────────────
   SSH · BBR · DDNS · Caddy · Firewall · NFT · Monitor
@@ -229,10 +229,11 @@ bash <(curl -fsSL https://raw.githubusercontent.com/chnnic/SSH-Hardening/refs/he
 **安装前准备：**
 1. 域名托管到 Cloudflare
 2. 创建 API Token：`Zone / DNS / Edit` 权限
-3. 准备子域名
+3. 准备 IPv4 / IPv6 使用的子域名
 
 **支持配置：**
-- 记录模式：仅 IPv4 / IPv4+IPv6 双栈
+- IPv4 A 与 IPv6 AAAA 可分别启用、分别设置域名，也可以同域名双栈同时更新
+- 支持仅 IPv4、仅 IPv6、IPv4+IPv6 双栈
 - Cloudflare 代理（橙云）开关
 - 自定义 TTL（默认 60 秒）
 
@@ -241,6 +242,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/chnnic/SSH-Hardening/refs/he
 - IP 未变化时仅记录日志，不请求 API
 - IP 多源备用：`ipify.org → ifconfig.me → ip.sb`
 - **IPv4 格式严格校验**：纯 IPv6 机器自动识别不会误发
+- **IPv6 独立运行**：仅启用 AAAA 时不会因为无 IPv4 而退出
 - **二次校验**：检测到 IP 变化时再查询一次，防止误推
 - **日志自动轮转**：超过 500 行自动只保留最近 500 条
 - 日志：`/var/log/ddns.log`
@@ -576,6 +578,7 @@ GitHub Actions 还会在 Debian、Ubuntu、Alpine、Rocky Linux 容器中加载�
 
 | 版本 | 主要变更 |
 |------|---------|
+| **V3.9.31** | DDNS 支持 IPv4 A 与 IPv6 AAAA 分别设置，可同域名或不同子域名同时更新；仅启用 IPv6 时不再依赖 IPv4 |
 | **V3.9.30** | 修正 SSH 改端口流程：先确认新端口可登录，再决定是否关闭旧端口，避免关闭旧连接后才发现新端口不可用 |
 | **V3.9.29** | 修复每日日报和续费提醒同日重复推送；Telegram 推送中的主机显示名增加 HTML 转义，避免 `<`、`&` 等字符破坏消息格式 |
 | **V3.9.28** | 首页采用清爽运维风，缩小 `IMPART OPS` 字幅，并增加 `VPS 开荒脚本 · 银趴火山帮` 副标题 |
