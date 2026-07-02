@@ -11,6 +11,7 @@ source "$ROOT/SSH-Hardening.sh"
 for fn in systemd_available show_cli_help main_menu ssh_tools_menu fail2ban_menu bbr_menu firewall_menu dns_menu \
     ip_config_menu caddy_menu nft_menu ddns_menu ddns_install ddns_run_now ddns_view_logs ddns_status \
     ddns_cfg_enable_a ddns_cfg_enable_aaaa ddns_cfg_domain4 ddns_cfg_domain6 ddns_primary_domain ddns_mode_label ddns_build_domain \
+    ddns_latest_log_line ddns_latest_change_log_line ddns_record_status_line ddns_record_change_line ddns_print_record_summary \
     system_toolbox_menu \
     resource_health_check system_update_manager system_hostname_apply config_backup_create self_update docker_menu change_port; do
     declare -F "$fn" >/dev/null || { echo "Missing function: $fn" >&2; exit 1; }
@@ -62,6 +63,17 @@ EOF
 [[ "$(ddns_build_domain @ example.com)" = "example.com" ]] || { echo "DDNS root domain build failed" >&2; exit 1; }
 [[ "$(ddns_build_domain v6.example.com example.com)" = "v6.example.com" ]] || { echo "DDNS full domain build failed" >&2; exit 1; }
 ! grep -q "LC_TIME" "$ROOT/src/modules/ddns.sh" || { echo "DDNS menu must not use LC_TIME locale variable" >&2; exit 1; }
+DDNS_SAMPLE_LOG="$TMP/ddns.log"
+cat > "$DDNS_SAMPLE_LOG" <<'EOF'
+[2026-07-02 23:00:01] OK: A jp99.289599.xyz 更新成功 1.1.1.1 → 2.2.2.2
+[2026-07-02 23:00:02] OK: AAAA v6jp99.289599.xyz 更新成功 2001:db8::1 → 2001:db8::2
+[2026-07-02 23:05:01] OK: A jp99.289599.xyz 未变化 2.2.2.2
+[2026-07-02 23:05:02] OK: AAAA v6jp99.289599.xyz 未变化 2001:db8::2
+EOF
+[[ "$(ddns_latest_log_line A jp99.289599.xyz "$DDNS_SAMPLE_LOG")" = *"A jp99.289599.xyz 未变化 2.2.2.2"* ]] || { echo "DDNS IPv4 latest log lookup failed" >&2; exit 1; }
+[[ "$(ddns_latest_log_line AAAA v6jp99.289599.xyz "$DDNS_SAMPLE_LOG")" = *"AAAA v6jp99.289599.xyz 未变化 2001:db8::2"* ]] || { echo "DDNS IPv6 latest log lookup failed" >&2; exit 1; }
+[[ "$(ddns_latest_change_log_line A jp99.289599.xyz "$DDNS_SAMPLE_LOG")" = *"A jp99.289599.xyz 更新成功 1.1.1.1"* ]] || { echo "DDNS IPv4 change log lookup failed" >&2; exit 1; }
+[[ "$(ddns_latest_change_log_line AAAA v6jp99.289599.xyz "$DDNS_SAMPLE_LOG")" = *"AAAA v6jp99.289599.xyz 更新成功 2001:db8::1"* ]] || { echo "DDNS IPv6 change log lookup failed" >&2; exit 1; }
 grep -q "新端口已测试可登录吗" "$ROOT/src/modules/ssh.sh" || { echo "SSH new port confirmation prompt missing" >&2; exit 1; }
 grep -q "自动回滚已取消" "$ROOT/src/modules/ssh.sh" || { echo "SSH rollback cancellation message missing" >&2; exit 1; }
 grep -q "关闭旧端口防火墙规则" "$ROOT/src/modules/ssh.sh" || { echo "SSH old firewall rule prompt missing" >&2; exit 1; }
@@ -104,9 +116,9 @@ monitor_traffic_set_cycle_usage_split_gb 1000 1000
 [[ "$(monitor_traffic_usage_triplet cycle)" = "1073741824000 1073741824000 2147483648000" ]] || { echo "Large split traffic calibration failed" >&2; exit 1; }
 MANIFEST="$TMP/manifest.json"
 cat > "$MANIFEST" <<'EOF'
-{"name":"SSH-Hardening","version":"V3.9.32","sha256":"abc123"}
+{"name":"SSH-Hardening","version":"V3.9.33","sha256":"abc123"}
 EOF
-[[ "$(self_manifest_value "$MANIFEST" version)" = "V3.9.32" ]] || { echo "Manifest parsing failed" >&2; exit 1; }
+[[ "$(self_manifest_value "$MANIFEST" version)" = "V3.9.33" ]] || { echo "Manifest parsing failed" >&2; exit 1; }
 
 DAILY_REPORT_CALLS=0
 monitor_alert_daily_report() { DAILY_REPORT_CALLS=$((DAILY_REPORT_CALLS + 1)); }

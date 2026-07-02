@@ -12,6 +12,7 @@ config_backup_paths() {
         etc/gai.conf etc/resolv.conf etc/systemd/resolved.conf etc/systemd/resolved.conf.d \
         etc/NetworkManager/conf.d etc/NetworkManager/system-connections etc/resolvconf/resolv.conf.d \
         etc/caddy root/ddns.sh root/.cf_token root/.cf_zone root/.cf_tg root/.cf_last_change \
+        root/.cf_last_change_A root/.cf_last_change_AAAA root/.cf_last_status_A root/.cf_last_status_AAAA \
         var/spool/cron/crontabs/root var/spool/cron/root etc/crontabs/root; do
         [ -e "/$p" ] || [ -L "/$p" ] || continue
         printf '%s\n' "$p"

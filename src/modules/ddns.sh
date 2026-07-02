@@ -145,6 +145,101 @@ ddns_cf_record_ensure() {
     fi
 }
 
+ddns_type_status_file() {
+    case "$1" in
+        A|AAAA) echo "/root/.cf_last_status_$1" ;;
+        *) echo "/root/.cf_last_status" ;;
+    esac
+}
+
+ddns_type_change_file() {
+    case "$1" in
+        A|AAAA) echo "/root/.cf_last_change_$1" ;;
+        *) echo "/root/.cf_last_change" ;;
+    esac
+}
+
+ddns_line_from_state_file() {
+    local type="$1" domain_filter="${2:-}" file ts record_type domain state old_ip new_ip
+    file=$(ddns_type_status_file "$type")
+    [ -f "$file" ] || return 1
+    IFS='|' read -r ts record_type domain state old_ip new_ip < "$file"
+    [ -n "$ts" ] && [ -n "$record_type" ] && [ -n "$domain" ] || return 1
+    [ -z "$domain_filter" ] || [ "$domain" = "$domain_filter" ] || return 1
+    case "$state" in
+        unchanged) printf '[%s] OK: %s %s 未变化 %s\n' "$ts" "$record_type" "$domain" "${new_ip:-$old_ip}" ;;
+        updated) printf '[%s] OK: %s %s 更新成功 %s → %s\n' "$ts" "$record_type" "$domain" "${old_ip:-?}" "${new_ip:-?}" ;;
+        fetch_failed) printf '[%s] ERROR: %s %s 无法获取公网 IP\n' "$ts" "$record_type" "$domain" ;;
+        invalid_ip) printf '[%s] ERROR: %s %s 获取到的 IP 非法：%s\n' "$ts" "$record_type" "$domain" "${new_ip:-?}" ;;
+        missing) printf '[%s] ERROR: %s 记录不存在 %s\n' "$ts" "$record_type" "$domain" ;;
+        query_failed) printf '[%s] WARN: %s %s 无法获取当前记录值\n' "$ts" "$record_type" "$domain" ;;
+        verify_skipped) printf '[%s] WARN: %s %s 二次校验异常，跳过更新\n' "$ts" "$record_type" "$domain" ;;
+        update_failed) printf '[%s] ERROR: %s %s 更新失败 %s → %s\n' "$ts" "$record_type" "$domain" "${old_ip:-?}" "${new_ip:-?}" ;;
+        *) printf '[%s] %s: %s %s %s → %s\n' "$ts" "$state" "$record_type" "$domain" "${old_ip:-?}" "${new_ip:-?}" ;;
+    esac
+}
+
+ddns_line_from_change_file() {
+    local type="$1" domain_filter="${2:-}" file ts record_type domain old_ip new_ip line
+    file=$(ddns_type_change_file "$type")
+    if [ ! -f "$file" ] && [ -f /root/.cf_last_change ]; then
+        line=$(cat /root/.cf_last_change 2>/dev/null)
+        record_type=$(echo "$line" | cut -d'|' -f2)
+        domain=$(echo "$line" | cut -d'|' -f5)
+        if [ "$record_type" = "$type" ] && { [ -z "$domain_filter" ] || [ "$domain" = "$domain_filter" ]; }; then
+            file="/root/.cf_last_change"
+        fi
+    fi
+    [ -f "$file" ] || return 1
+    IFS='|' read -r ts record_type old_ip new_ip domain < "$file"
+    [ -n "$ts" ] && [ "$record_type" = "$type" ] || return 1
+    [ -z "$domain_filter" ] || [ "$domain" = "$domain_filter" ] || return 1
+    printf '[%s] OK: %s %s 更新成功 %s → %s\n' "$ts" "$record_type" "${domain:-?}" "${old_ip:-?}" "${new_ip:-?}"
+}
+
+ddns_latest_log_line() {
+    local type="$1" domain="$2" log="$3"
+    [ -n "$domain" ] && [ -f "$log" ] || return 1
+    grep -F "OK: ${type} ${domain} " "$log" 2>/dev/null | tail -1
+}
+
+ddns_latest_change_log_line() {
+    local type="$1" domain="$2" log="$3"
+    [ -n "$domain" ] && [ -f "$log" ] || return 1
+    grep -F "OK: ${type} ${domain} 更新成功" "$log" 2>/dev/null | tail -1
+}
+
+ddns_record_status_line() {
+    local type="$1" domain="$2" log="$3" line
+    line=$(ddns_line_from_state_file "$type" "$domain" 2>/dev/null || true)
+    [ -n "$line" ] && { echo "$line"; return 0; }
+    ddns_latest_log_line "$type" "$domain" "$log"
+}
+
+ddns_record_change_line() {
+    local type="$1" domain="$2" log="$3" line
+    line=$(ddns_line_from_change_file "$type" "$domain" 2>/dev/null || true)
+    [ -n "$line" ] && { echo "$line"; return 0; }
+    ddns_latest_change_log_line "$type" "$domain" "$log"
+}
+
+ddns_print_record_summary() {
+    local label="$1" type="$2" domain="$3" log="$4" status_line change_line
+    [ -n "$domain" ] || return 0
+    status_line=$(ddns_record_status_line "$type" "$domain" "$log" 2>/dev/null || true)
+    if [ -n "$status_line" ]; then
+        echo -e "  最新 ${label}: ${DIM}${status_line}${NC}"
+    else
+        echo -e "  最新 ${label}: ${DIM}等待下一次更新${NC}"
+    fi
+    change_line=$(ddns_record_change_line "$type" "$domain" "$log" 2>/dev/null || true)
+    if [ -n "$change_line" ]; then
+        echo -e "  变更 ${label}: ${DIM}${change_line}${NC}"
+    else
+        echo -e "  变更 ${label}: ${DIM}暂无 IP 变更记录${NC}"
+    fi
+}
+
 ddns_ensure_cron() {
     command -v crontab &>/dev/null && return 0
     info "未检测到 crontab，正在安装 cron..."
@@ -336,11 +431,9 @@ ddns_install() {
 # 注入 PATH，确保 crontab 环境下能找到 curl / python3
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
-DOMAIN="__DOMAIN__"
 DOMAIN4="__DOMAIN4__"
 DOMAIN6="__DOMAIN6__"
 ZONE="__ZONE__"
-MODE="__MODE__"
 ENABLE_A="__ENABLE_A__"
 ENABLE_AAAA="__ENABLE_AAAA__"
 PROXIED="__PROXIED__"
@@ -364,6 +457,37 @@ is_true() {
         1|true|TRUE|yes|YES|on|ON) return 0 ;;
         *) return 1 ;;
     esac
+}
+
+record_status_file() {
+    case "$1" in
+        A|AAAA) echo "/root/.cf_last_status_$1" ;;
+        *) echo "/root/.cf_last_status" ;;
+    esac
+}
+
+record_change_file() {
+    case "$1" in
+        A|AAAA) echo "/root/.cf_last_change_$1" ;;
+        *) echo "/root/.cf_last_change" ;;
+    esac
+}
+
+write_record_status() {
+    local TYPE="$1" DOMAIN_NAME="$2" STATE="$3" OLD_IP="${4:-}" NEW_IP="${5:-}" FILE
+    FILE=$(record_status_file "$TYPE")
+    printf '%s|%s|%s|%s|%s|%s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$TYPE" "$DOMAIN_NAME" "$STATE" "$OLD_IP" "$NEW_IP" > "$FILE" 2>/dev/null || return 0
+    chmod 600 "$FILE" 2>/dev/null || true
+}
+
+write_record_change() {
+    local TYPE="$1" DOMAIN_NAME="$2" OLD_IP="$3" NEW_IP="$4" LINE FILE
+    LINE="$(date '+%Y-%m-%d %H:%M:%S')|${TYPE}|${OLD_IP}|${NEW_IP}|${DOMAIN_NAME}"
+    FILE=$(record_change_file "$TYPE")
+    printf '%s\n' "$LINE" > "$FILE" 2>/dev/null || true
+    chmod 600 "$FILE" 2>/dev/null || true
+    printf '%s\n' "$LINE" > /root/.cf_last_change 2>/dev/null || true
+    chmod 600 /root/.cf_last_change 2>/dev/null || true
 }
 
 # 发送 Telegram 通知（每次调用时实时读取配置文件，避免 crontab 变量丢失）
@@ -417,16 +541,19 @@ update_record() {
     RECORD_ID=$(curl -s --max-time 8         "https://api.cloudflare.com/client/v4/zones/${ZONE_ID}/dns_records?name=${DOMAIN_NAME}&type=${TYPE}"         -H "Authorization: Bearer ${API_TOKEN}" |         python3 -c "import sys,json; print(json.load(sys.stdin)['result'][0]['id'])" 2>/dev/null)
     [ -z "$RECORD_ID" ] && {
         echo "[$(date '+%Y-%m-%d %H:%M:%S')] ERROR: ${TYPE} 记录不存在 ${DOMAIN_NAME}" >> "$LOG_FILE"
+        write_record_status "$TYPE" "$DOMAIN_NAME" missing "" "$NEW_IP"
         return 1
     }
     OLD_IP=$(curl -s --max-time 8         "https://api.cloudflare.com/client/v4/zones/${ZONE_ID}/dns_records/${RECORD_ID}"         -H "Authorization: Bearer ${API_TOKEN}" |         python3 -c "import sys,json; print(json.load(sys.stdin)['result']['content'])" 2>/dev/null)
     # OLD_IP 为空说明查询失败，跳过本次更新避免误推 Telegram
     if [ -z "$OLD_IP" ]; then
         echo "[$(date '+%Y-%m-%d %H:%M:%S')] WARN: ${TYPE} 无法获取当前记录值，跳过更新" >> "$LOG_FILE"
+        write_record_status "$TYPE" "$DOMAIN_NAME" query_failed "" "$NEW_IP"
         return 0
     fi
     if [ "$NEW_IP" = "$OLD_IP" ]; then
         echo "[$(date '+%Y-%m-%d %H:%M:%S')] OK: ${TYPE} ${DOMAIN_NAME} 未变化 ${NEW_IP}" >> "$LOG_FILE"
+        write_record_status "$TYPE" "$DOMAIN_NAME" unchanged "$OLD_IP" "$NEW_IP"
         return 0
     fi
     # 二次校验：再次查询确认 OLD_IP 是否真的不一样（防止偶发查询返回错误数据）
@@ -437,10 +564,12 @@ update_record() {
         python3 -c "import sys,json; print(json.load(sys.stdin)['result']['content'])" 2>/dev/null)
     if [ -z "$VERIFY_IP" ] || [ "$VERIFY_IP" != "$OLD_IP" ]; then
         echo "[$(date '+%Y-%m-%d %H:%M:%S')] WARN: ${TYPE} 二次校验异常 (1st:${OLD_IP} 2nd:${VERIFY_IP})，跳过更新" >> "$LOG_FILE"
+        write_record_status "$TYPE" "$DOMAIN_NAME" verify_skipped "$OLD_IP" "$NEW_IP"
         return 0
     fi
     if [ "$NEW_IP" = "$VERIFY_IP" ]; then
         echo "[$(date '+%Y-%m-%d %H:%M:%S')] OK: ${TYPE} ${DOMAIN_NAME} 未变化 ${NEW_IP}（二次确认）" >> "$LOG_FILE"
+        write_record_status "$TYPE" "$DOMAIN_NAME" unchanged "$VERIFY_IP" "$NEW_IP"
         return 0
     fi
     local JSON_BODY
@@ -454,9 +583,8 @@ update_record() {
     SUCCESS=$(echo "$RESULT" | python3 -c         "import sys,json; print(json.load(sys.stdin).get('success'))" 2>/dev/null)
     if [ "$SUCCESS" = "True" ]; then
         echo "[$(date '+%Y-%m-%d %H:%M:%S')] OK: ${TYPE} ${DOMAIN_NAME} 更新成功 ${OLD_IP} → ${NEW_IP}" >> "$LOG_FILE"
-        # 记录最后一次 IP 变更（时间|类型|旧IP|新IP），供菜单显示
-        echo "$(date '+%Y-%m-%d %H:%M:%S')|${TYPE}|${OLD_IP}|${NEW_IP}|${DOMAIN_NAME}" > /root/.cf_last_change 2>/dev/null
-        chmod 600 /root/.cf_last_change 2>/dev/null
+        write_record_status "$TYPE" "$DOMAIN_NAME" updated "$OLD_IP" "$NEW_IP"
+        write_record_change "$TYPE" "$DOMAIN_NAME" "$OLD_IP" "$NEW_IP"
         tg_notify "🌐 <b>DDNS IP 已更新</b>
 域名：<code>${DOMAIN_NAME}</code>
 类型：${TYPE}
@@ -465,6 +593,7 @@ update_record() {
 时间：$(date '+%Y-%m-%d %H:%M:%S')"
     else
         echo "[$(date '+%Y-%m-%d %H:%M:%S')] ERROR: ${TYPE} 更新失败 $RESULT" >> "$LOG_FILE"
+        write_record_status "$TYPE" "$DOMAIN_NAME" update_failed "$OLD_IP" "$NEW_IP"
         return 1
     fi
 }
@@ -475,9 +604,11 @@ if is_true "$ENABLE_A"; then
     CURRENT_IP4=$(fetch_ip4)
     if [ -z "$CURRENT_IP4" ]; then
         echo "[$(date '+%Y-%m-%d %H:%M:%S')] ERROR: 无法获取公网 IPv4" >> "$LOG_FILE"
+        write_record_status A "$DOMAIN4" fetch_failed "" ""
         EXIT_CODE=1
     elif ! valid_ipv4 "$CURRENT_IP4"; then
         echo "[$(date '+%Y-%m-%d %H:%M:%S')] ERROR: 获取到的 IPv4 非法：${CURRENT_IP4}" >> "$LOG_FILE"
+        write_record_status A "$DOMAIN4" invalid_ip "" "$CURRENT_IP4"
         EXIT_CODE=1
     else
         update_record A "$DOMAIN4" "$CURRENT_IP4" || EXIT_CODE=1
@@ -488,9 +619,11 @@ if is_true "$ENABLE_AAAA"; then
     CURRENT_IP6=$(fetch_ip6)
     if [ -z "$CURRENT_IP6" ]; then
         echo "[$(date '+%Y-%m-%d %H:%M:%S')] ERROR: 无法获取公网 IPv6" >> "$LOG_FILE"
+        write_record_status AAAA "$DOMAIN6" fetch_failed "" ""
         EXIT_CODE=1
     elif ! valid_ipv6 "$CURRENT_IP6"; then
         echo "[$(date '+%Y-%m-%d %H:%M:%S')] ERROR: 获取到的 IPv6 非法：${CURRENT_IP6}" >> "$LOG_FILE"
+        write_record_status AAAA "$DOMAIN6" invalid_ip "" "$CURRENT_IP6"
         EXIT_CODE=1
     else
         update_record AAAA "$DOMAIN6" "$CURRENT_IP6" || EXIT_CODE=1
@@ -500,17 +633,14 @@ fi
 exit "$EXIT_CODE"
 DDNS_INNER
 
-    local DDNS_DOMAIN_ESC DDNS_DOMAIN4_ESC DDNS_DOMAIN6_ESC DDNS_ZONE_ESC DDNS_LOG_ESC
-    DDNS_DOMAIN_ESC=$(printf '%s' "$DDNS_PRIMARY_DOMAIN" | sed 's/[&|\\]/\\&/g')
+    local DDNS_DOMAIN4_ESC DDNS_DOMAIN6_ESC DDNS_ZONE_ESC DDNS_LOG_ESC
     DDNS_DOMAIN4_ESC=$(printf '%s' "$DDNS_DOMAIN4" | sed 's/[&|\\]/\\&/g')
     DDNS_DOMAIN6_ESC=$(printf '%s' "$DDNS_DOMAIN6" | sed 's/[&|\\]/\\&/g')
     DDNS_ZONE_ESC=$(printf '%s' "$DDNS_ZONE_NAME" | sed 's/[&|\\]/\\&/g')
     DDNS_LOG_ESC=$(printf '%s' "$DDNS_LOG" | sed 's/[&|\\]/\\&/g')
-    sed -i "s|__DOMAIN__|${DDNS_DOMAIN_ESC}|g" "$DDNS_SCRIPT"
     sed -i "s|__DOMAIN4__|${DDNS_DOMAIN4_ESC}|g" "$DDNS_SCRIPT"
     sed -i "s|__DOMAIN6__|${DDNS_DOMAIN6_ESC}|g" "$DDNS_SCRIPT"
     sed -i "s|__ZONE__|${DDNS_ZONE_ESC}|g" "$DDNS_SCRIPT"
-    sed -i "s|__MODE__|${DDNS_MODE}|g" "$DDNS_SCRIPT"
     sed -i "s|__ENABLE_A__|${DDNS_ENABLE_A}|g" "$DDNS_SCRIPT"
     sed -i "s|__ENABLE_AAAA__|${DDNS_ENABLE_AAAA}|g" "$DDNS_SCRIPT"
     sed -i "s|__PROXIED__|${DDNS_PROXIED}|g" "$DDNS_SCRIPT"
@@ -659,7 +789,8 @@ ddns_uninstall() {
     rm -f "$DDNS_SCRIPT" && info "DDNS 脚本已删除 ✓"
     rm -f "$DDNS_TOKEN_FILE" && info "Token 文件已删除 ✓"
     rm -f "$DDNS_ZONE_FILE"
-    rm -f /root/.cf_last_change
+    rm -f /root/.cf_last_change /root/.cf_last_change_A /root/.cf_last_change_AAAA
+    rm -f /root/.cf_last_status_A /root/.cf_last_status_AAAA
     warn "日志文件保留：${DDNS_LOG}"
 }
 
@@ -757,25 +888,8 @@ ddns_menu() {
             echo -e "  代理 : ${BOLD}$([ "$D_PROXIED" = "true" ] && echo '开启' || echo '关闭')${NC}"
             echo -e "  TTL  : ${BOLD}${D_TTL:-60}${NC}"
             echo -e "  定时 : ${DIM}每5分钟自动更新${NC}"
-            local LAST_LOG; LAST_LOG=$(tail -1 "$D_LOG" 2>/dev/null)
-            [ -n "$LAST_LOG" ] && echo -e "  最新 : ${DIM}${LAST_LOG}${NC}"
-            # 最后一次 IP 变更（时间 + 新旧 IP）
-            if [ -f /root/.cf_last_change ]; then
-                local CHANGE_TIME CHANGE_TYPE CHANGE_OLD CHANGE_NEW CHANGE_DOMAIN CHANGE_LINE
-                CHANGE_LINE=$(cat /root/.cf_last_change 2>/dev/null)
-                CHANGE_TIME=$(echo "$CHANGE_LINE" | cut -d'|' -f1)
-                CHANGE_TYPE=$(echo "$CHANGE_LINE" | cut -d'|' -f2)
-                CHANGE_OLD=$(echo "$CHANGE_LINE" | cut -d'|' -f3)
-                CHANGE_NEW=$(echo "$CHANGE_LINE" | cut -d'|' -f4)
-                CHANGE_DOMAIN=$(echo "$CHANGE_LINE" | cut -d'|' -f5)
-                if [ -n "$CHANGE_TIME" ]; then
-                    echo -e "  变更 : ${BOLD}${CHANGE_TIME}${NC} ${DIM}(${CHANGE_TYPE})${NC}"
-                    [ -n "$CHANGE_DOMAIN" ] && echo -e "  域名 : ${DIM}${CHANGE_DOMAIN}${NC}"
-                    echo -e "  IP   : ${DIM}${CHANGE_OLD:-?}${NC} ${YELLOW}→${NC} ${GREEN}${BOLD}${CHANGE_NEW}${NC}"
-                fi
-            else
-                echo -e "  变更 : ${DIM}暂无 IP 变更记录${NC}"
-            fi
+            ddns_cfg_enable_a && ddns_print_record_summary "IPv4" A "$D_DOMAIN4" "$D_LOG"
+            ddns_cfg_enable_aaaa && ddns_print_record_summary "IPv6" AAAA "$D_DOMAIN6" "$D_LOG"
         elif [ -f "$DDNS_ZONE_FILE" ]; then
             local D_DOMAIN4 D_DOMAIN6 D_MODE_LABEL D_TOKEN_HINT
             D_DOMAIN4=$(ddns_cfg_domain4)
