@@ -1,4 +1,4 @@
-# VPS 开荒脚本 V3.9.31
+# VPS 开荒脚本 V3.9.32
 
 > **银趴火山帮** 出品 · SSH · BBR · DDNS · Caddy · Firewall · NFT 转发
 
@@ -71,7 +71,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/chnnic/SSH-Hardening/refs/he
 /___/_/  /_/_/   /_/  |_/_/ |_| /_/     \____/_/    /____/
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  VPS TOOLS  ·  V3.9.31
+  VPS TOOLS  ·  V3.9.32
   VPS 开荒脚本 · 银趴火山帮
 ────────────────────────────────────────────────────────────────
   SSH · BBR · DDNS · Caddy · Firewall · NFT · Monitor
@@ -578,6 +578,7 @@ GitHub Actions 还会在 Debian、Ubuntu、Alpine、Rocky Linux 容器中加载�
 
 | 版本 | 主要变更 |
 |------|---------|
+| **V3.9.32** | 修复 DDNS 菜单最后变更时间变量误用 `LC_TIME` 导致的 locale warning |
 | **V3.9.31** | DDNS 支持 IPv4 A 与 IPv6 AAAA 分别设置，可同域名或不同子域名同时更新；仅启用 IPv6 时不再依赖 IPv4 |
 | **V3.9.30** | 修正 SSH 改端口流程：先确认新端口可登录，再决定是否关闭旧端口，避免关闭旧连接后才发现新端口不可用 |
 | **V3.9.29** | 修复每日日报和续费提醒同日重复推送；Telegram 推送中的主机显示名增加 HTML 转义，避免 `<`、`&` 等字符破坏消息格式 |

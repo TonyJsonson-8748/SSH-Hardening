@@ -761,17 +761,17 @@ ddns_menu() {
             [ -n "$LAST_LOG" ] && echo -e "  最新 : ${DIM}${LAST_LOG}${NC}"
             # 最后一次 IP 变更（时间 + 新旧 IP）
             if [ -f /root/.cf_last_change ]; then
-                local LC_TIME LC_TYPE LC_OLD LC_NEW LC_DOMAIN LC_LINE
-                LC_LINE=$(cat /root/.cf_last_change 2>/dev/null)
-                LC_TIME=$(echo "$LC_LINE" | cut -d'|' -f1)
-                LC_TYPE=$(echo "$LC_LINE" | cut -d'|' -f2)
-                LC_OLD=$(echo "$LC_LINE" | cut -d'|' -f3)
-                LC_NEW=$(echo "$LC_LINE" | cut -d'|' -f4)
-                LC_DOMAIN=$(echo "$LC_LINE" | cut -d'|' -f5)
-                if [ -n "$LC_TIME" ]; then
-                    echo -e "  变更 : ${BOLD}${LC_TIME}${NC} ${DIM}(${LC_TYPE})${NC}"
-                    [ -n "$LC_DOMAIN" ] && echo -e "  域名 : ${DIM}${LC_DOMAIN}${NC}"
-                    echo -e "  IP   : ${DIM}${LC_OLD:-?}${NC} ${YELLOW}→${NC} ${GREEN}${BOLD}${LC_NEW}${NC}"
+                local CHANGE_TIME CHANGE_TYPE CHANGE_OLD CHANGE_NEW CHANGE_DOMAIN CHANGE_LINE
+                CHANGE_LINE=$(cat /root/.cf_last_change 2>/dev/null)
+                CHANGE_TIME=$(echo "$CHANGE_LINE" | cut -d'|' -f1)
+                CHANGE_TYPE=$(echo "$CHANGE_LINE" | cut -d'|' -f2)
+                CHANGE_OLD=$(echo "$CHANGE_LINE" | cut -d'|' -f3)
+                CHANGE_NEW=$(echo "$CHANGE_LINE" | cut -d'|' -f4)
+                CHANGE_DOMAIN=$(echo "$CHANGE_LINE" | cut -d'|' -f5)
+                if [ -n "$CHANGE_TIME" ]; then
+                    echo -e "  变更 : ${BOLD}${CHANGE_TIME}${NC} ${DIM}(${CHANGE_TYPE})${NC}"
+                    [ -n "$CHANGE_DOMAIN" ] && echo -e "  域名 : ${DIM}${CHANGE_DOMAIN}${NC}"
+                    echo -e "  IP   : ${DIM}${CHANGE_OLD:-?}${NC} ${YELLOW}→${NC} ${GREEN}${BOLD}${CHANGE_NEW}${NC}"
                 fi
             else
                 echo -e "  变更 : ${DIM}暂无 IP 变更记录${NC}"
