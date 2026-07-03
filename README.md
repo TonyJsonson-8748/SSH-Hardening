@@ -1,4 +1,4 @@
-# VPS 开荒脚本 V3.9.33
+# VPS 开荒脚本 V3.9.34
 
 > **银趴火山帮** 出品 · SSH · BBR · DDNS · Caddy · Firewall · NFT 转发
 
@@ -71,7 +71,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/chnnic/SSH-Hardening/refs/he
 /___/_/  /_/_/   /_/  |_/_/ |_| /_/     \____/_/    /____/
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  VPS TOOLS  ·  V3.9.33
+  VPS TOOLS  ·  V3.9.34
   VPS 开荒脚本 · 银趴火山帮
 ────────────────────────────────────────────────────────────────
   SSH · BBR · DDNS · Caddy · Firewall · NFT · Monitor
@@ -578,6 +578,7 @@ GitHub Actions 还会在 Debian、Ubuntu、Alpine、Rocky Linux 容器中加载�
 
 | 版本 | 主要变更 |
 |------|---------|
+| **V3.9.34** | 修复 VPS 重启或网卡计数重置后，流量监控当前周期被旧基线钳成 0、长期不增长的问题 |
 | **V3.9.33** | DDNS 首页按 IPv4 A / IPv6 AAAA 分别展示最新状态和最后变更，避免双栈时只看到最后执行的 AAAA |
 | **V3.9.32** | 修复 DDNS 菜单最后变更时间变量误用 `LC_TIME` 导致的 locale warning |
 | **V3.9.31** | DDNS 支持 IPv4 A 与 IPv6 AAAA 分别设置，可同域名或不同子域名同时更新；仅启用 IPv6 时不再依赖 IPv4 |

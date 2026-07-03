@@ -586,13 +586,28 @@ monitor_traffic_used_bytes() {
     local CURRENT BASE USED
     CURRENT=$(monitor_int_normalize "$(monitor_traffic_total_bytes)")
     BASE=$(monitor_int_normalize "${MON_TRAFFIC_BASELINE_BYTES:-0}")
-    USED=$((CURRENT - BASE))
-    [ "$USED" -lt 0 ] && USED=0
+    USED=$(monitor_traffic_delta_bytes "$CURRENT" "$BASE" 0)
     echo "$USED"
 }
 
 monitor_traffic_used_gb() {
     awk "BEGIN {printf \"%.2f\", ($1/1024/1024/1024)}"
+}
+
+monitor_traffic_delta_bytes() {
+    local CURRENT BASE OFFSET DELTA
+    CURRENT=$(monitor_int_normalize "${1:-0}")
+    BASE=$(monitor_int_normalize "${2:-0}")
+    OFFSET=$(monitor_int_normalize "${3:-0}")
+    if [ "$CURRENT" -ge "$BASE" ]; then
+        DELTA=$((CURRENT - BASE))
+    else
+        # /proc/net/dev is since-boot. After reboot/interface reset the raw
+        # counter can be lower than the saved baseline; keep counting from the
+        # new counter instead of pinning this period at 0.
+        DELTA="$CURRENT"
+    fi
+    echo $((DELTA + OFFSET))
 }
 
 monitor_traffic_usage_triplet() {
@@ -623,17 +638,11 @@ EOF
     OFFSET_TX=$(monitor_int_normalize "${OFFSET_TX:-0}")
     OFFSET_TOTAL=$(monitor_int_normalize "${OFFSET_TOTAL:-0}")
     if [ "$HAS_SPLIT" = "yes" ]; then
-        USED_RX=$((RX - BASE_RX))
-        USED_TX=$((TX - BASE_TX))
-        [ "$USED_RX" -lt 0 ] && USED_RX=0
-        [ "$USED_TX" -lt 0 ] && USED_TX=0
-        USED_RX=$((USED_RX + OFFSET_RX))
-        USED_TX=$((USED_TX + OFFSET_TX))
+        USED_RX=$(monitor_traffic_delta_bytes "$RX" "$BASE_RX" "$OFFSET_RX")
+        USED_TX=$(monitor_traffic_delta_bytes "$TX" "$BASE_TX" "$OFFSET_TX")
         USED_TOTAL=$((USED_RX + USED_TX))
     else
-        USED_TOTAL=$((TOTAL - BASE_TOTAL))
-        [ "$USED_TOTAL" -lt 0 ] && USED_TOTAL=0
-        USED_TOTAL=$((USED_TOTAL + OFFSET_TOTAL))
+        USED_TOTAL=$(monitor_traffic_delta_bytes "$TOTAL" "$BASE_TOTAL" "$OFFSET_TOTAL")
         USED_RX=0
         USED_TX=0
     fi
@@ -655,9 +664,7 @@ monitor_traffic_current_cycle_used_bytes() {
     local CURRENT BASE USED
     CURRENT=$(monitor_int_normalize "$(monitor_traffic_total_bytes)")
     BASE=$(monitor_int_normalize "${MON_TRAFFIC_CYCLE_BASELINE_BYTES:-0}")
-    USED=$((CURRENT - BASE))
-    [ "$USED" -lt 0 ] && USED=0
-    USED=$((USED + $(monitor_int_normalize "${MON_TRAFFIC_CYCLE_OFFSET_BYTES:-0}")))
+    USED=$(monitor_traffic_delta_bytes "$CURRENT" "$BASE" "${MON_TRAFFIC_CYCLE_OFFSET_BYTES:-0}")
     echo "$USED"
 }
 
