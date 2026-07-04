@@ -84,6 +84,39 @@ system_hostname_valid GreenCloud.HK6666 || { echo "Hostname validation rejected 
 MON_HOST_LABEL='Ali&HKG<ECS>'
 [[ "$(monitor_alert_host_label)" = "Ali&HKG<ECS>" ]] || { echo "Raw host label changed unexpectedly" >&2; exit 1; }
 [[ "$(monitor_alert_host_label_html)" = "Ali&amp;HKG&lt;ECS&gt;" ]] || { echo "Escaped host label failed" >&2; exit 1; }
+(
+    MONITOR_CFG="$TMP/monitor.cfg"
+    PWNED="$TMP/monitor-config-executed"
+    monitor_alert_cfg() { echo "$MONITOR_CFG"; }
+    monitor_alert_load_cfg() { MON_ENABLED=no; }
+    {
+        echo "ENABLED=no"
+        echo "HOST_LABEL=\$(touch '$PWNED')"
+    } > "$MONITOR_CFG"
+    monitor_alert_check
+    [ ! -e "$PWNED" ] || { echo "Monitor config was executed as shell" >&2; exit 1; }
+)
+SSHD_SAMPLE="$TMP/sshd_config"
+cat > "$SSHD_SAMPLE" <<'EOF'
+Include /etc/ssh/sshd_config.d/*.conf
+PasswordAuthentication yes
+
+Match User deploy
+    PasswordAuthentication yes
+EOF
+set_config_file "$SSHD_SAMPLE" "PasswordAuthentication" "no"
+FIRST_DIRECTIVE=$(grep -m1 -E '^(Include|PasswordAuthentication|Match)' "$SSHD_SAMPLE")
+[[ "$FIRST_DIRECTIVE" = "PasswordAuthentication no" ]] || { echo "Managed SSH settings must precede Include and Match blocks" >&2; exit 1; }
+(
+    NFT_RULES_FILE="$TMP/nft-rules.db"
+    NFT_ACCESS_FILE="$TMP/nft-access.conf"
+    : > "$NFT_RULES_FILE"
+    echo "mode=off" > "$NFT_ACCESS_FILE"
+    NFT_CONFIG=$(nft_generate_config)
+    [[ "$NFT_CONFIG" != *"flush ruleset"* ]] || { echo "NFT config must not flush the host ruleset" >&2; exit 1; }
+    [[ "$NFT_CONFIG" = *"table ip nftpf_nat"* ]] || { echo "NFT IPv4 table name should be script-scoped" >&2; exit 1; }
+    [[ "$NFT_CONFIG" = *"table ip6 nftpf_nat"* ]] || { echo "NFT IPv6 table name should be script-scoped" >&2; exit 1; }
+)
 monitor_alert_service_state() { case "$1" in ssh) echo stopped ;; sshd) echo running ;; *) echo unknown ;; esac; }
 [[ "$(monitor_alert_ssh_state)" = "running" ]] || { echo "SSH service alias check failed" >&2; exit 1; }
 [[ "$(monitor_int_normalize 1.24682e+11)" = "124682000000" ]] || { echo "Scientific notation normalization failed" >&2; exit 1; }
@@ -139,9 +172,9 @@ MON_TRAFFIC_CYCLE_OFFSET_BYTES=30
 [[ "$(monitor_traffic_usage_triplet cycle)" = "110 220 330" ]] || { echo "Cycle traffic counter reset handling failed" >&2; exit 1; }
 MANIFEST="$TMP/manifest.json"
 cat > "$MANIFEST" <<'EOF'
-{"name":"SSH-Hardening","version":"V3.9.34","sha256":"abc123"}
+{"name":"SSH-Hardening","version":"V3.9.35","sha256":"abc123"}
 EOF
-[[ "$(self_manifest_value "$MANIFEST" version)" = "V3.9.34" ]] || { echo "Manifest parsing failed" >&2; exit 1; }
+[[ "$(self_manifest_value "$MANIFEST" version)" = "V3.9.35" ]] || { echo "Manifest parsing failed" >&2; exit 1; }
 
 DAILY_REPORT_CALLS=0
 monitor_alert_daily_report() { DAILY_REPORT_CALLS=$((DAILY_REPORT_CALLS + 1)); }

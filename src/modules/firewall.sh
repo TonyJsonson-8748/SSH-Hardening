@@ -54,8 +54,8 @@ fw_install() {
         ufw)
             if pkg_install ufw; then
                 info "ufw 安装成功 ✓"
-                ufw --force enable && info "ufw 已启用 ✓"
                 fw_allow_common_ports "ufw"
+                ufw --force enable && info "ufw 已启用 ✓"
             else
                 error "安装失败，请检查网络或手动安装：apt/apk install ufw"
             fi

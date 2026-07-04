@@ -1,4 +1,4 @@
-# VPS 开荒脚本 V3.9.34
+# VPS 开荒脚本 V3.9.35
 
 > **银趴火山帮** 出品 · SSH · BBR · DDNS · Caddy · Firewall · NFT 转发
 
@@ -71,7 +71,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/chnnic/SSH-Hardening/refs/he
 /___/_/  /_/_/   /_/  |_/_/ |_| /_/     \____/_/    /____/
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  VPS TOOLS  ·  V3.9.34
+  VPS TOOLS  ·  V3.9.35
   VPS 开荒脚本 · 银趴火山帮
 ────────────────────────────────────────────────────────────────
   SSH · BBR · DDNS · Caddy · Firewall · NFT · Monitor
@@ -379,7 +379,7 @@ IP 真实变化时推送通知，实时读取 `/root/.cf_tg`，兼容 crontab �
 **持久化与跨发行版：**
 - 规则数据：`/etc/nft-port-forward/rules.db`
 - 访问控制：`/etc/nft-port-forward/access.conf`
-- nftables 配置：`/etc/nftables.conf`（脚本托管，自动校验语法）
+- nftables 配置：`/etc/nftables.conf`（仅托管 `nftpf_*` 表，自动校验语法）
 - 自动安装 nftables（apt / apk / yum / dnf）
 - 自动开启 IP 转发
 - 服务自启：systemd / OpenRC 双支持
@@ -578,6 +578,7 @@ GitHub Actions 还会在 Debian、Ubuntu、Alpine、Rocky Linux 容器中加载�
 
 | 版本 | 主要变更 |
 |------|---------|
+| **V3.9.35** | 修复监控配置被 `source` 执行的风险；SSH 加固写入置顶托管块避免被 `Include` 覆盖；NFT 转发不再 `flush ruleset` 清空宿主机规则；修复 Telegram HTML 转义 |
 | **V3.9.34** | 修复 VPS 重启或网卡计数重置后，流量监控当前周期被旧基线钳成 0、长期不增长的问题 |
 | **V3.9.33** | DDNS 首页按 IPv4 A / IPv6 AAAA 分别展示最新状态和最后变更，避免双栈时只看到最后执行的 AAAA |
 | **V3.9.32** | 修复 DDNS 菜单最后变更时间变量误用 `LC_TIME` 导致的 locale warning |

@@ -55,9 +55,12 @@ nft_uninstall() {
     fi
     rm -f "$NFT_DDNS_TIMER_FILE" "$NFT_DDNS_SERVICE_FILE"
 
-    # 2. 清空所有规则（先 flush 再停服务）
+    # 2. 只清理本脚本托管的表，不触碰系统已有 nftables 防火墙规则
     if command -v nft &>/dev/null; then
-        nft flush ruleset 2>/dev/null || true
+        nft delete table ip nftpf_access 2>/dev/null || true
+        nft delete table ip6 nftpf_access 2>/dev/null || true
+        nft delete table ip nftpf_nat 2>/dev/null || true
+        nft delete table ip6 nftpf_nat 2>/dev/null || true
     fi
 
     # 3. 停止服务
@@ -77,7 +80,7 @@ nft_uninstall() {
         cat > "$NFT_CONFIG_FILE" <<NFTEOF
 #!/usr/sbin/nft -f
 
-flush ruleset
+# vps-tools nftpf tables removed by uninstall.
 NFTEOF
     fi
 
@@ -325,14 +328,12 @@ nft_generate_config() {
 #!/usr/sbin/nft -f
 # NFTPF_RENDER_VERSION=$NFT_RENDER_VERSION
 
-flush ruleset
-
 EOF
     nft_render_access_table_for "ipv4"
     nft_render_access_table_for "ipv6"
 
     cat <<EOF
-table ip nat {
+table ip nftpf_nat {
     chain prerouting {
         type nat hook prerouting priority dstnat; policy accept;
 EOF
@@ -345,7 +346,7 @@ EOF
     }
 }
 
-table ip6 nat {
+table ip6 nftpf_nat {
     chain prerouting {
         type nat hook prerouting priority dstnat; policy accept;
 EOF
@@ -374,6 +375,10 @@ nft_write_and_apply() {
     [ -f "$NFT_CONFIG_FILE" ] && cp "$NFT_CONFIG_FILE" "${NFT_CONFIG_FILE}.bak.last"
     mv "$tmp" "$NFT_CONFIG_FILE"
     chmod +x "$NFT_CONFIG_FILE"
+    nft delete table ip nftpf_access &>/dev/null || true
+    nft delete table ip6 nftpf_access &>/dev/null || true
+    nft delete table ip nftpf_nat &>/dev/null || true
+    nft delete table ip6 nftpf_nat &>/dev/null || true
 
     if systemd_available; then
         systemctl enable nftables &>/dev/null || true

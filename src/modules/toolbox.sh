@@ -420,9 +420,9 @@ monitor_alert_host_label() {
 
 monitor_alert_html_escape() {
     local VALUE="${1:-}"
-    VALUE=${VALUE//&/&amp;}
-    VALUE=${VALUE//</&lt;}
-    VALUE=${VALUE//>/&gt;}
+    VALUE=${VALUE//&/\&amp;}
+    VALUE=${VALUE//</\&lt;}
+    VALUE=${VALUE//>/\&gt;}
     printf '%s' "$VALUE"
 }
 
@@ -1478,10 +1478,8 @@ EOF
 monitor_alert_check() {
     local CFG; CFG=$(monitor_alert_cfg)
     [ -f "$CFG" ] || return 0
-    # shellcheck source=/dev/null
-    . "$CFG"
-    [ "${ENABLED:-no}" = "yes" ] || return 0
     monitor_alert_load_cfg
+    [ "${MON_ENABLED:-no}" = "yes" ] || return 0
     monitor_alert_metrics_sample
     monitor_alert_resource_check
     monitor_alert_traffic_check
