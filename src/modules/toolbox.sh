@@ -286,6 +286,14 @@ monitor_alert_load_cfg() {
     RAW_TRAFFIC_TX=$(monitor_alert_cfg_get TRAFFIC_BASELINE_TX_BYTES)
     [ -n "$RAW_TRAFFIC_RX" ] && MON_TRAFFIC_BASELINE_RX_BYTES=$(monitor_int_normalize "$RAW_TRAFFIC_RX") || MON_TRAFFIC_BASELINE_RX_BYTES=
     [ -n "$RAW_TRAFFIC_TX" ] && MON_TRAFFIC_BASELINE_TX_BYTES=$(monitor_int_normalize "$RAW_TRAFFIC_TX") || MON_TRAFFIC_BASELINE_TX_BYTES=
+    MON_TRAFFIC_OFFSET_BYTES=$(monitor_int_normalize "$(monitor_alert_cfg_get TRAFFIC_OFFSET_BYTES)")
+    MON_TRAFFIC_OFFSET_RX_BYTES=$(monitor_int_normalize "$(monitor_alert_cfg_get TRAFFIC_OFFSET_RX_BYTES)")
+    MON_TRAFFIC_OFFSET_TX_BYTES=$(monitor_int_normalize "$(monitor_alert_cfg_get TRAFFIC_OFFSET_TX_BYTES)")
+    MON_TRAFFIC_LAST_BYTES=$(monitor_int_normalize "$(monitor_alert_cfg_get TRAFFIC_LAST_BYTES)")
+    MON_TRAFFIC_LAST_RX_BYTES=$(monitor_int_normalize "$(monitor_alert_cfg_get TRAFFIC_LAST_RX_BYTES)")
+    MON_TRAFFIC_LAST_TX_BYTES=$(monitor_int_normalize "$(monitor_alert_cfg_get TRAFFIC_LAST_TX_BYTES)")
+    MON_TRAFFIC_DAILY_BASELINE_RESET=no
+    MON_TRAFFIC_CYCLE_BASELINE_RESET=no
     MON_TRAFFIC_RESET_DAY=$(monitor_alert_cfg_get TRAFFIC_RESET_DAY); MON_TRAFFIC_RESET_DAY=${MON_TRAFFIC_RESET_DAY:-1}
     MON_TRAFFIC_CYCLE_BASELINE_DATE=$(monitor_alert_cfg_get TRAFFIC_CYCLE_BASELINE_DATE)
     MON_TRAFFIC_CYCLE_BASELINE_BYTES=$(monitor_int_normalize "$(monitor_alert_cfg_get TRAFFIC_CYCLE_BASELINE_BYTES)")
@@ -332,6 +340,12 @@ TRAFFIC_BASELINE_DATE=${MON_TRAFFIC_BASELINE_DATE:-}
 TRAFFIC_BASELINE_BYTES=${MON_TRAFFIC_BASELINE_BYTES:-0}
 TRAFFIC_BASELINE_RX_BYTES=${MON_TRAFFIC_BASELINE_RX_BYTES:-}
 TRAFFIC_BASELINE_TX_BYTES=${MON_TRAFFIC_BASELINE_TX_BYTES:-}
+TRAFFIC_OFFSET_BYTES=${MON_TRAFFIC_OFFSET_BYTES:-0}
+TRAFFIC_OFFSET_RX_BYTES=${MON_TRAFFIC_OFFSET_RX_BYTES:-0}
+TRAFFIC_OFFSET_TX_BYTES=${MON_TRAFFIC_OFFSET_TX_BYTES:-0}
+TRAFFIC_LAST_BYTES=${MON_TRAFFIC_LAST_BYTES:-0}
+TRAFFIC_LAST_RX_BYTES=${MON_TRAFFIC_LAST_RX_BYTES:-0}
+TRAFFIC_LAST_TX_BYTES=${MON_TRAFFIC_LAST_TX_BYTES:-0}
 TRAFFIC_RESET_DAY=${MON_TRAFFIC_RESET_DAY:-1}
 TRAFFIC_CYCLE_BASELINE_DATE=${MON_TRAFFIC_CYCLE_BASELINE_DATE:-}
 TRAFFIC_CYCLE_BASELINE_BYTES=${MON_TRAFFIC_CYCLE_BASELINE_BYTES:-0}
@@ -490,6 +504,10 @@ EOF
         MON_TRAFFIC_BASELINE_BYTES="$CURRENT"
         MON_TRAFFIC_BASELINE_RX_BYTES="$RX"
         MON_TRAFFIC_BASELINE_TX_BYTES="$TX"
+        MON_TRAFFIC_OFFSET_BYTES=0
+        MON_TRAFFIC_OFFSET_RX_BYTES=0
+        MON_TRAFFIC_OFFSET_TX_BYTES=0
+        MON_TRAFFIC_DAILY_BASELINE_RESET=yes
         monitor_alert_save_cfg
     fi
 }
@@ -543,6 +561,7 @@ EOF
         MON_TRAFFIC_CYCLE_OFFSET_BYTES=0
         MON_TRAFFIC_CYCLE_OFFSET_RX_BYTES=0
         MON_TRAFFIC_CYCLE_OFFSET_TX_BYTES=0
+        MON_TRAFFIC_CYCLE_BASELINE_RESET=yes
         monitor_alert_save_cfg
     fi
 }
@@ -558,6 +577,9 @@ EOF
     MON_TRAFFIC_BASELINE_BYTES="$CURRENT"
     MON_TRAFFIC_BASELINE_RX_BYTES="$RX"
     MON_TRAFFIC_BASELINE_TX_BYTES="$TX"
+    MON_TRAFFIC_OFFSET_BYTES=0
+    MON_TRAFFIC_OFFSET_RX_BYTES=0
+    MON_TRAFFIC_OFFSET_TX_BYTES=0
     MON_TRAFFIC_CYCLE_BASELINE_DATE="$CYCLE_START"
     MON_TRAFFIC_CYCLE_BASELINE_BYTES="$CURRENT"
     MON_TRAFFIC_CYCLE_BASELINE_RX_BYTES="$RX"
@@ -565,6 +587,9 @@ EOF
     MON_TRAFFIC_CYCLE_OFFSET_BYTES=0
     MON_TRAFFIC_CYCLE_OFFSET_RX_BYTES=0
     MON_TRAFFIC_CYCLE_OFFSET_TX_BYTES=0
+    MON_TRAFFIC_LAST_BYTES="$CURRENT"
+    MON_TRAFFIC_LAST_RX_BYTES="$RX"
+    MON_TRAFFIC_LAST_TX_BYTES="$TX"
 }
 
 monitor_traffic_enable_with_prompt() {
@@ -583,11 +608,7 @@ monitor_traffic_enable_with_prompt() {
 }
 
 monitor_traffic_used_bytes() {
-    local CURRENT BASE USED
-    CURRENT=$(monitor_int_normalize "$(monitor_traffic_total_bytes)")
-    BASE=$(monitor_int_normalize "${MON_TRAFFIC_BASELINE_BYTES:-0}")
-    USED=$(monitor_traffic_delta_bytes "$CURRENT" "$BASE" 0)
-    echo "$USED"
+    monitor_traffic_usage_triplet daily | awk '{printf "%.0f\n", $3}'
 }
 
 monitor_traffic_used_gb() {
@@ -610,6 +631,75 @@ monitor_traffic_delta_bytes() {
     echo $((DELTA + OFFSET))
 }
 
+monitor_traffic_rebase_daily_after_counter_reset() {
+    local RX="$1" TX="$2" TOTAL="$3" LAST_RX="$4" LAST_TX="$5" LAST_TOTAL="$6" PREV_RX PREV_TX PREV_TOTAL
+    [ -n "${MON_TRAFFIC_BASELINE_DATE:-}" ] || return 0
+    [ "${MON_TRAFFIC_DAILY_BASELINE_RESET:-no}" = yes ] && return 0
+    if [ -n "${MON_TRAFFIC_BASELINE_RX_BYTES:-}" ] && [ -n "${MON_TRAFFIC_BASELINE_TX_BYTES:-}" ]; then
+        PREV_RX=$(monitor_traffic_delta_bytes "$LAST_RX" "${MON_TRAFFIC_BASELINE_RX_BYTES:-0}" "${MON_TRAFFIC_OFFSET_RX_BYTES:-0}")
+        PREV_TX=$(monitor_traffic_delta_bytes "$LAST_TX" "${MON_TRAFFIC_BASELINE_TX_BYTES:-0}" "${MON_TRAFFIC_OFFSET_TX_BYTES:-0}")
+        PREV_TOTAL=$((PREV_RX + PREV_TX))
+        MON_TRAFFIC_OFFSET_RX_BYTES="$PREV_RX"
+        MON_TRAFFIC_OFFSET_TX_BYTES="$PREV_TX"
+        MON_TRAFFIC_OFFSET_BYTES="$PREV_TOTAL"
+        MON_TRAFFIC_BASELINE_RX_BYTES="$RX"
+        MON_TRAFFIC_BASELINE_TX_BYTES="$TX"
+        MON_TRAFFIC_BASELINE_BYTES="$TOTAL"
+    else
+        PREV_TOTAL=$(monitor_traffic_delta_bytes "$LAST_TOTAL" "${MON_TRAFFIC_BASELINE_BYTES:-0}" "${MON_TRAFFIC_OFFSET_BYTES:-0}")
+        MON_TRAFFIC_OFFSET_BYTES="$PREV_TOTAL"
+        MON_TRAFFIC_BASELINE_BYTES="$TOTAL"
+    fi
+}
+
+monitor_traffic_rebase_cycle_after_counter_reset() {
+    local RX="$1" TX="$2" TOTAL="$3" LAST_RX="$4" LAST_TX="$5" LAST_TOTAL="$6" PREV_RX PREV_TX PREV_TOTAL
+    [ "${MON_TRAFFIC_ENABLED:-no}" = yes ] || return 0
+    [ -n "${MON_TRAFFIC_CYCLE_BASELINE_DATE:-}" ] || return 0
+    [ "${MON_TRAFFIC_CYCLE_BASELINE_RESET:-no}" = yes ] && return 0
+    if [ -n "${MON_TRAFFIC_CYCLE_BASELINE_RX_BYTES:-}" ] && [ -n "${MON_TRAFFIC_CYCLE_BASELINE_TX_BYTES:-}" ]; then
+        PREV_RX=$(monitor_traffic_delta_bytes "$LAST_RX" "${MON_TRAFFIC_CYCLE_BASELINE_RX_BYTES:-0}" "${MON_TRAFFIC_CYCLE_OFFSET_RX_BYTES:-0}")
+        PREV_TX=$(monitor_traffic_delta_bytes "$LAST_TX" "${MON_TRAFFIC_CYCLE_BASELINE_TX_BYTES:-0}" "${MON_TRAFFIC_CYCLE_OFFSET_TX_BYTES:-0}")
+        PREV_TOTAL=$((PREV_RX + PREV_TX))
+        MON_TRAFFIC_CYCLE_OFFSET_RX_BYTES="$PREV_RX"
+        MON_TRAFFIC_CYCLE_OFFSET_TX_BYTES="$PREV_TX"
+        MON_TRAFFIC_CYCLE_OFFSET_BYTES="$PREV_TOTAL"
+        MON_TRAFFIC_CYCLE_BASELINE_RX_BYTES="$RX"
+        MON_TRAFFIC_CYCLE_BASELINE_TX_BYTES="$TX"
+        MON_TRAFFIC_CYCLE_BASELINE_BYTES="$TOTAL"
+    else
+        PREV_TOTAL=$(monitor_traffic_delta_bytes "$LAST_TOTAL" "${MON_TRAFFIC_CYCLE_BASELINE_BYTES:-0}" "${MON_TRAFFIC_CYCLE_OFFSET_BYTES:-0}")
+        MON_TRAFFIC_CYCLE_OFFSET_BYTES="$PREV_TOTAL"
+        MON_TRAFFIC_CYCLE_BASELINE_BYTES="$TOTAL"
+    fi
+}
+
+monitor_traffic_reconcile_counters() {
+    local RX TX TOTAL LAST_RX LAST_TX LAST_TOTAL SAVE=no RESET=no
+    RX=$(monitor_int_normalize "${1:-0}")
+    TX=$(monitor_int_normalize "${2:-0}")
+    TOTAL=$(monitor_int_normalize "${3:-0}")
+    LAST_RX=$(monitor_int_normalize "${MON_TRAFFIC_LAST_RX_BYTES:-0}")
+    LAST_TX=$(monitor_int_normalize "${MON_TRAFFIC_LAST_TX_BYTES:-0}")
+    LAST_TOTAL=$(monitor_int_normalize "${MON_TRAFFIC_LAST_BYTES:-0}")
+    [ "$LAST_TOTAL" -gt 0 ] || LAST_TOTAL=$((LAST_RX + LAST_TX))
+    if { [ "$LAST_RX" -gt 0 ] && [ "$RX" -lt "$LAST_RX" ]; } || { [ "$LAST_TX" -gt 0 ] && [ "$TX" -lt "$LAST_TX" ]; }; then
+        RESET=yes
+    fi
+    if [ "$RESET" = yes ]; then
+        monitor_traffic_rebase_daily_after_counter_reset "$RX" "$TX" "$TOTAL" "$LAST_RX" "$LAST_TX" "$LAST_TOTAL"
+        monitor_traffic_rebase_cycle_after_counter_reset "$RX" "$TX" "$TOTAL" "$LAST_RX" "$LAST_TX" "$LAST_TOTAL"
+        SAVE=yes
+    fi
+    if [ "$RX" != "$LAST_RX" ] || [ "$TX" != "$LAST_TX" ] || [ "$TOTAL" != "$LAST_TOTAL" ]; then
+        MON_TRAFFIC_LAST_RX_BYTES="$RX"
+        MON_TRAFFIC_LAST_TX_BYTES="$TX"
+        MON_TRAFFIC_LAST_BYTES="$TOTAL"
+        SAVE=yes
+    fi
+    [ "$SAVE" = yes ] && monitor_alert_save_cfg
+}
+
 monitor_traffic_usage_triplet() {
     local KIND="${1:-daily}" RX TX TOTAL BASE_RX BASE_TX BASE_TOTAL OFFSET_RX=0 OFFSET_TX=0 OFFSET_TOTAL=0 USED_RX USED_TX USED_TOTAL HAS_SPLIT=no
     read -r RX TX TOTAL <<EOF
@@ -618,6 +708,7 @@ EOF
     RX=$(monitor_int_normalize "$RX")
     TX=$(monitor_int_normalize "$TX")
     TOTAL=$(monitor_int_normalize "$TOTAL")
+    monitor_traffic_reconcile_counters "$RX" "$TX" "$TOTAL"
     if [ "$KIND" = "cycle" ]; then
         BASE_RX=${MON_TRAFFIC_CYCLE_BASELINE_RX_BYTES:-}
         BASE_TX=${MON_TRAFFIC_CYCLE_BASELINE_TX_BYTES:-}
@@ -629,6 +720,9 @@ EOF
         BASE_RX=${MON_TRAFFIC_BASELINE_RX_BYTES:-}
         BASE_TX=${MON_TRAFFIC_BASELINE_TX_BYTES:-}
         BASE_TOTAL=${MON_TRAFFIC_BASELINE_BYTES:-0}
+        OFFSET_RX=${MON_TRAFFIC_OFFSET_RX_BYTES:-0}
+        OFFSET_TX=${MON_TRAFFIC_OFFSET_TX_BYTES:-0}
+        OFFSET_TOTAL=${MON_TRAFFIC_OFFSET_BYTES:-0}
     fi
     [ -n "${BASE_RX:-}" ] && [ -n "${BASE_TX:-}" ] && HAS_SPLIT=yes
     BASE_RX=$(monitor_int_normalize "${BASE_RX:-0}")
@@ -661,11 +755,7 @@ EOF
 }
 
 monitor_traffic_current_cycle_used_bytes() {
-    local CURRENT BASE USED
-    CURRENT=$(monitor_int_normalize "$(monitor_traffic_total_bytes)")
-    BASE=$(monitor_int_normalize "${MON_TRAFFIC_CYCLE_BASELINE_BYTES:-0}")
-    USED=$(monitor_traffic_delta_bytes "$CURRENT" "$BASE" "${MON_TRAFFIC_CYCLE_OFFSET_BYTES:-0}")
-    echo "$USED"
+    monitor_traffic_usage_triplet cycle | awk '{printf "%.0f\n", $3}'
 }
 
 monitor_traffic_current_cycle_used_gb() {
@@ -706,6 +796,9 @@ EOF
     MON_TRAFFIC_CYCLE_OFFSET_RX_BYTES="$OFFSET_RX"
     MON_TRAFFIC_CYCLE_OFFSET_TX_BYTES="$OFFSET_TX"
     MON_TRAFFIC_CYCLE_OFFSET_BYTES=$((OFFSET_RX + OFFSET_TX))
+    MON_TRAFFIC_LAST_RX_BYTES="$RX"
+    MON_TRAFFIC_LAST_TX_BYTES="$TX"
+    MON_TRAFFIC_LAST_BYTES=$((RX + TX))
     monitor_alert_save_cfg
 }
 
@@ -1355,6 +1448,7 @@ monitor_alert_renew_mark_paid() {
 monitor_alert_traffic_check() {
     [ "${MON_TRAFFIC_ENABLED:-no}" = "yes" ] || return 0
     monitor_traffic_ensure_baseline
+    monitor_traffic_cycle_ensure_baseline
     local USED_RX USED_TX USED_BYTES USED_GB LIMIT_GB DAILY_TEXT LEVEL LEVEL_LABEL LEVEL_ICON
     read -r USED_RX USED_TX USED_BYTES <<EOF
 $(monitor_traffic_usage_triplet daily)
@@ -1675,6 +1769,9 @@ EOF
                 MON_TRAFFIC_CYCLE_OFFSET_BYTES=0
                 MON_TRAFFIC_CYCLE_OFFSET_RX_BYTES=0
                 MON_TRAFFIC_CYCLE_OFFSET_TX_BYTES=0
+                MON_TRAFFIC_LAST_BYTES="$CUR_TOTAL"
+                MON_TRAFFIC_LAST_RX_BYTES="$CUR_RX"
+                MON_TRAFFIC_LAST_TX_BYTES="$CUR_TX"
                 monitor_alert_save_cfg
                 info "重置日已保存"
                 ;;
@@ -1696,6 +1793,12 @@ EOF
                 MON_TRAFFIC_BASELINE_BYTES="$CUR_TOTAL"
                 MON_TRAFFIC_BASELINE_RX_BYTES="$CUR_RX"
                 MON_TRAFFIC_BASELINE_TX_BYTES="$CUR_TX"
+                MON_TRAFFIC_OFFSET_BYTES=0
+                MON_TRAFFIC_OFFSET_RX_BYTES=0
+                MON_TRAFFIC_OFFSET_TX_BYTES=0
+                MON_TRAFFIC_LAST_BYTES="$CUR_TOTAL"
+                MON_TRAFFIC_LAST_RX_BYTES="$CUR_RX"
+                MON_TRAFFIC_LAST_TX_BYTES="$CUR_TX"
                 monitor_alert_save_cfg
                 info "今日基线已重置"
                 ;;
@@ -2070,6 +2173,12 @@ EOF
                         MON_TRAFFIC_BASELINE_BYTES="$CUR_TOTAL"
                         MON_TRAFFIC_BASELINE_RX_BYTES="$CUR_RX"
                         MON_TRAFFIC_BASELINE_TX_BYTES="$CUR_TX"
+                        MON_TRAFFIC_OFFSET_BYTES=0
+                        MON_TRAFFIC_OFFSET_RX_BYTES=0
+                        MON_TRAFFIC_OFFSET_TX_BYTES=0
+                        MON_TRAFFIC_LAST_BYTES="$CUR_TOTAL"
+                        MON_TRAFFIC_LAST_RX_BYTES="$CUR_RX"
+                        MON_TRAFFIC_LAST_TX_BYTES="$CUR_TX"
                         monitor_alert_save_cfg
                         info "今日基线已重置"
                         ;;
@@ -2090,6 +2199,9 @@ EOF
                         MON_TRAFFIC_CYCLE_OFFSET_BYTES=0
                         MON_TRAFFIC_CYCLE_OFFSET_RX_BYTES=0
                         MON_TRAFFIC_CYCLE_OFFSET_TX_BYTES=0
+                        MON_TRAFFIC_LAST_BYTES="$CUR_TOTAL"
+                        MON_TRAFFIC_LAST_RX_BYTES="$CUR_RX"
+                        MON_TRAFFIC_LAST_TX_BYTES="$CUR_TX"
                         monitor_alert_save_cfg
                         info "重置日已保存"
                         ;;
