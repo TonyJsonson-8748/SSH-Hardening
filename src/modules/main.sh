@@ -39,7 +39,7 @@ VPS 开荒脚本 CLI
   --bbr-menu             BBR TCP 调优
   --firewall-menu        防火墙管理
   --dns-menu             DNS 优化
-  --ddns-menu            Cloudflare DDNS 菜单
+  --ddns-menu            DDNS 菜单（Cloudflare / 华为云 DNS）
   --ddns-install         安装 / 配置 DDNS
   --ddns-run             立即更新 DDNS
   --ddns-status          查看 DDNS 状态
@@ -149,7 +149,7 @@ main_menu() {
         menu_group "安全与网络"
         menu_pair "1" "SSH 工具集" "2" "Fail2ban 管理"
         menu_pair "3" "BBR TCP 调优" "4" "防火墙管理"
-        menu_pair "5" "DNS 优化" "6" "Cloudflare DDNS"
+        menu_pair "5" "DNS 优化" "6" "DDNS"
         echo ""
         menu_group "系统与服务"
         menu_pair "7" "系统换源" "8" "IPv4 / IPv6"

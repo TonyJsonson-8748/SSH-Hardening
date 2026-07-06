@@ -1,4 +1,4 @@
-# VPS 开荒脚本 V3.9.36
+# VPS 开荒脚本 V3.9.37
 
 > **银趴火山帮** 出品 · SSH · BBR · DDNS · Caddy · Firewall · NFT 转发
 
@@ -29,7 +29,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/chnnic/SSH-Hardening/refs/he
 | `--bbr-menu` | BBR TCP 调优 |
 | `--firewall-menu` | 防火墙管理 |
 | `--dns-menu` | DNS 优化 |
-| `--ddns-menu` | Cloudflare DDNS 菜单 |
+| `--ddns-menu` | DDNS 菜单（Cloudflare / 华为云 DNS） |
 | `--ddns-install` | 安装 / 配置 DDNS |
 | `--ddns-run` | 立即更新 DDNS |
 | `--ddns-status` | 查看 DDNS 状态 |
@@ -71,7 +71,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/chnnic/SSH-Hardening/refs/he
 /___/_/  /_/_/   /_/  |_/_/ |_| /_/     \____/_/    /____/
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  VPS TOOLS  ·  V3.9.36
+  VPS TOOLS  ·  V3.9.37
   VPS 开荒脚本 · 银趴火山帮
 ────────────────────────────────────────────────────────────────
   SSH · BBR · DDNS · Caddy · Firewall · NFT · Monitor
@@ -86,7 +86,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/chnnic/SSH-Hardening/refs/he
   ◆ 安全与网络
     1  SSH 工具集              2  Fail2ban 管理
     3  BBR TCP 调优            4  防火墙管理
-    5  DNS 优化                6  Cloudflare DDNS
+    5  DNS 优化                6  DDNS
 
   ◆ 系统与服务
     7  系统换源                8  IPv4 / IPv6
@@ -222,20 +222,21 @@ bash <(curl -fsSL https://raw.githubusercontent.com/chnnic/SSH-Hardening/refs/he
 
 ---
 
-### 6. Cloudflare DDNS
+### 6. DDNS（Cloudflare / 华为云 DNS）
 
-将动态公网 IP 自动同步到 Cloudflare DNS。
+将动态公网 IP 自动同步到 DNS 服务商。当前支持 Cloudflare 和华为云 DNS。
 
 **安装前准备：**
-1. 域名托管到 Cloudflare
-2. 创建 API Token：`Zone / DNS / Edit` 权限
+1. 域名托管到 Cloudflare 或华为云 DNS
+2. 准备 API 凭据：Cloudflare 使用 API Token；华为云使用 AK/SK，账号需有 DNS 写权限
 3. 准备 IPv4 / IPv6 使用的子域名
 
 **支持配置：**
 - IPv4 A 与 IPv6 AAAA 可分别启用、分别设置域名，也可以同域名双栈同时更新
 - 支持仅 IPv4、仅 IPv6、IPv4+IPv6 双栈
-- Cloudflare 代理（橙云）开关
-- 自定义 TTL（默认 60 秒）
+- Cloudflare 支持代理（橙云）开关
+- 华为云使用 AK/SK 签名调用 DNS API
+- 自定义 TTL（Cloudflare 默认 60 秒，华为云默认 300 秒）
 
 **运行机制：**
 - crontab 每 5 分钟执行
@@ -267,7 +268,7 @@ IP 真实变化时推送通知，实时读取 `/root/.cf_tg`，兼容 crontab �
 |------|------|
 | 手动立即更新 | 立即触发同步 |
 | 查看日志 | 彩色显示 + 实时跟踪 + UTF-8 完整查看 |
-| 修改配置 | 更换域名 / Token / 模式 |
+| 修改配置 | 更换服务商 / 域名 / 凭据 / 模式 |
 | 暂停 / 恢复 | 临时停用不删除配置 |
 | 卸载 | 完整清理 |
 | Telegram 通知 | 配置 Bot + Chat ID，发测试消息 |
@@ -499,7 +500,7 @@ DNS 设置会自动识别 `systemd-resolved`、NetworkManager、resolvconf 或�
 
 | 项 | 说明 |
 |----|------|
-| DDNS 脚本权限 | `chmod 700`，仅 root 可读（含 CF Token） |
+| DDNS 脚本权限 | `chmod 700`，仅 root 可执行；API 凭据文件 `chmod 600` |
 | 防火墙卸载警告 | 清空规则会暴露主机，2 秒延迟 + 警告 |
 | pf_flush 警告 | 清空所有 NAT 规则会影响其他应用 |
 | HTTP 时间同步 | 标注未经认证，可被中间人伪造 |
@@ -539,7 +540,8 @@ DNS 设置会自动识别 `systemd-resolved`、NetworkManager、resolvconf 或�
 | `/etc/nft-port-forward/access.conf` | NFT 访问控制配置 |
 | `/etc/systemd/system/nftpf-ddns.timer` | NFT DDNS 自动刷新 timer |
 | `/root/.cf_token` | Cloudflare API Token（600） |
-| `/root/.cf_zone` | DDNS 域名/模式/TTL 配置 |
+| `/root/.hw_dns_aksk` | 华为云 DNS AK/SK（600） |
+| `/root/.cf_zone` | DDNS 服务商、域名、模式、Endpoint、TTL 配置 |
 | `/root/.cf_tg` | Telegram Bot 配置（600） |
 | `/root/ddns.sh` | DDNS 执行脚本（700） |
 | `/var/log/ddns.log` | DDNS 日志（自动轮转 500 行） |
@@ -578,6 +580,7 @@ GitHub Actions 还会在 Debian、Ubuntu、Alpine、Rocky Linux 容器中加载�
 
 | 版本 | 主要变更 |
 |------|---------|
+| **V3.9.37** | DDNS 新增华为云 DNS 服务商，支持 AK/SK 签名调用华为云 DNS API 更新 A / AAAA 记录，并保留 Cloudflare 旧配置兼容 |
 | **V3.9.36** | 流量监控记录上次网卡计数，VPS 重启或网卡计数重置后把已用流量滚入持久 offset，避免今日/周期统计回到 0 |
 | **V3.9.35** | 修复监控配置被 `source` 执行的风险；SSH 加固写入置顶托管块避免被 `Include` 覆盖；NFT 转发不再 `flush ruleset` 清空宿主机规则；修复 Telegram HTML 转义 |
 | **V3.9.34** | 修复 VPS 重启或网卡计数重置后，流量监控当前周期被旧基线钳成 0、长期不增长的问题 |

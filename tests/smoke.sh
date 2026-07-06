@@ -9,7 +9,8 @@ export VPS_TOOLS_TEST_MODE=1
 source "$ROOT/SSH-Hardening.sh"
 
 for fn in systemd_available show_cli_help main_menu ssh_tools_menu fail2ban_menu bbr_menu firewall_menu dns_menu \
-    ip_config_menu caddy_menu nft_menu ddns_menu ddns_install ddns_run_now ddns_view_logs ddns_status \
+    ip_config_menu caddy_menu nft_menu ddns_menu ddns_install ddns_install_cloudflare ddns_install_huawei ddns_run_now ddns_view_logs ddns_status \
+    ddns_provider ddns_provider_label ddns_sed_escape ddns_domain_dot \
     ddns_cfg_enable_a ddns_cfg_enable_aaaa ddns_cfg_domain4 ddns_cfg_domain6 ddns_primary_domain ddns_mode_label ddns_build_domain \
     ddns_latest_log_line ddns_latest_change_log_line ddns_record_status_line ddns_record_change_line ddns_print_record_summary \
     system_toolbox_menu \
@@ -50,6 +51,7 @@ ddns_cfg_enable_aaaa || { echo "Legacy DDNS IPv6 enable detection failed" >&2; e
 [[ "$(ddns_cfg_domain4)" = "home.example.com" ]] || { echo "Legacy DDNS IPv4 domain failed" >&2; exit 1; }
 [[ "$(ddns_cfg_domain6)" = "home.example.com" ]] || { echo "Legacy DDNS IPv6 domain failed" >&2; exit 1; }
 [[ "$(ddns_mode_label)" = "IPv4 + IPv6（同域名）" ]] || { echo "Legacy DDNS mode label failed" >&2; exit 1; }
+[[ "$(ddns_provider)" = "cloudflare" ]] || { echo "Legacy DDNS provider fallback failed" >&2; exit 1; }
 cat > "$DDNS_ZONE_FILE" <<'EOF'
 DOMAIN=v4.example.com
 DOMAIN4=v4.example.com
@@ -62,7 +64,27 @@ EOF
 [[ "$(ddns_mode_label)" = "IPv4 + IPv6（分别设置）" ]] || { echo "Split DDNS mode label failed" >&2; exit 1; }
 [[ "$(ddns_build_domain @ example.com)" = "example.com" ]] || { echo "DDNS root domain build failed" >&2; exit 1; }
 [[ "$(ddns_build_domain v6.example.com example.com)" = "v6.example.com" ]] || { echo "DDNS full domain build failed" >&2; exit 1; }
+[[ "$(ddns_domain_dot example.com)" = "example.com." ]] || { echo "DDNS trailing-dot helper failed" >&2; exit 1; }
+cat > "$DDNS_ZONE_FILE" <<'EOF'
+PROVIDER=huawei
+DOMAIN=home.example.com
+DOMAIN4=home.example.com
+ZONE=example.com
+MODE=ipv4
+ENABLE_A=true
+ENABLE_AAAA=false
+ENDPOINT=https://dns.myhuaweicloud.com
+EOF
+[[ "$(ddns_provider)" = "huawei" ]] || { echo "Huawei DDNS provider detection failed" >&2; exit 1; }
+[[ "$(ddns_provider_label)" = "华为云 DNS" ]] || { echo "Huawei DDNS provider label failed" >&2; exit 1; }
+ddns_cfg_enable_a || { echo "Huawei DDNS IPv4 enable failed" >&2; exit 1; }
+! ddns_cfg_enable_aaaa || { echo "Huawei DDNS IPv6 should be disabled" >&2; exit 1; }
+grep -q "SDK-HMAC-SHA256" "$ROOT/src/modules/ddns.sh" || { echo "Huawei DDNS signer missing" >&2; exit 1; }
 ! grep -q "LC_TIME" "$ROOT/src/modules/ddns.sh" || { echo "DDNS menu must not use LC_TIME locale variable" >&2; exit 1; }
+HUAWEI_DDNS_TEMPLATE="$TMP/huawei-ddns-template.sh"
+awk "BEGIN{p=0} /cat > \"\\\$DDNS_SCRIPT\" << 'DDNS_HUAWEI_INNER'/{p=1; next} /^DDNS_HUAWEI_INNER$/{if(p){exit}} p{print}" "$ROOT/src/modules/ddns.sh" > "$HUAWEI_DDNS_TEMPLATE"
+bash -n "$HUAWEI_DDNS_TEMPLATE" || { echo "Huawei DDNS generated template has syntax errors" >&2; exit 1; }
+grep -Fq 'JSON_INPUT=$(cat)' "$HUAWEI_DDNS_TEMPLATE" || { echo "Huawei DDNS JSON parser must preserve piped API responses" >&2; exit 1; }
 DDNS_SAMPLE_LOG="$TMP/ddns.log"
 cat > "$DDNS_SAMPLE_LOG" <<'EOF'
 [2026-07-02 23:00:01] OK: A jp99.289599.xyz 更新成功 1.1.1.1 → 2.2.2.2
@@ -88,6 +110,7 @@ MON_HOST_LABEL='Ali&HKG<ECS>'
     MONITOR_CFG="$TMP/monitor.cfg"
     PWNED="$TMP/monitor-config-executed"
     monitor_alert_cfg() { echo "$MONITOR_CFG"; }
+    # shellcheck disable=SC2034 # consumed by monitor_alert_check
     monitor_alert_load_cfg() { MON_ENABLED=no; }
     {
         echo "ENABLED=no"
@@ -235,9 +258,9 @@ MON_TRAFFIC_DAILY_BASELINE_RESET=yes
 [[ "$(monitor_traffic_usage_triplet daily)" = "0 0 0" ]] || { echo "Daily rollover should not inherit old traffic" >&2; exit 1; }
 MANIFEST="$TMP/manifest.json"
 cat > "$MANIFEST" <<'EOF'
-{"name":"SSH-Hardening","version":"V3.9.36","sha256":"abc123"}
+{"name":"SSH-Hardening","version":"V3.9.37","sha256":"abc123"}
 EOF
-[[ "$(self_manifest_value "$MANIFEST" version)" = "V3.9.36" ]] || { echo "Manifest parsing failed" >&2; exit 1; }
+[[ "$(self_manifest_value "$MANIFEST" version)" = "V3.9.37" ]] || { echo "Manifest parsing failed" >&2; exit 1; }
 
 DAILY_REPORT_CALLS=0
 monitor_alert_daily_report() { DAILY_REPORT_CALLS=$((DAILY_REPORT_CALLS + 1)); }
