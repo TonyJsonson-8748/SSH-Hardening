@@ -539,11 +539,44 @@ fetch_ip4() {
 }
 
 fetch_ip6() {
-    (
+    local IP
+    IP=$( (
         curl -6 -fsS --max-time 5 https://api64.ipify.org ||
         curl -6 -fsS --max-time 5 https://ipv6.icanhazip.com ||
         curl -6 -fsS --max-time 5 https://ip.sb
-    ) 2>/dev/null | tr -d ' \r\n'
+    ) 2>/dev/null | tr -d ' \r\n')
+    [ -n "$IP" ] && { echo "$IP"; return 0; }
+    fetch_ip6_local
+}
+
+fetch_ip6_local() {
+    command -v ip >/dev/null 2>&1 || return 0
+    command -v python3 >/dev/null 2>&1 || return 0
+    ip -6 -o addr show scope global 2>/dev/null | python3 -c '
+import ipaddress
+import sys
+candidates = []
+for line in sys.stdin:
+    parts = line.split()
+    if "inet6" not in parts:
+        continue
+    try:
+        addr = parts[parts.index("inet6") + 1].split("/")[0]
+        ip = ipaddress.ip_address(addr)
+    except Exception:
+        continue
+    if ip.version != 6 or ip.is_link_local or ip.is_loopback or ip.is_multicast or ip.is_unspecified:
+        continue
+    flags = set(parts)
+    score = 0
+    if "deprecated" in flags:
+        score += 100
+    if "temporary" in flags:
+        score += 10
+    candidates.append((score, str(ip)))
+if candidates:
+    print(sorted(candidates)[0][1])
+'
 }
 
 valid_ipv4() {
@@ -909,11 +942,44 @@ fetch_ip4() {
 }
 
 fetch_ip6() {
-    (
+    local IP
+    IP=$( (
         curl -6 -fsS --max-time 5 https://api64.ipify.org ||
         curl -6 -fsS --max-time 5 https://ipv6.icanhazip.com ||
         curl -6 -fsS --max-time 5 https://ip.sb
-    ) 2>/dev/null | tr -d ' \r\n'
+    ) 2>/dev/null | tr -d ' \r\n')
+    [ -n "$IP" ] && { echo "$IP"; return 0; }
+    fetch_ip6_local
+}
+
+fetch_ip6_local() {
+    command -v ip >/dev/null 2>&1 || return 0
+    command -v python3 >/dev/null 2>&1 || return 0
+    ip -6 -o addr show scope global 2>/dev/null | python3 -c '
+import ipaddress
+import sys
+candidates = []
+for line in sys.stdin:
+    parts = line.split()
+    if "inet6" not in parts:
+        continue
+    try:
+        addr = parts[parts.index("inet6") + 1].split("/")[0]
+        ip = ipaddress.ip_address(addr)
+    except Exception:
+        continue
+    if ip.version != 6 or ip.is_link_local or ip.is_loopback or ip.is_multicast or ip.is_unspecified:
+        continue
+    flags = set(parts)
+    score = 0
+    if "deprecated" in flags:
+        score += 100
+    if "temporary" in flags:
+        score += 10
+    candidates.append((score, str(ip)))
+if candidates:
+    print(sorted(candidates)[0][1])
+'
 }
 
 valid_ipv4() {

@@ -1,4 +1,4 @@
-# VPS 开荒脚本 V3.9.37
+# VPS 开荒脚本 V3.9.38
 
 > **银趴火山帮** 出品 · SSH · BBR · DDNS · Caddy · Firewall · NFT 转发
 
@@ -71,7 +71,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/chnnic/SSH-Hardening/refs/he
 /___/_/  /_/_/   /_/  |_/_/ |_| /_/     \____/_/    /____/
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  VPS TOOLS  ·  V3.9.37
+  VPS TOOLS  ·  V3.9.38
   VPS 开荒脚本 · 银趴火山帮
 ────────────────────────────────────────────────────────────────
   SSH · BBR · DDNS · Caddy · Firewall · NFT · Monitor
@@ -242,6 +242,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/chnnic/SSH-Hardening/refs/he
 - crontab 每 5 分钟执行
 - IP 未变化时仅记录日志，不请求 API
 - IP 多源备用：`ipify.org → ifconfig.me → ip.sb`
+- IPv6 外部探测失败时，会回退读取本机 `scope global` IPv6 地址
 - **IPv4 格式严格校验**：纯 IPv6 机器自动识别不会误发
 - **IPv6 独立运行**：仅启用 AAAA 时不会因为无 IPv4 而退出
 - **二次校验**：检测到 IP 变化时再查询一次，防止误推
@@ -580,6 +581,7 @@ GitHub Actions 还会在 Debian、Ubuntu、Alpine、Rocky Linux 容器中加载�
 
 | 版本 | 主要变更 |
 |------|---------|
+| **V3.9.38** | DDNS IPv6 外部探测失败时回退读取本机全局 IPv6，避免有公网 IPv6 但 `curl -6` 不通时报“无法获取公网 IPv6” |
 | **V3.9.37** | DDNS 新增华为云 DNS 服务商，支持 AK/SK 签名调用华为云 DNS API 更新 A / AAAA 记录，并保留 Cloudflare 旧配置兼容 |
 | **V3.9.36** | 流量监控记录上次网卡计数，VPS 重启或网卡计数重置后把已用流量滚入持久 offset，避免今日/周期统计回到 0 |
 | **V3.9.35** | 修复监控配置被 `source` 执行的风险；SSH 加固写入置顶托管块避免被 `Include` 覆盖；NFT 转发不再 `flush ruleset` 清空宿主机规则；修复 Telegram HTML 转义 |

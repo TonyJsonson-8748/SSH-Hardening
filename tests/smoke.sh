@@ -85,6 +85,21 @@ HUAWEI_DDNS_TEMPLATE="$TMP/huawei-ddns-template.sh"
 awk "BEGIN{p=0} /cat > \"\\\$DDNS_SCRIPT\" << 'DDNS_HUAWEI_INNER'/{p=1; next} /^DDNS_HUAWEI_INNER$/{if(p){exit}} p{print}" "$ROOT/src/modules/ddns.sh" > "$HUAWEI_DDNS_TEMPLATE"
 bash -n "$HUAWEI_DDNS_TEMPLATE" || { echo "Huawei DDNS generated template has syntax errors" >&2; exit 1; }
 grep -Fq 'JSON_INPUT=$(cat)' "$HUAWEI_DDNS_TEMPLATE" || { echo "Huawei DDNS JSON parser must preserve piped API responses" >&2; exit 1; }
+grep -Fq 'fetch_ip6_local' "$HUAWEI_DDNS_TEMPLATE" || { echo "Huawei DDNS IPv6 local fallback missing" >&2; exit 1; }
+FETCH_IP6_LOCAL="$TMP/fetch-ip6-local.sh"
+awk 'p{print} /^fetch_ip6_local\(\) \{/{p=1; print; next} p && /^}$/{exit}' "$HUAWEI_DDNS_TEMPLATE" > "$FETCH_IP6_LOCAL"
+# shellcheck source=/dev/null
+source "$FETCH_IP6_LOCAL"
+mkdir -p "$TMP/bin"
+cat > "$TMP/bin/ip" <<'EOF'
+#!/bin/sh
+cat <<'IPADDR'
+2: eth0    inet6 2404:c804:2331:ad01:be24:11ff:fe45:5e90/64 scope global dynamic mngtmpaddr \       valid_lft 1041sec preferred_lft 1041sec
+2: eth0    inet6 2001:db8::100/64 scope global temporary dynamic \       valid_lft 1041sec preferred_lft 1041sec
+IPADDR
+EOF
+chmod +x "$TMP/bin/ip"
+[[ "$(PATH="$TMP/bin:$PATH" fetch_ip6_local)" = "2404:c804:2331:ad01:be24:11ff:fe45:5e90" ]] || { echo "DDNS IPv6 local fallback picked the wrong address" >&2; exit 1; }
 DDNS_SAMPLE_LOG="$TMP/ddns.log"
 cat > "$DDNS_SAMPLE_LOG" <<'EOF'
 [2026-07-02 23:00:01] OK: A jp99.289599.xyz 更新成功 1.1.1.1 → 2.2.2.2
@@ -258,9 +273,9 @@ MON_TRAFFIC_DAILY_BASELINE_RESET=yes
 [[ "$(monitor_traffic_usage_triplet daily)" = "0 0 0" ]] || { echo "Daily rollover should not inherit old traffic" >&2; exit 1; }
 MANIFEST="$TMP/manifest.json"
 cat > "$MANIFEST" <<'EOF'
-{"name":"SSH-Hardening","version":"V3.9.37","sha256":"abc123"}
+{"name":"SSH-Hardening","version":"V3.9.38","sha256":"abc123"}
 EOF
-[[ "$(self_manifest_value "$MANIFEST" version)" = "V3.9.37" ]] || { echo "Manifest parsing failed" >&2; exit 1; }
+[[ "$(self_manifest_value "$MANIFEST" version)" = "V3.9.38" ]] || { echo "Manifest parsing failed" >&2; exit 1; }
 
 DAILY_REPORT_CALLS=0
 monitor_alert_daily_report() { DAILY_REPORT_CALLS=$((DAILY_REPORT_CALLS + 1)); }
