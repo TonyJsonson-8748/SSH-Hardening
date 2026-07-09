@@ -8,6 +8,7 @@ DDNS_HUAWEI_KEY_FILE="/root/.hw_dns_aksk"
 DDNS_LOG="/var/log/ddns.log"
 DDNS_ZONE_FILE="/root/.cf_zone"
 DDNS_TG_FILE="/root/.cf_tg"    # Telegram 通知配置
+DDNS_STATE_DIR="/root"
 
 ddns_cfg_get() {
     local key="$1"
@@ -207,15 +208,15 @@ ddns_cf_record_ensure() {
 
 ddns_type_status_file() {
     case "$1" in
-        A|AAAA) echo "/root/.cf_last_status_$1" ;;
-        *) echo "/root/.cf_last_status" ;;
+        A|AAAA) echo "${DDNS_STATE_DIR:-/root}/.cf_last_status_$1" ;;
+        *) echo "${DDNS_STATE_DIR:-/root}/.cf_last_status" ;;
     esac
 }
 
 ddns_type_change_file() {
     case "$1" in
-        A|AAAA) echo "/root/.cf_last_change_$1" ;;
-        *) echo "/root/.cf_last_change" ;;
+        A|AAAA) echo "${DDNS_STATE_DIR:-/root}/.cf_last_change_$1" ;;
+        *) echo "${DDNS_STATE_DIR:-/root}/.cf_last_change" ;;
     esac
 }
 
@@ -242,12 +243,12 @@ ddns_line_from_state_file() {
 ddns_line_from_change_file() {
     local type="$1" domain_filter="${2:-}" file ts record_type domain old_ip new_ip line
     file=$(ddns_type_change_file "$type")
-    if [ ! -f "$file" ] && [ -f /root/.cf_last_change ]; then
-        line=$(cat /root/.cf_last_change 2>/dev/null)
+    if [ ! -f "$file" ] && [ -f "${DDNS_STATE_DIR:-/root}/.cf_last_change" ]; then
+        line=$(cat "${DDNS_STATE_DIR:-/root}/.cf_last_change" 2>/dev/null)
         record_type=$(echo "$line" | cut -d'|' -f2)
         domain=$(echo "$line" | cut -d'|' -f5)
         if [ "$record_type" = "$type" ] && { [ -z "$domain_filter" ] || [ "$domain" = "$domain_filter" ]; }; then
-            file="/root/.cf_last_change"
+            file="${DDNS_STATE_DIR:-/root}/.cf_last_change"
         fi
     fi
     [ -f "$file" ] || return 1
@@ -269,18 +270,89 @@ ddns_latest_change_log_line() {
     grep -F "OK: ${type} ${domain} 更新成功" "$log" 2>/dev/null | tail -1
 }
 
+ddns_line_time() {
+    local line="$1"
+    case "$line" in
+        \[*\]*)
+            line=${line#\[}
+            echo "${line%%\]*}"
+            ;;
+    esac
+}
+
+ddns_line_ip_tail() {
+    local ip="$1"
+    ip=${ip%% *}
+    ip=${ip%%（*}
+    echo "$ip"
+}
+
+ddns_line_result_ip() {
+    local line="$1" ip
+    case "$line" in
+        *" → "*)
+            ip=${line##* → }
+            ddns_line_ip_tail "$ip"
+            ;;
+        *"未变化 "*)
+            ip=${line##*未变化 }
+            ddns_line_ip_tail "$ip"
+            ;;
+        *"创建成功 "*)
+            ip=${line##*创建成功 }
+            ddns_line_ip_tail "$ip"
+            ;;
+    esac
+}
+
+ddns_newer_line() {
+    local first="$1" second="$2" first_time second_time
+    [ -n "$first" ] || [ -n "$second" ] || return 1
+    [ -n "$first" ] || { echo "$second"; return 0; }
+    [ -n "$second" ] || { echo "$first"; return 0; }
+    first_time=$(ddns_line_time "$first")
+    second_time=$(ddns_line_time "$second")
+    if [ -z "$first_time" ] && [ -n "$second_time" ]; then
+        echo "$second"
+    elif [ -n "$first_time" ] && [ -n "$second_time" ] && [[ "$second_time" > "$first_time" ]]; then
+        echo "$second"
+    else
+        echo "$first"
+    fi
+}
+
+ddns_change_matches_status() {
+    local change_line="$1" status_ip="$2" change_ip
+    [ -n "$change_line" ] || return 1
+    [ -n "$status_ip" ] || return 0
+    change_ip=$(ddns_line_result_ip "$change_line")
+    [ -z "$change_ip" ] || [ "$change_ip" = "$status_ip" ]
+}
+
 ddns_record_status_line() {
-    local type="$1" domain="$2" log="$3" line
-    line=$(ddns_line_from_state_file "$type" "$domain" 2>/dev/null || true)
-    [ -n "$line" ] && { echo "$line"; return 0; }
-    ddns_latest_log_line "$type" "$domain" "$log"
+    local type="$1" domain="$2" log="$3" state_line log_line
+    state_line=$(ddns_line_from_state_file "$type" "$domain" 2>/dev/null || true)
+    log_line=$(ddns_latest_log_line "$type" "$domain" "$log" 2>/dev/null || true)
+    ddns_newer_line "$state_line" "$log_line"
 }
 
 ddns_record_change_line() {
-    local type="$1" domain="$2" log="$3" line
-    line=$(ddns_line_from_change_file "$type" "$domain" 2>/dev/null || true)
-    [ -n "$line" ] && { echo "$line"; return 0; }
-    ddns_latest_change_log_line "$type" "$domain" "$log"
+    local type="$1" domain="$2" log="$3" status_line status_ip state_line log_line state_match log_match line
+    state_match=""
+    log_match=""
+    status_line=$(ddns_record_status_line "$type" "$domain" "$log" 2>/dev/null || true)
+    status_ip=$(ddns_line_result_ip "$status_line")
+    state_line=$(ddns_line_from_change_file "$type" "$domain" 2>/dev/null || true)
+    log_line=$(ddns_latest_change_log_line "$type" "$domain" "$log" 2>/dev/null || true)
+    if ddns_change_matches_status "$state_line" "$status_ip"; then
+        state_match="$state_line"
+    fi
+    if ddns_change_matches_status "$log_line" "$status_ip"; then
+        log_match="$log_line"
+    fi
+    line=$(ddns_newer_line "$state_match" "$log_match" 2>/dev/null || true)
+    [ -n "$line" ] || return 1
+    echo "$line"
 }
 
 ddns_print_record_summary() {
@@ -296,7 +368,7 @@ ddns_print_record_summary() {
     if [ -n "$change_line" ]; then
         echo -e "  变更 ${label}: ${DIM}${change_line}${NC}"
     else
-        echo -e "  变更 ${label}: ${DIM}暂无 IP 变更记录${NC}"
+        echo -e "  变更 ${label}: ${DIM}暂无当前 IP 变更记录${NC}"
     fi
 }
 
@@ -1467,8 +1539,8 @@ ddns_uninstall() {
     rm -f "$DDNS_TOKEN_FILE" && info "Token 文件已删除 ✓"
     rm -f "$DDNS_HUAWEI_KEY_FILE" && info "华为云 AK/SK 文件已删除 ✓"
     rm -f "$DDNS_ZONE_FILE"
-    rm -f /root/.cf_last_change /root/.cf_last_change_A /root/.cf_last_change_AAAA
-    rm -f /root/.cf_last_status_A /root/.cf_last_status_AAAA
+    rm -f "${DDNS_STATE_DIR:-/root}/.cf_last_change" "${DDNS_STATE_DIR:-/root}/.cf_last_change_A" "${DDNS_STATE_DIR:-/root}/.cf_last_change_AAAA"
+    rm -f "${DDNS_STATE_DIR:-/root}/.cf_last_status_A" "${DDNS_STATE_DIR:-/root}/.cf_last_status_AAAA"
     warn "日志文件保留：${DDNS_LOG}"
 }
 

@@ -13,7 +13,7 @@ for fn in systemd_available show_cli_help main_menu ssh_tools_menu fail2ban_menu
     ddns_provider ddns_provider_label ddns_sed_escape ddns_domain_dot \
     ddns_interval_normalize ddns_interval_min ddns_cron_expr ddns_prompt_interval \
     ddns_cfg_enable_a ddns_cfg_enable_aaaa ddns_cfg_domain4 ddns_cfg_domain6 ddns_primary_domain ddns_mode_label ddns_build_domain \
-    ddns_latest_log_line ddns_latest_change_log_line ddns_record_status_line ddns_record_change_line ddns_print_record_summary \
+    ddns_latest_log_line ddns_latest_change_log_line ddns_line_time ddns_line_result_ip ddns_newer_line ddns_change_matches_status ddns_record_status_line ddns_record_change_line ddns_print_record_summary \
     system_toolbox_menu \
     resource_health_check system_update_manager system_hostname_apply config_backup_create self_update docker_menu change_port; do
     declare -F "$fn" >/dev/null || { echo "Missing function: $fn" >&2; exit 1; }
@@ -113,6 +113,8 @@ EOF
 chmod +x "$TMP/bin/ip"
 [[ "$(PATH="$TMP/bin:$PATH" fetch_ip6_local)" = "2404:c804:2331:ad01:be24:11ff:fe45:5e90" ]] || { echo "DDNS IPv6 local fallback picked the wrong address" >&2; exit 1; }
 DDNS_SAMPLE_LOG="$TMP/ddns.log"
+DDNS_STATE_DIR="$TMP/ddns-state"
+mkdir -p "$DDNS_STATE_DIR"
 cat > "$DDNS_SAMPLE_LOG" <<'EOF'
 [2026-07-02 23:00:01] OK: A jp99.289599.xyz 更新成功 1.1.1.1 → 2.2.2.2
 [2026-07-02 23:00:02] OK: AAAA v6jp99.289599.xyz 更新成功 2001:db8::1 → 2001:db8::2
@@ -123,6 +125,29 @@ EOF
 [[ "$(ddns_latest_log_line AAAA v6jp99.289599.xyz "$DDNS_SAMPLE_LOG")" = *"AAAA v6jp99.289599.xyz 未变化 2001:db8::2"* ]] || { echo "DDNS IPv6 latest log lookup failed" >&2; exit 1; }
 [[ "$(ddns_latest_change_log_line A jp99.289599.xyz "$DDNS_SAMPLE_LOG")" = *"A jp99.289599.xyz 更新成功 1.1.1.1"* ]] || { echo "DDNS IPv4 change log lookup failed" >&2; exit 1; }
 [[ "$(ddns_latest_change_log_line AAAA v6jp99.289599.xyz "$DDNS_SAMPLE_LOG")" = *"AAAA v6jp99.289599.xyz 更新成功 2001:db8::1"* ]] || { echo "DDNS IPv6 change log lookup failed" >&2; exit 1; }
+[[ "$(ddns_record_change_line A jp99.289599.xyz "$DDNS_SAMPLE_LOG")" = *"A jp99.289599.xyz 更新成功 1.1.1.1"* ]] || { echo "DDNS current change lookup failed" >&2; exit 1; }
+cat > "$DDNS_STATE_DIR/.cf_last_change_A" <<'EOF'
+2026-07-02 23:00:01|A|1.1.1.1|2.2.2.2|jp99.289599.xyz
+EOF
+cat > "$DDNS_SAMPLE_LOG" <<'EOF'
+[2026-07-02 23:00:01] OK: A jp99.289599.xyz 更新成功 1.1.1.1 → 2.2.2.2
+[2026-07-02 23:10:01] OK: A jp99.289599.xyz 未变化 3.3.3.3
+EOF
+! ddns_record_change_line A jp99.289599.xyz "$DDNS_SAMPLE_LOG" >/dev/null || { echo "DDNS stale change should be hidden when current IP differs" >&2; exit 1; }
+cat > "$DDNS_SAMPLE_LOG" <<'EOF'
+[2026-07-02 23:00:01] OK: A jp99.289599.xyz 更新成功 1.1.1.1 → 2.2.2.2
+[2026-07-02 23:10:01] OK: A jp99.289599.xyz 更新成功 2.2.2.2 → 3.3.3.3
+[2026-07-02 23:11:01] OK: A jp99.289599.xyz 未变化 3.3.3.3
+EOF
+[[ "$(ddns_record_change_line A jp99.289599.xyz "$DDNS_SAMPLE_LOG")" = *"A jp99.289599.xyz 更新成功 2.2.2.2 → 3.3.3.3"* ]] || { echo "DDNS newer log change should beat stale state file" >&2; exit 1; }
+cat > "$DDNS_STATE_DIR/.cf_last_status_A" <<'EOF'
+2026-07-02 23:20:01|A|jp99.289599.xyz|unchanged|4.4.4.4|4.4.4.4
+EOF
+cat > "$DDNS_STATE_DIR/.cf_last_change_A" <<'EOF'
+2026-07-02 23:19:01|A|3.3.3.3|4.4.4.4|jp99.289599.xyz
+EOF
+[[ "$(ddns_record_status_line A jp99.289599.xyz "$DDNS_SAMPLE_LOG")" = *"A jp99.289599.xyz 未变化 4.4.4.4"* ]] || { echo "DDNS newer state status should beat old log status" >&2; exit 1; }
+[[ "$(ddns_record_change_line A jp99.289599.xyz "$DDNS_SAMPLE_LOG")" = *"A jp99.289599.xyz 更新成功 3.3.3.3 → 4.4.4.4"* ]] || { echo "DDNS current state change should be shown" >&2; exit 1; }
 grep -q "新端口已测试可登录吗" "$ROOT/src/modules/ssh.sh" || { echo "SSH new port confirmation prompt missing" >&2; exit 1; }
 grep -q "自动回滚已取消" "$ROOT/src/modules/ssh.sh" || { echo "SSH rollback cancellation message missing" >&2; exit 1; }
 grep -q "关闭旧端口防火墙规则" "$ROOT/src/modules/ssh.sh" || { echo "SSH old firewall rule prompt missing" >&2; exit 1; }
@@ -285,9 +310,9 @@ MON_TRAFFIC_DAILY_BASELINE_RESET=yes
 [[ "$(monitor_traffic_usage_triplet daily)" = "0 0 0" ]] || { echo "Daily rollover should not inherit old traffic" >&2; exit 1; }
 MANIFEST="$TMP/manifest.json"
 cat > "$MANIFEST" <<'EOF'
-{"name":"SSH-Hardening","version":"V3.9.40","sha256":"abc123"}
+{"name":"SSH-Hardening","version":"V3.9.41","sha256":"abc123"}
 EOF
-[[ "$(self_manifest_value "$MANIFEST" version)" = "V3.9.40" ]] || { echo "Manifest parsing failed" >&2; exit 1; }
+[[ "$(self_manifest_value "$MANIFEST" version)" = "V3.9.41" ]] || { echo "Manifest parsing failed" >&2; exit 1; }
 
 DAILY_REPORT_CALLS=0
 monitor_alert_daily_report() { DAILY_REPORT_CALLS=$((DAILY_REPORT_CALLS + 1)); }
