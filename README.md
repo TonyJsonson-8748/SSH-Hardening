@@ -1,4 +1,4 @@
-# VPS 开荒脚本 V3.9.39
+# VPS 开荒脚本 V3.9.40
 
 > **银趴火山帮** 出品 · SSH · BBR · DDNS · Caddy · Firewall · NFT 转发
 
@@ -71,7 +71,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/chnnic/SSH-Hardening/refs/he
 /___/_/  /_/_/   /_/  |_/_/ |_| /_/     \____/_/    /____/
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  VPS TOOLS  ·  V3.9.39
+  VPS TOOLS  ·  V3.9.40
   VPS 开荒脚本 · 银趴火山帮
 ────────────────────────────────────────────────────────────────
   SSH · BBR · DDNS · Caddy · Firewall · NFT · Monitor
@@ -582,6 +582,7 @@ GitHub Actions 还会在 Debian、Ubuntu、Alpine、Rocky Linux 容器中加载�
 
 | 版本 | 主要变更 |
 |------|---------|
+| **V3.9.40** | 自更新优先锁定 GitHub main commit 下载脚本、manifest 和 SHA256，避免 raw/CDN 缓存不一致导致校验失败 |
 | **V3.9.39** | DDNS 支持自定义检测间隔分钟数，安装、修改和恢复自动更新时写入对应 cron，可设 1 / 2 / 5 分钟等 |
 | **V3.9.38** | DDNS IPv6 外部探测失败时回退读取本机全局 IPv6，避免有公网 IPv6 但 `curl -6` 不通时报“无法获取公网 IPv6” |
 | **V3.9.37** | DDNS 新增华为云 DNS 服务商，支持 AK/SK 签名调用华为云 DNS API 更新 A / AAAA 记录，并保留 Cloudflare 旧配置兼容 |

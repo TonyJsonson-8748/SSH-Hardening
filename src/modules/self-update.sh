@@ -5,6 +5,7 @@
 SCRIPT_URL="https://raw.githubusercontent.com/chnnic/SSH-Hardening/refs/heads/main/SSH-Hardening.sh"
 CHECKSUM_URL="https://raw.githubusercontent.com/chnnic/SSH-Hardening/refs/heads/main/SSH-Hardening.sh.sha256"
 MANIFEST_URL="https://raw.githubusercontent.com/chnnic/SSH-Hardening/refs/heads/main/SSH-Hardening.manifest.json"
+GITHUB_REF_URL="https://api.github.com/repos/chnnic/SSH-Hardening/git/ref/heads/main"
 LOCAL_SCRIPT="/usr/local/bin/vps-tools"
 
 file_sha256() {
@@ -18,6 +19,16 @@ file_sha256() {
 self_manifest_value() {
     local FILE="$1" KEY="$2"
     sed -n 's/.*"'$KEY'"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$FILE" | head -1
+}
+
+self_remote_main_sha() {
+    curl -fsSL --retry 2 --retry-delay 1 \
+        -H 'Accept: application/vnd.github+json' \
+        -H 'Cache-Control: no-cache' \
+        -H 'Pragma: no-cache' \
+        "$GITHUB_REF_URL" 2>/dev/null \
+        | sed -n 's/.*"sha"[[:space:]]*:[[:space:]]*"\([0-9a-f]\{40\}\)".*/\1/p' \
+        | head -1
 }
 
 # ── 安装脚本到本地（设置快捷键 v）────────────────────────
@@ -73,22 +84,37 @@ self_update() {
     local TMP_FILE CHECKSUM_FILE MANIFEST_FILE; TMP_FILE="/tmp/vps_update_$$.sh"; CHECKSUM_FILE="/tmp/vps_update_$$.sha256"; MANIFEST_FILE="/tmp/vps_update_$$.manifest.json"
 
     info "正在下载最新版本..."
-    local TRY EXPECTED_HASH ACTUAL_HASH DOWNLOAD_OK SCRIPT_FETCH_URL CHECKSUM_FETCH_URL MANIFEST_FETCH_URL TS
+    local TRY EXPECTED_HASH ACTUAL_HASH DOWNLOAD_OK SCRIPT_FETCH_URL CHECKSUM_FETCH_URL MANIFEST_FETCH_URL TS REMOTE_SHA
     DOWNLOAD_OK=0
-    for TRY in 1 2 3 4; do
+    REMOTE_SHA=$(self_remote_main_sha || true)
+    if [ -n "$REMOTE_SHA" ]; then
+        info "已锁定 GitHub main commit：${REMOTE_SHA:0:12}"
+    fi
+    for TRY in 1 2 3 4 5; do
         TS=$(date +%s)
         case "$TRY" in
             1)
+                if [ -n "$REMOTE_SHA" ]; then
+                    SCRIPT_FETCH_URL="https://raw.githubusercontent.com/chnnic/SSH-Hardening/${REMOTE_SHA}/SSH-Hardening.sh"
+                    CHECKSUM_FETCH_URL="https://raw.githubusercontent.com/chnnic/SSH-Hardening/${REMOTE_SHA}/SSH-Hardening.sh.sha256"
+                    MANIFEST_FETCH_URL="https://raw.githubusercontent.com/chnnic/SSH-Hardening/${REMOTE_SHA}/SSH-Hardening.manifest.json"
+                else
+                    SCRIPT_FETCH_URL="$SCRIPT_URL"
+                    CHECKSUM_FETCH_URL="$CHECKSUM_URL"
+                    MANIFEST_FETCH_URL="$MANIFEST_URL"
+                fi
+                ;;
+            2)
                 SCRIPT_FETCH_URL="$SCRIPT_URL"
                 CHECKSUM_FETCH_URL="$CHECKSUM_URL"
                 MANIFEST_FETCH_URL="$MANIFEST_URL"
                 ;;
-            2)
+            3)
                 SCRIPT_FETCH_URL="$SCRIPT_URL?ts=$TS"
                 CHECKSUM_FETCH_URL="$CHECKSUM_URL?ts=$TS"
                 MANIFEST_FETCH_URL="$MANIFEST_URL?ts=$TS"
                 ;;
-            3)
+            4)
                 SCRIPT_FETCH_URL="https://github.com/chnnic/SSH-Hardening/raw/refs/heads/main/SSH-Hardening.sh"
                 CHECKSUM_FETCH_URL="https://github.com/chnnic/SSH-Hardening/raw/refs/heads/main/SSH-Hardening.sh.sha256"
                 MANIFEST_FETCH_URL="https://github.com/chnnic/SSH-Hardening/raw/refs/heads/main/SSH-Hardening.manifest.json"
@@ -117,7 +143,7 @@ self_update() {
                 break
             fi
         fi
-        warn "下载或校验未通过，正在重试（${TRY}/4）"
+        warn "下载或校验未通过，正在重试（${TRY}/5）"
         if [ -n "${ACTUAL_HASH:-}" ] || [ -n "${EXPECTED_HASH:-}" ]; then
             echo -e "  ${DIM}期望：${EXPECTED_HASH:-未知}  实际：${ACTUAL_HASH:-未知}${NC}"
         fi
