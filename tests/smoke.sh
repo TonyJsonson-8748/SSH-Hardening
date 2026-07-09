@@ -11,7 +11,7 @@ source "$ROOT/SSH-Hardening.sh"
 for fn in systemd_available show_cli_help main_menu ssh_tools_menu fail2ban_menu bbr_menu firewall_menu dns_menu \
     ip_config_menu caddy_menu nft_menu ddns_menu ddns_install ddns_install_cloudflare ddns_install_huawei ddns_run_now ddns_view_logs ddns_status \
     ddns_provider ddns_provider_label ddns_sed_escape ddns_domain_dot \
-    ddns_interval_normalize ddns_interval_min ddns_cron_expr ddns_prompt_interval \
+    ddns_interval_normalize ddns_interval_min ddns_cron_expr ddns_cron_without_managed ddns_prompt_interval \
     ddns_cfg_enable_a ddns_cfg_enable_aaaa ddns_cfg_domain4 ddns_cfg_domain6 ddns_primary_domain ddns_mode_label ddns_build_domain \
     ddns_latest_log_line ddns_latest_change_log_line ddns_line_time ddns_line_result_ip ddns_newer_line ddns_change_matches_status ddns_record_status_line ddns_record_change_line ddns_print_record_summary \
     system_toolbox_menu \
@@ -62,6 +62,12 @@ ddns_cfg_enable_aaaa || { echo "Legacy DDNS IPv6 enable detection failed" >&2; e
 [[ "$(ddns_cron_expr 1)" = "* * * * *" ]] || { echo "DDNS interval 1 cron expression failed" >&2; exit 1; }
 [[ "$(ddns_cron_expr 2)" = "*/2 * * * *" ]] || { echo "DDNS interval 2 cron expression failed" >&2; exit 1; }
 [[ "$(ddns_cron_expr 5)" = "*/5 * * * *" ]] || { echo "DDNS interval 5 cron expression failed" >&2; exit 1; }
+DDNS_CRON_SAMPLE=$(printf '%s\n' \
+    '*/5 * * * * /root/ddns.sh >> /var/log/ddns.log 2>&1' \
+    '*/5 * * * * /opt/another-ddns.sh >> /var/log/another-ddns.log 2>&1')
+DDNS_CRON_FILTERED=$(printf '%s\n' "$DDNS_CRON_SAMPLE" | ddns_cron_without_managed)
+[[ "$DDNS_CRON_FILTERED" != *'/root/ddns.sh'* ]] || { echo "Managed DDNS cron entry was not removed" >&2; exit 1; }
+[[ "$DDNS_CRON_FILTERED" = *'/opt/another-ddns.sh'* ]] || { echo "Unrelated DDNS cron entry was removed" >&2; exit 1; }
 cat > "$DDNS_ZONE_FILE" <<'EOF'
 DOMAIN=v4.example.com
 DOMAIN4=v4.example.com
@@ -93,11 +99,33 @@ ddns_cfg_enable_a || { echo "Huawei DDNS IPv4 enable failed" >&2; exit 1; }
 ! ddns_cfg_enable_aaaa || { echo "Huawei DDNS IPv6 should be disabled" >&2; exit 1; }
 grep -q "SDK-HMAC-SHA256" "$ROOT/src/modules/ddns.sh" || { echo "Huawei DDNS signer missing" >&2; exit 1; }
 ! grep -q "LC_TIME" "$ROOT/src/modules/ddns.sh" || { echo "DDNS menu must not use LC_TIME locale variable" >&2; exit 1; }
+CLOUDFLARE_DDNS_TEMPLATE="$TMP/cloudflare-ddns-template.sh"
+awk "BEGIN{p=0} /cat > \"\\\$DDNS_SCRIPT\" << 'DDNS_INNER'/{p=1; next} /^DDNS_INNER$/{if(p){exit}} p{print}" "$ROOT/src/modules/ddns.sh" > "$CLOUDFLARE_DDNS_TEMPLATE"
+bash -n "$CLOUDFLARE_DDNS_TEMPLATE" || { echo "Cloudflare DDNS generated template has syntax errors" >&2; exit 1; }
+grep -Fq 'LOCK_DIR="/run/vps-tools-ddns.lock"' "$CLOUDFLARE_DDNS_TEMPLATE" || { echo "Cloudflare DDNS concurrency lock missing" >&2; exit 1; }
+grep -Fq 'record_ip_file()' "$CLOUDFLARE_DDNS_TEMPLATE" || { echo "Cloudflare DDNS successful IP state missing" >&2; exit 1; }
+CF_SYNC_LINE=$(grep -nF 'if [ "$NEW_IP" = "$VERIFY_IP" ]; then' "$CLOUDFLARE_DDNS_TEMPLATE" | head -1 | cut -d: -f1)
+CF_SKIP_LINE=$(grep -nF 'if [ -z "$VERIFY_IP" ] || [ "$VERIFY_IP" != "$OLD_IP" ]; then' "$CLOUDFLARE_DDNS_TEMPLATE" | head -1 | cut -d: -f1)
+[[ -n "$CF_SYNC_LINE" && -n "$CF_SKIP_LINE" && "$CF_SYNC_LINE" -lt "$CF_SKIP_LINE" ]] || { echo "Cloudflare DDNS synchronized second-check branch is unreachable" >&2; exit 1; }
+CF_STATE_HELPERS="$TMP/cloudflare-state-helpers.sh"
+awk 'p && /^write_record_change\(\)/{exit} /^record_status_file\(\)/{p=1} p{print}' "$CLOUDFLARE_DDNS_TEMPLATE" > "$CF_STATE_HELPERS"
+# shellcheck source=/dev/null
+source "$CF_STATE_HELPERS"
+STATE_DIR="$TMP/generated-ddns-state"
+mkdir -p "$STATE_DIR"
+write_record_status A home.example.com unchanged 1.1.1.1 2.2.2.2
+[[ "$(previous_record_ip A home.example.com)" = "2.2.2.2" ]] || { echo "DDNS legacy successful IP migration failed" >&2; exit 1; }
+write_record_ip A home.example.com 2.2.2.2
+write_record_status A home.example.com fetch_failed "" ""
+[[ "$(previous_record_ip A home.example.com)" = "2.2.2.2" ]] || { echo "DDNS failure overwrote the last successful IP" >&2; exit 1; }
 HUAWEI_DDNS_TEMPLATE="$TMP/huawei-ddns-template.sh"
 awk "BEGIN{p=0} /cat > \"\\\$DDNS_SCRIPT\" << 'DDNS_HUAWEI_INNER'/{p=1; next} /^DDNS_HUAWEI_INNER$/{if(p){exit}} p{print}" "$ROOT/src/modules/ddns.sh" > "$HUAWEI_DDNS_TEMPLATE"
 bash -n "$HUAWEI_DDNS_TEMPLATE" || { echo "Huawei DDNS generated template has syntax errors" >&2; exit 1; }
 grep -Fq 'JSON_INPUT=$(cat)' "$HUAWEI_DDNS_TEMPLATE" || { echo "Huawei DDNS JSON parser must preserve piped API responses" >&2; exit 1; }
 grep -Fq 'fetch_ip6_local' "$HUAWEI_DDNS_TEMPLATE" || { echo "Huawei DDNS IPv6 local fallback missing" >&2; exit 1; }
+grep -Fq 'LOCK_DIR="/run/vps-tools-ddns.lock"' "$HUAWEI_DDNS_TEMPLATE" || { echo "Huawei DDNS concurrency lock missing" >&2; exit 1; }
+grep -Fq 'record_ip_file()' "$HUAWEI_DDNS_TEMPLATE" || { echo "Huawei DDNS successful IP state missing" >&2; exit 1; }
+awk 'p && /^except Exception:/{exit} /^except urllib\.error\.HTTPError/{p=1} p{print}' "$HUAWEI_DDNS_TEMPLATE" | grep -Fq 'sys.exit(1)' || { echo "Huawei DDNS HTTP errors must fail API calls" >&2; exit 1; }
 FETCH_IP6_LOCAL="$TMP/fetch-ip6-local.sh"
 awk 'p{print} /^fetch_ip6_local\(\) \{/{p=1; print; next} p && /^}$/{exit}' "$HUAWEI_DDNS_TEMPLATE" > "$FETCH_IP6_LOCAL"
 # shellcheck source=/dev/null
@@ -323,9 +351,9 @@ MON_TRAFFIC_DAILY_BASELINE_RESET=yes
 [[ "$(monitor_traffic_usage_triplet daily)" = "0 0 0" ]] || { echo "Daily rollover should not inherit old traffic" >&2; exit 1; }
 MANIFEST="$TMP/manifest.json"
 cat > "$MANIFEST" <<'EOF'
-{"name":"SSH-Hardening","version":"V3.9.42","sha256":"abc123"}
+{"name":"SSH-Hardening","version":"V3.9.43","sha256":"abc123"}
 EOF
-[[ "$(self_manifest_value "$MANIFEST" version)" = "V3.9.42" ]] || { echo "Manifest parsing failed" >&2; exit 1; }
+[[ "$(self_manifest_value "$MANIFEST" version)" = "V3.9.43" ]] || { echo "Manifest parsing failed" >&2; exit 1; }
 
 DAILY_REPORT_CALLS=0
 monitor_alert_daily_report() { DAILY_REPORT_CALLS=$((DAILY_REPORT_CALLS + 1)); }

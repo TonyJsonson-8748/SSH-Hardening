@@ -9,6 +9,7 @@ DDNS_LOG="/var/log/ddns.log"
 DDNS_ZONE_FILE="/root/.cf_zone"
 DDNS_TG_FILE="/root/.cf_tg"    # Telegram 通知配置
 DDNS_STATE_DIR="/root"
+DDNS_CRON_MARKER="# VPS_TOOLS_DDNS"
 
 ddns_cfg_get() {
     local key="$1"
@@ -66,6 +67,10 @@ ddns_cron_expr() {
     else
         printf '*/%s * * * *\n' "$interval"
     fi
+}
+
+ddns_cron_without_managed() {
+    grep -Fv -- "$DDNS_CRON_MARKER" | grep -Fv -- "$DDNS_SCRIPT"
 }
 
 ddns_prompt_interval() {
@@ -178,12 +183,22 @@ ddns_build_domain() {
 
 ddns_cf_record_ensure() {
     local zone_id="$1" token="$2" type="$3" domain="$4" placeholder="$5" ttl="$6" proxied="$7"
-    local record_resp record_count create_body create_resp create_ok
+    local record_resp record_ok record_count create_body create_resp create_ok
     record_resp=$(curl -s --max-time 10 \
         "https://api.cloudflare.com/client/v4/zones/${zone_id}/dns_records?name=${domain}&type=${type}" \
         -H "Authorization: Bearer ${token}")
+    record_ok=$(echo "$record_resp" | python3 -c \
+        "import sys,json; print(json.load(sys.stdin).get('success',''))" 2>/dev/null)
+    if [ "$record_ok" != "True" ]; then
+        error "查询 ${type} 记录失败，请检查网络和 Token 权限"
+        return 1
+    fi
     record_count=$(echo "$record_resp" | python3 -c \
         "import sys,json; print(len(json.load(sys.stdin)['result']))" 2>/dev/null)
+    if ! echo "$record_count" | grep -qE '^[0-9]+$'; then
+        error "解析 ${type} 记录查询结果失败"
+        return 1
+    fi
     if [ "$record_count" = "0" ]; then
         warn "未找到 ${type} 记录 ${domain}，正在自动创建..."
         create_body=$(printf '{"type":"%s","name":"%s","content":"%s","ttl":%s,"proxied":%s}' \
@@ -423,7 +438,7 @@ ddns_status() {
         echo "not_installed"
     elif ! command -v crontab &>/dev/null; then
         echo "no_cron"
-    elif ! crontab -l 2>/dev/null | grep -q "ddns.sh"; then
+    elif ! crontab -l 2>/dev/null | grep -Fq -e "$DDNS_CRON_MARKER" -e "$DDNS_SCRIPT"; then
         echo "stopped"
     else
         echo "running"
@@ -487,7 +502,8 @@ ddns_install_cloudflare() {
         return
     fi
 
-    read -rp "  Cloudflare API Token: " DDNS_TOKEN
+    read -rsp "  Cloudflare API Token: " DDNS_TOKEN
+    echo ""
     [ -z "$DDNS_TOKEN" ] && { warn "已取消"; return; }
 
     local DDNS_MODE="ipv4"
@@ -581,6 +597,13 @@ PROXIED="__PROXIED__"
 TTL="__TTL__"
 TOKEN_FILE="/root/.cf_token"
 LOG_FILE="__LOG__"
+STATE_DIR="${DDNS_STATE_DIR:-/root}"
+LOCK_DIR="/run/vps-tools-ddns.lock"
+
+if ! mkdir "$LOCK_DIR" 2>/dev/null; then
+    exit 0
+fi
+trap 'rmdir "$LOCK_DIR" 2>/dev/null || true' EXIT
 
 API_TOKEN=$(cat "$TOKEN_FILE" 2>/dev/null)
 [ -z "$API_TOKEN" ] && exit 1
@@ -602,15 +625,22 @@ is_true() {
 
 record_status_file() {
     case "$1" in
-        A|AAAA) echo "/root/.cf_last_status_$1" ;;
-        *) echo "/root/.cf_last_status" ;;
+        A|AAAA) echo "${STATE_DIR}/.cf_last_status_$1" ;;
+        *) echo "${STATE_DIR}/.cf_last_status" ;;
     esac
 }
 
 record_change_file() {
     case "$1" in
-        A|AAAA) echo "/root/.cf_last_change_$1" ;;
-        *) echo "/root/.cf_last_change" ;;
+        A|AAAA) echo "${STATE_DIR}/.cf_last_change_$1" ;;
+        *) echo "${STATE_DIR}/.cf_last_change" ;;
+    esac
+}
+
+record_ip_file() {
+    case "$1" in
+        A|AAAA) echo "${STATE_DIR}/.cf_last_ip_$1" ;;
+        *) echo "${STATE_DIR}/.cf_last_ip" ;;
     esac
 }
 
@@ -622,12 +652,32 @@ write_record_status() {
 }
 
 previous_record_ip() {
-    local TYPE="$1" DOMAIN_NAME="$2" FILE _TS RECORD_TYPE RECORD_DOMAIN _STATE OLD_IP NEW_IP
+    local TYPE="$1" DOMAIN_NAME="$2" FILE _TS RECORD_TYPE RECORD_DOMAIN STATE OLD_IP NEW_IP IP
+    FILE=$(record_ip_file "$TYPE")
+    if [ -f "$FILE" ]; then
+        IFS='|' read -r _TS RECORD_TYPE RECORD_DOMAIN IP < "$FILE"
+        if [ "$RECORD_TYPE" = "$TYPE" ] && [ "$RECORD_DOMAIN" = "$DOMAIN_NAME" ] && [ -n "$IP" ]; then
+            printf '%s\n' "$IP"
+            return 0
+        fi
+    fi
+
+    # 升级兼容：首次运行时从旧状态文件迁移最后一次成功 IP。
     FILE=$(record_status_file "$TYPE")
     [ -f "$FILE" ] || return 0
-    IFS='|' read -r _TS RECORD_TYPE RECORD_DOMAIN _STATE OLD_IP NEW_IP < "$FILE"
+    IFS='|' read -r _TS RECORD_TYPE RECORD_DOMAIN STATE OLD_IP NEW_IP < "$FILE"
     [ "$RECORD_TYPE" = "$TYPE" ] && [ "$RECORD_DOMAIN" = "$DOMAIN_NAME" ] || return 0
-    printf '%s\n' "${NEW_IP:-$OLD_IP}"
+    case "$STATE" in
+        unchanged|updated) printf '%s\n' "${NEW_IP:-$OLD_IP}" ;;
+    esac
+}
+
+write_record_ip() {
+    local TYPE="$1" DOMAIN_NAME="$2" IP="$3" FILE
+    [ -n "$IP" ] || return 0
+    FILE=$(record_ip_file "$TYPE")
+    printf '%s|%s|%s|%s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$TYPE" "$DOMAIN_NAME" "$IP" > "$FILE" 2>/dev/null || return 0
+    chmod 600 "$FILE" 2>/dev/null || true
 }
 
 write_record_change() {
@@ -636,8 +686,8 @@ write_record_change() {
     FILE=$(record_change_file "$TYPE")
     printf '%s\n' "$LINE" > "$FILE" 2>/dev/null || true
     chmod 600 "$FILE" 2>/dev/null || true
-    printf '%s\n' "$LINE" > /root/.cf_last_change 2>/dev/null || true
-    chmod 600 /root/.cf_last_change 2>/dev/null || true
+    printf '%s\n' "$LINE" > "${STATE_DIR}/.cf_last_change" 2>/dev/null || true
+    chmod 600 "${STATE_DIR}/.cf_last_change" 2>/dev/null || true
 }
 
 # 发送 Telegram 通知（每次调用时实时读取配置文件，避免 crontab 变量丢失）
@@ -737,6 +787,7 @@ update_record() {
     if [ "$NEW_IP" = "$OLD_IP" ]; then
         local PREV_IP
         PREV_IP=$(previous_record_ip "$TYPE" "$DOMAIN_NAME")
+        write_record_ip "$TYPE" "$DOMAIN_NAME" "$NEW_IP"
         if [ -n "$PREV_IP" ] && [ "$PREV_IP" != "$NEW_IP" ]; then
             echo "[$(date '+%Y-%m-%d %H:%M:%S')] OK: ${TYPE} ${DOMAIN_NAME} IP变化 ${PREV_IP} → ${NEW_IP}（DNS已同步）" >> "$LOG_FILE"
             write_record_change "$TYPE" "$DOMAIN_NAME" "$PREV_IP" "$NEW_IP" synced
@@ -759,14 +810,10 @@ update_record() {
         "https://api.cloudflare.com/client/v4/zones/${ZONE_ID}/dns_records/${RECORD_ID}" \
         -H "Authorization: Bearer ${API_TOKEN}" | \
         python3 -c "import sys,json; print(json.load(sys.stdin)['result']['content'])" 2>/dev/null)
-    if [ -z "$VERIFY_IP" ] || [ "$VERIFY_IP" != "$OLD_IP" ]; then
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] WARN: ${TYPE} 二次校验异常 (1st:${OLD_IP} 2nd:${VERIFY_IP})，跳过更新" >> "$LOG_FILE"
-        write_record_status "$TYPE" "$DOMAIN_NAME" verify_skipped "$OLD_IP" "$NEW_IP"
-        return 0
-    fi
     if [ "$NEW_IP" = "$VERIFY_IP" ]; then
         local PREV_IP
         PREV_IP=$(previous_record_ip "$TYPE" "$DOMAIN_NAME")
+        write_record_ip "$TYPE" "$DOMAIN_NAME" "$NEW_IP"
         if [ -n "$PREV_IP" ] && [ "$PREV_IP" != "$NEW_IP" ]; then
             echo "[$(date '+%Y-%m-%d %H:%M:%S')] OK: ${TYPE} ${DOMAIN_NAME} IP变化 ${PREV_IP} → ${NEW_IP}（DNS已同步，二次确认）" >> "$LOG_FILE"
             write_record_change "$TYPE" "$DOMAIN_NAME" "$PREV_IP" "$NEW_IP" synced
@@ -783,6 +830,11 @@ update_record() {
         write_record_status "$TYPE" "$DOMAIN_NAME" unchanged "$VERIFY_IP" "$NEW_IP"
         return 0
     fi
+    if [ -z "$VERIFY_IP" ] || [ "$VERIFY_IP" != "$OLD_IP" ]; then
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] WARN: ${TYPE} 二次校验异常 (1st:${OLD_IP} 2nd:${VERIFY_IP})，跳过更新" >> "$LOG_FILE"
+        write_record_status "$TYPE" "$DOMAIN_NAME" verify_skipped "$OLD_IP" "$NEW_IP"
+        return 0
+    fi
     local JSON_BODY
     JSON_BODY=$(printf '{"type":"%s","name":"%s","content":"%s","ttl":%s,"proxied":%s}' \
         "$TYPE" "$DOMAIN_NAME" "$NEW_IP" "$TTL" "$PROXIED")
@@ -796,6 +848,7 @@ update_record() {
         echo "[$(date '+%Y-%m-%d %H:%M:%S')] OK: ${TYPE} ${DOMAIN_NAME} 更新成功 ${OLD_IP} → ${NEW_IP}" >> "$LOG_FILE"
         write_record_status "$TYPE" "$DOMAIN_NAME" updated "$OLD_IP" "$NEW_IP"
         write_record_change "$TYPE" "$DOMAIN_NAME" "$OLD_IP" "$NEW_IP"
+        write_record_ip "$TYPE" "$DOMAIN_NAME" "$NEW_IP"
         tg_notify "🌐 <b>DDNS IP 已更新</b>
 域名：<code>${DOMAIN_NAME}</code>
 类型：${TYPE}
@@ -859,8 +912,8 @@ DDNS_INNER
     sed -i "s|__LOG__|${DDNS_LOG_ESC}|g" "$DDNS_SCRIPT"
     chmod 700 "$DDNS_SCRIPT"
 
-    local CRON_JOB; CRON_JOB="$(ddns_cron_expr "$DDNS_INTERVAL_MIN") ${DDNS_SCRIPT} >> ${DDNS_LOG} 2>&1"
-    ( crontab -l 2>/dev/null | grep -v "ddns.sh"; echo "$CRON_JOB" ) | crontab -
+    local CRON_JOB; CRON_JOB="$(ddns_cron_expr "$DDNS_INTERVAL_MIN") ${DDNS_SCRIPT} >> ${DDNS_LOG} 2>&1 ${DDNS_CRON_MARKER}"
+    ( crontab -l 2>/dev/null | ddns_cron_without_managed; echo "$CRON_JOB" ) | crontab -
     info "crontab 已设置（每 ${DDNS_INTERVAL_MIN} 分钟自动更新）✓"
     ddns_start_cron_service >/dev/null 2>&1 || true
 
@@ -946,7 +999,8 @@ ddns_install_huawei() {
 
     read -rp "  华为云 Access Key ID（AK）: " DDNS_HW_AK
     [ -z "$DDNS_HW_AK" ] && { warn "已取消"; return; }
-    read -rp "  华为云 Secret Access Key（SK）: " DDNS_HW_SK
+    read -rsp "  华为云 Secret Access Key（SK）: " DDNS_HW_SK
+    echo ""
     [ -z "$DDNS_HW_SK" ] && { warn "已取消"; return; }
 
     local DDNS_TTL="300"
@@ -1006,6 +1060,13 @@ ENABLE_AAAA="__ENABLE_AAAA__"
 TTL="__TTL__"
 KEY_FILE="/root/.hw_dns_aksk"
 LOG_FILE="__LOG__"
+STATE_DIR="${DDNS_STATE_DIR:-/root}"
+LOCK_DIR="/run/vps-tools-ddns.lock"
+
+if ! mkdir "$LOCK_DIR" 2>/dev/null; then
+    exit 0
+fi
+trap 'rmdir "$LOCK_DIR" 2>/dev/null || true' EXIT
 
 ENDPOINT=${ENDPOINT%/}
 ZONE_DOT="${ZONE%.}."
@@ -1043,15 +1104,22 @@ log_line() {
 
 record_status_file() {
     case "$1" in
-        A|AAAA) echo "/root/.cf_last_status_$1" ;;
-        *) echo "/root/.cf_last_status" ;;
+        A|AAAA) echo "${STATE_DIR}/.cf_last_status_$1" ;;
+        *) echo "${STATE_DIR}/.cf_last_status" ;;
     esac
 }
 
 record_change_file() {
     case "$1" in
-        A|AAAA) echo "/root/.cf_last_change_$1" ;;
-        *) echo "/root/.cf_last_change" ;;
+        A|AAAA) echo "${STATE_DIR}/.cf_last_change_$1" ;;
+        *) echo "${STATE_DIR}/.cf_last_change" ;;
+    esac
+}
+
+record_ip_file() {
+    case "$1" in
+        A|AAAA) echo "${STATE_DIR}/.cf_last_ip_$1" ;;
+        *) echo "${STATE_DIR}/.cf_last_ip" ;;
     esac
 }
 
@@ -1063,12 +1131,32 @@ write_record_status() {
 }
 
 previous_record_ip() {
-    local TYPE="$1" DOMAIN_NAME="$2" FILE _TS RECORD_TYPE RECORD_DOMAIN _STATE OLD_IP NEW_IP
+    local TYPE="$1" DOMAIN_NAME="$2" FILE _TS RECORD_TYPE RECORD_DOMAIN STATE OLD_IP NEW_IP IP
+    FILE=$(record_ip_file "$TYPE")
+    if [ -f "$FILE" ]; then
+        IFS='|' read -r _TS RECORD_TYPE RECORD_DOMAIN IP < "$FILE"
+        if [ "$RECORD_TYPE" = "$TYPE" ] && [ "$RECORD_DOMAIN" = "$DOMAIN_NAME" ] && [ -n "$IP" ]; then
+            printf '%s\n' "$IP"
+            return 0
+        fi
+    fi
+
+    # 升级兼容：首次运行时从旧状态文件迁移最后一次成功 IP。
     FILE=$(record_status_file "$TYPE")
     [ -f "$FILE" ] || return 0
-    IFS='|' read -r _TS RECORD_TYPE RECORD_DOMAIN _STATE OLD_IP NEW_IP < "$FILE"
+    IFS='|' read -r _TS RECORD_TYPE RECORD_DOMAIN STATE OLD_IP NEW_IP < "$FILE"
     [ "$RECORD_TYPE" = "$TYPE" ] && [ "$RECORD_DOMAIN" = "$DOMAIN_NAME" ] || return 0
-    printf '%s\n' "${NEW_IP:-$OLD_IP}"
+    case "$STATE" in
+        unchanged|updated) printf '%s\n' "${NEW_IP:-$OLD_IP}" ;;
+    esac
+}
+
+write_record_ip() {
+    local TYPE="$1" DOMAIN_NAME="$2" IP="$3" FILE
+    [ -n "$IP" ] || return 0
+    FILE=$(record_ip_file "$TYPE")
+    printf '%s|%s|%s|%s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$TYPE" "$DOMAIN_NAME" "$IP" > "$FILE" 2>/dev/null || return 0
+    chmod 600 "$FILE" 2>/dev/null || true
 }
 
 write_record_change() {
@@ -1077,8 +1165,8 @@ write_record_change() {
     FILE=$(record_change_file "$TYPE")
     printf '%s\n' "$LINE" > "$FILE" 2>/dev/null || true
     chmod 600 "$FILE" 2>/dev/null || true
-    printf '%s\n' "$LINE" > /root/.cf_last_change 2>/dev/null || true
-    chmod 600 /root/.cf_last_change 2>/dev/null || true
+    printf '%s\n' "$LINE" > "${STATE_DIR}/.cf_last_change" 2>/dev/null || true
+    chmod 600 "${STATE_DIR}/.cf_last_change" 2>/dev/null || true
 }
 
 tg_notify() {
@@ -1226,6 +1314,7 @@ try:
         sys.stdout.write(resp.read().decode())
 except urllib.error.HTTPError as exc:
     sys.stdout.write(exc.read().decode())
+    sys.exit(1)
 except Exception:
     sys.exit(1)
 PY
@@ -1312,7 +1401,10 @@ print(json.dumps(body, separators=(",", ":")))
 PY
 }
 
-ZONE_RESP=$(huawei_api GET "/v2/zones" "type=public&limit=500" "")
+if ! ZONE_RESP=$(huawei_api GET "/v2/zones" "type=public&limit=500" ""); then
+    log_line ERROR "查询华为云 Zone 失败，请检查网络、AK/SK 和 Endpoint"
+    exit 1
+fi
 ZONE_ID=$(printf '%s' "$ZONE_RESP" | json_zone_id)
 [ -z "$ZONE_ID" ] && {
     log_line ERROR "获取华为云 Zone ID 失败，请检查 AK/SK、Endpoint 和域名 ${ZONE}"
@@ -1325,18 +1417,27 @@ update_record() {
     [ -z "$DOMAIN_NAME" ] && return 0
     local DOMAIN_DOT RECORD_RESP RECORD_INFO RECORD_ID OLD_IP BODY RESULT UPDATED_IP CREATED_ID
     DOMAIN_DOT=$(fqdn_dot "$DOMAIN_NAME")
-    RECORD_RESP=$(huawei_api GET "/v2/zones/${ZONE_ID}/recordsets" "search_mode=equal&type=${TYPE}&name=${DOMAIN_DOT}&limit=100" "")
+    if ! RECORD_RESP=$(huawei_api GET "/v2/zones/${ZONE_ID}/recordsets" "search_mode=equal&type=${TYPE}&name=${DOMAIN_DOT}&limit=100" ""); then
+        log_line ERROR "${TYPE} ${DOMAIN_NAME} 查询记录失败"
+        write_record_status "$TYPE" "$DOMAIN_NAME" query_failed "" "$NEW_IP"
+        return 1
+    fi
     RECORD_INFO=$(printf '%s' "$RECORD_RESP" | json_record_info "$TYPE" "$DOMAIN_DOT")
     RECORD_ID=${RECORD_INFO%%|*}
     OLD_IP=${RECORD_INFO#*|}
     if [ -z "$RECORD_ID" ]; then
         BODY=$(record_body "$TYPE" "$DOMAIN_DOT" "$NEW_IP")
-        RESULT=$(huawei_api POST "/v2/zones/${ZONE_ID}/recordsets" "" "$BODY")
+        if ! RESULT=$(huawei_api POST "/v2/zones/${ZONE_ID}/recordsets" "" "$BODY"); then
+            log_line ERROR "${TYPE} ${DOMAIN_NAME} 创建失败 ${RESULT}"
+            write_record_status "$TYPE" "$DOMAIN_NAME" update_failed "" "$NEW_IP"
+            return 1
+        fi
         CREATED_ID=$(printf '%s' "$RESULT" | json_top_id)
         if [ -n "$CREATED_ID" ]; then
             log_line OK "${TYPE} ${DOMAIN_NAME} 创建成功 ${NEW_IP}"
             write_record_status "$TYPE" "$DOMAIN_NAME" updated "" "$NEW_IP"
             write_record_change "$TYPE" "$DOMAIN_NAME" "" "$NEW_IP"
+            write_record_ip "$TYPE" "$DOMAIN_NAME" "$NEW_IP"
             return 0
         fi
         log_line ERROR "${TYPE} ${DOMAIN_NAME} 创建失败 ${RESULT}"
@@ -1351,6 +1452,7 @@ update_record() {
     if [ "$NEW_IP" = "$OLD_IP" ]; then
         local PREV_IP
         PREV_IP=$(previous_record_ip "$TYPE" "$DOMAIN_NAME")
+        write_record_ip "$TYPE" "$DOMAIN_NAME" "$NEW_IP"
         if [ -n "$PREV_IP" ] && [ "$PREV_IP" != "$NEW_IP" ]; then
             log_line OK "${TYPE} ${DOMAIN_NAME} IP变化 ${PREV_IP} → ${NEW_IP}（DNS已同步）"
             write_record_change "$TYPE" "$DOMAIN_NAME" "$PREV_IP" "$NEW_IP" synced
@@ -1369,12 +1471,17 @@ update_record() {
         return 0
     fi
     BODY=$(record_body "$TYPE" "$DOMAIN_DOT" "$NEW_IP")
-    RESULT=$(huawei_api PUT "/v2.1/zones/${ZONE_ID}/recordsets/${RECORD_ID}" "" "$BODY")
+    if ! RESULT=$(huawei_api PUT "/v2.1/zones/${ZONE_ID}/recordsets/${RECORD_ID}" "" "$BODY"); then
+        log_line ERROR "${TYPE} ${DOMAIN_NAME} 更新失败 ${RESULT}"
+        write_record_status "$TYPE" "$DOMAIN_NAME" update_failed "$OLD_IP" "$NEW_IP"
+        return 1
+    fi
     UPDATED_IP=$(printf '%s' "$RESULT" | json_top_record)
     if [ "$UPDATED_IP" = "$NEW_IP" ]; then
         log_line OK "${TYPE} ${DOMAIN_NAME} 更新成功 ${OLD_IP} → ${NEW_IP}"
         write_record_status "$TYPE" "$DOMAIN_NAME" updated "$OLD_IP" "$NEW_IP"
         write_record_change "$TYPE" "$DOMAIN_NAME" "$OLD_IP" "$NEW_IP"
+        write_record_ip "$TYPE" "$DOMAIN_NAME" "$NEW_IP"
         tg_notify "🌐 <b>DDNS IP 已更新</b>
 服务商：华为云 DNS
 域名：<code>${DOMAIN_NAME}</code>
@@ -1440,8 +1547,8 @@ DDNS_HUAWEI_INNER
     sed -i "s|__LOG__|${DDNS_LOG_ESC}|g" "$DDNS_SCRIPT"
     chmod 700 "$DDNS_SCRIPT"
 
-    local CRON_JOB; CRON_JOB="$(ddns_cron_expr "$DDNS_INTERVAL_MIN") ${DDNS_SCRIPT} >> ${DDNS_LOG} 2>&1"
-    ( crontab -l 2>/dev/null | grep -v "ddns.sh"; echo "$CRON_JOB" ) | crontab -
+    local CRON_JOB; CRON_JOB="$(ddns_cron_expr "$DDNS_INTERVAL_MIN") ${DDNS_SCRIPT} >> ${DDNS_LOG} 2>&1 ${DDNS_CRON_MARKER}"
+    ( crontab -l 2>/dev/null | ddns_cron_without_managed; echo "$CRON_JOB" ) | crontab -
     info "crontab 已设置（每 ${DDNS_INTERVAL_MIN} 分钟自动更新）✓"
     ddns_start_cron_service >/dev/null 2>&1 || true
 
@@ -1481,7 +1588,7 @@ ddns_install() {
 # ── 暂停/恢复 DDNS ────────────────────────────────────────
 ddns_pause() {
     [ ! -f "$DDNS_SCRIPT" ] && { error "DDNS 未安装"; return; }
-    ( crontab -l 2>/dev/null | grep -v "ddns.sh" ) | crontab - 2>/dev/null
+    ( crontab -l 2>/dev/null | ddns_cron_without_managed ) | crontab - 2>/dev/null
     info "DDNS 自动更新已暂停 ✓"
 }
 
@@ -1497,8 +1604,8 @@ ddns_resume() {
     local LOG INTERVAL_MIN CRON_JOB
     LOG=$(ddns_log_path)
     INTERVAL_MIN=$(ddns_interval_min)
-    CRON_JOB="$(ddns_cron_expr "$INTERVAL_MIN") ${DDNS_SCRIPT} >> ${LOG} 2>&1"
-    ( crontab -l 2>/dev/null | grep -v "ddns.sh"; echo "$CRON_JOB" ) | crontab -
+    CRON_JOB="$(ddns_cron_expr "$INTERVAL_MIN") ${DDNS_SCRIPT} >> ${LOG} 2>&1 ${DDNS_CRON_MARKER}"
+    ( crontab -l 2>/dev/null | ddns_cron_without_managed; echo "$CRON_JOB" ) | crontab -
     ddns_start_cron_service >/dev/null 2>&1 || true
     info "DDNS 自动更新已恢复（每 ${INTERVAL_MIN} 分钟）✓"
 }
@@ -1540,7 +1647,8 @@ ddns_tg_config() {
     case "$CH" in
         1)
             echo ""
-            read -rp "  Bot Token: " TG_BOT
+            read -rsp "  Bot Token: " TG_BOT
+            echo ""
             [ -z "$TG_BOT" ] && { warn "已取消"; return; }
             read -rp "  Chat ID: " TG_CHAT
             [ -z "$TG_CHAT" ] && { warn "已取消"; return; }
@@ -1598,7 +1706,7 @@ ddns_uninstall() {
     read -rp "  确认卸载？(Y/n，默认Y): " CONFIRM
     [ -z "$CONFIRM" ] && CONFIRM="y"
     if ! echo "$CONFIRM" | grep -qiE '^y(es)?$'; then warn "已取消"; return; fi
-    ( crontab -l 2>/dev/null | grep -v "ddns.sh" ) | crontab - 2>/dev/null
+    ( crontab -l 2>/dev/null | ddns_cron_without_managed ) | crontab - 2>/dev/null
     info "crontab 定时任务已移除 ✓"
     rm -f "$DDNS_SCRIPT" && info "DDNS 脚本已删除 ✓"
     rm -f "$DDNS_TOKEN_FILE" && info "Token 文件已删除 ✓"
@@ -1606,6 +1714,7 @@ ddns_uninstall() {
     rm -f "$DDNS_ZONE_FILE"
     rm -f "${DDNS_STATE_DIR:-/root}/.cf_last_change" "${DDNS_STATE_DIR:-/root}/.cf_last_change_A" "${DDNS_STATE_DIR:-/root}/.cf_last_change_AAAA"
     rm -f "${DDNS_STATE_DIR:-/root}/.cf_last_status_A" "${DDNS_STATE_DIR:-/root}/.cf_last_status_AAAA"
+    rm -f "${DDNS_STATE_DIR:-/root}/.cf_last_ip" "${DDNS_STATE_DIR:-/root}/.cf_last_ip_A" "${DDNS_STATE_DIR:-/root}/.cf_last_ip_AAAA"
     warn "日志文件保留：${DDNS_LOG}"
 }
 

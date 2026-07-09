@@ -1,4 +1,4 @@
-# VPS 开荒脚本 V3.9.42
+# VPS 开荒脚本 V3.9.43
 
 > **银趴火山帮** 出品 · SSH · BBR · DDNS · Caddy · Firewall · NFT 转发
 
@@ -71,7 +71,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/chnnic/SSH-Hardening/refs/he
 /___/_/  /_/_/   /_/  |_/_/ |_| /_/     \____/_/    /____/
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  VPS TOOLS  ·  V3.9.42
+  VPS TOOLS  ·  V3.9.43
   VPS 开荒脚本 · 银趴火山帮
 ────────────────────────────────────────────────────────────────
   SSH · BBR · DDNS · Caddy · Firewall · NFT · Monitor
@@ -582,6 +582,7 @@ GitHub Actions 还会在 Debian、Ubuntu、Alpine、Rocky Linux 容器中加载�
 
 | 版本 | 主要变更 |
 |------|---------|
+| **V3.9.43** | 修复 DDNS 二次确认分支无法触发、失败状态覆盖最近成功 IP、短间隔并发执行、华为云查询失败误创建及 cron 误匹配；敏感凭据输入不再回显 |
 | **V3.9.42** | DDNS 检测到本机公网 IP 变化时，即使 DNS 记录已同步，也会记录 `IP变化` 并推送 Telegram |
 | **V3.9.41** | 修复 DDNS 首页变更记录可能显示旧 IP 状态的问题，按最新状态过滤并比较日志/状态时间 |
 | **V3.9.40** | 自更新优先锁定 GitHub main commit 下载脚本、manifest 和 SHA256，避免 raw/CDN 缓存不一致导致校验失败 |
