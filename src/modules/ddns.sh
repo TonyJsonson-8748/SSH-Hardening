@@ -241,7 +241,7 @@ ddns_line_from_state_file() {
 }
 
 ddns_line_from_change_file() {
-    local type="$1" domain_filter="${2:-}" file ts record_type domain old_ip new_ip line
+    local type="$1" domain_filter="${2:-}" file ts record_type domain old_ip new_ip kind line
     file=$(ddns_type_change_file "$type")
     if [ ! -f "$file" ] && [ -f "${DDNS_STATE_DIR:-/root}/.cf_last_change" ]; then
         line=$(cat "${DDNS_STATE_DIR:-/root}/.cf_last_change" 2>/dev/null)
@@ -252,10 +252,14 @@ ddns_line_from_change_file() {
         fi
     fi
     [ -f "$file" ] || return 1
-    IFS='|' read -r ts record_type old_ip new_ip domain < "$file"
+    IFS='|' read -r ts record_type old_ip new_ip domain kind < "$file"
     [ -n "$ts" ] && [ "$record_type" = "$type" ] || return 1
     [ -z "$domain_filter" ] || [ "$domain" = "$domain_filter" ] || return 1
-    printf '[%s] OK: %s %s 更新成功 %s → %s\n' "$ts" "$record_type" "${domain:-?}" "${old_ip:-?}" "${new_ip:-?}"
+    if [ "$kind" = "synced" ]; then
+        printf '[%s] OK: %s %s IP变化 %s → %s（DNS已同步）\n' "$ts" "$record_type" "${domain:-?}" "${old_ip:-?}" "${new_ip:-?}"
+    else
+        printf '[%s] OK: %s %s 更新成功 %s → %s\n' "$ts" "$record_type" "${domain:-?}" "${old_ip:-?}" "${new_ip:-?}"
+    fi
 }
 
 ddns_latest_log_line() {
@@ -267,7 +271,7 @@ ddns_latest_log_line() {
 ddns_latest_change_log_line() {
     local type="$1" domain="$2" log="$3"
     [ -n "$domain" ] && [ -f "$log" ] || return 1
-    grep -F "OK: ${type} ${domain} 更新成功" "$log" 2>/dev/null | tail -1
+    grep -F "OK: ${type} ${domain} " "$log" 2>/dev/null | grep -E "更新成功|IP变化" | tail -1
 }
 
 ddns_line_time() {
@@ -617,9 +621,18 @@ write_record_status() {
     chmod 600 "$FILE" 2>/dev/null || true
 }
 
+previous_record_ip() {
+    local TYPE="$1" DOMAIN_NAME="$2" FILE _TS RECORD_TYPE RECORD_DOMAIN _STATE OLD_IP NEW_IP
+    FILE=$(record_status_file "$TYPE")
+    [ -f "$FILE" ] || return 0
+    IFS='|' read -r _TS RECORD_TYPE RECORD_DOMAIN _STATE OLD_IP NEW_IP < "$FILE"
+    [ "$RECORD_TYPE" = "$TYPE" ] && [ "$RECORD_DOMAIN" = "$DOMAIN_NAME" ] || return 0
+    printf '%s\n' "${NEW_IP:-$OLD_IP}"
+}
+
 write_record_change() {
-    local TYPE="$1" DOMAIN_NAME="$2" OLD_IP="$3" NEW_IP="$4" LINE FILE
-    LINE="$(date '+%Y-%m-%d %H:%M:%S')|${TYPE}|${OLD_IP}|${NEW_IP}|${DOMAIN_NAME}"
+    local TYPE="$1" DOMAIN_NAME="$2" OLD_IP="$3" NEW_IP="$4" KIND="${5:-updated}" LINE FILE
+    LINE="$(date '+%Y-%m-%d %H:%M:%S')|${TYPE}|${OLD_IP}|${NEW_IP}|${DOMAIN_NAME}|${KIND}"
     FILE=$(record_change_file "$TYPE")
     printf '%s\n' "$LINE" > "$FILE" 2>/dev/null || true
     chmod 600 "$FILE" 2>/dev/null || true
@@ -722,7 +735,21 @@ update_record() {
         return 0
     fi
     if [ "$NEW_IP" = "$OLD_IP" ]; then
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] OK: ${TYPE} ${DOMAIN_NAME} 未变化 ${NEW_IP}" >> "$LOG_FILE"
+        local PREV_IP
+        PREV_IP=$(previous_record_ip "$TYPE" "$DOMAIN_NAME")
+        if [ -n "$PREV_IP" ] && [ "$PREV_IP" != "$NEW_IP" ]; then
+            echo "[$(date '+%Y-%m-%d %H:%M:%S')] OK: ${TYPE} ${DOMAIN_NAME} IP变化 ${PREV_IP} → ${NEW_IP}（DNS已同步）" >> "$LOG_FILE"
+            write_record_change "$TYPE" "$DOMAIN_NAME" "$PREV_IP" "$NEW_IP" synced
+            tg_notify "🌐 <b>DDNS IP 已变化</b>
+域名：<code>${DOMAIN_NAME}</code>
+类型：${TYPE}
+旧IP：<code>${PREV_IP}</code>
+新IP：<code>${NEW_IP}</code>
+状态：DNS 已同步
+时间：$(date '+%Y-%m-%d %H:%M:%S')"
+        else
+            echo "[$(date '+%Y-%m-%d %H:%M:%S')] OK: ${TYPE} ${DOMAIN_NAME} 未变化 ${NEW_IP}" >> "$LOG_FILE"
+        fi
         write_record_status "$TYPE" "$DOMAIN_NAME" unchanged "$OLD_IP" "$NEW_IP"
         return 0
     fi
@@ -738,7 +765,21 @@ update_record() {
         return 0
     fi
     if [ "$NEW_IP" = "$VERIFY_IP" ]; then
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] OK: ${TYPE} ${DOMAIN_NAME} 未变化 ${NEW_IP}（二次确认）" >> "$LOG_FILE"
+        local PREV_IP
+        PREV_IP=$(previous_record_ip "$TYPE" "$DOMAIN_NAME")
+        if [ -n "$PREV_IP" ] && [ "$PREV_IP" != "$NEW_IP" ]; then
+            echo "[$(date '+%Y-%m-%d %H:%M:%S')] OK: ${TYPE} ${DOMAIN_NAME} IP变化 ${PREV_IP} → ${NEW_IP}（DNS已同步，二次确认）" >> "$LOG_FILE"
+            write_record_change "$TYPE" "$DOMAIN_NAME" "$PREV_IP" "$NEW_IP" synced
+            tg_notify "🌐 <b>DDNS IP 已变化</b>
+域名：<code>${DOMAIN_NAME}</code>
+类型：${TYPE}
+旧IP：<code>${PREV_IP}</code>
+新IP：<code>${NEW_IP}</code>
+状态：DNS 已同步（二次确认）
+时间：$(date '+%Y-%m-%d %H:%M:%S')"
+        else
+            echo "[$(date '+%Y-%m-%d %H:%M:%S')] OK: ${TYPE} ${DOMAIN_NAME} 未变化 ${NEW_IP}（二次确认）" >> "$LOG_FILE"
+        fi
         write_record_status "$TYPE" "$DOMAIN_NAME" unchanged "$VERIFY_IP" "$NEW_IP"
         return 0
     fi
@@ -1021,9 +1062,18 @@ write_record_status() {
     chmod 600 "$FILE" 2>/dev/null || true
 }
 
+previous_record_ip() {
+    local TYPE="$1" DOMAIN_NAME="$2" FILE _TS RECORD_TYPE RECORD_DOMAIN _STATE OLD_IP NEW_IP
+    FILE=$(record_status_file "$TYPE")
+    [ -f "$FILE" ] || return 0
+    IFS='|' read -r _TS RECORD_TYPE RECORD_DOMAIN _STATE OLD_IP NEW_IP < "$FILE"
+    [ "$RECORD_TYPE" = "$TYPE" ] && [ "$RECORD_DOMAIN" = "$DOMAIN_NAME" ] || return 0
+    printf '%s\n' "${NEW_IP:-$OLD_IP}"
+}
+
 write_record_change() {
-    local TYPE="$1" DOMAIN_NAME="$2" OLD_IP="$3" NEW_IP="$4" LINE FILE
-    LINE="$(date '+%Y-%m-%d %H:%M:%S')|${TYPE}|${OLD_IP}|${NEW_IP}|${DOMAIN_NAME}"
+    local TYPE="$1" DOMAIN_NAME="$2" OLD_IP="$3" NEW_IP="$4" KIND="${5:-updated}" LINE FILE
+    LINE="$(date '+%Y-%m-%d %H:%M:%S')|${TYPE}|${OLD_IP}|${NEW_IP}|${DOMAIN_NAME}|${KIND}"
     FILE=$(record_change_file "$TYPE")
     printf '%s\n' "$LINE" > "$FILE" 2>/dev/null || true
     chmod 600 "$FILE" 2>/dev/null || true
@@ -1299,7 +1349,22 @@ update_record() {
         return 0
     fi
     if [ "$NEW_IP" = "$OLD_IP" ]; then
-        log_line OK "${TYPE} ${DOMAIN_NAME} 未变化 ${NEW_IP}"
+        local PREV_IP
+        PREV_IP=$(previous_record_ip "$TYPE" "$DOMAIN_NAME")
+        if [ -n "$PREV_IP" ] && [ "$PREV_IP" != "$NEW_IP" ]; then
+            log_line OK "${TYPE} ${DOMAIN_NAME} IP变化 ${PREV_IP} → ${NEW_IP}（DNS已同步）"
+            write_record_change "$TYPE" "$DOMAIN_NAME" "$PREV_IP" "$NEW_IP" synced
+            tg_notify "🌐 <b>DDNS IP 已变化</b>
+服务商：华为云 DNS
+域名：<code>${DOMAIN_NAME}</code>
+类型：${TYPE}
+旧IP：<code>${PREV_IP}</code>
+新IP：<code>${NEW_IP}</code>
+状态：DNS 已同步
+时间：$(date '+%Y-%m-%d %H:%M:%S')"
+        else
+            log_line OK "${TYPE} ${DOMAIN_NAME} 未变化 ${NEW_IP}"
+        fi
         write_record_status "$TYPE" "$DOMAIN_NAME" unchanged "$OLD_IP" "$NEW_IP"
         return 0
     fi

@@ -126,6 +126,12 @@ EOF
 [[ "$(ddns_latest_change_log_line A jp99.289599.xyz "$DDNS_SAMPLE_LOG")" = *"A jp99.289599.xyz 更新成功 1.1.1.1"* ]] || { echo "DDNS IPv4 change log lookup failed" >&2; exit 1; }
 [[ "$(ddns_latest_change_log_line AAAA v6jp99.289599.xyz "$DDNS_SAMPLE_LOG")" = *"AAAA v6jp99.289599.xyz 更新成功 2001:db8::1"* ]] || { echo "DDNS IPv6 change log lookup failed" >&2; exit 1; }
 [[ "$(ddns_record_change_line A jp99.289599.xyz "$DDNS_SAMPLE_LOG")" = *"A jp99.289599.xyz 更新成功 1.1.1.1"* ]] || { echo "DDNS current change lookup failed" >&2; exit 1; }
+cat > "$DDNS_SAMPLE_LOG" <<'EOF'
+[2026-07-02 23:00:01] OK: A jp99.289599.xyz 更新成功 1.1.1.1 → 2.2.2.2
+[2026-07-02 23:06:01] OK: A jp99.289599.xyz IP变化 2.2.2.2 → 3.3.3.3（DNS已同步）
+[2026-07-02 23:07:01] OK: A jp99.289599.xyz 未变化 3.3.3.3
+EOF
+[[ "$(ddns_latest_change_log_line A jp99.289599.xyz "$DDNS_SAMPLE_LOG")" = *"A jp99.289599.xyz IP变化 2.2.2.2 → 3.3.3.3"* ]] || { echo "DDNS synced IP change log lookup failed" >&2; exit 1; }
 cat > "$DDNS_STATE_DIR/.cf_last_change_A" <<'EOF'
 2026-07-02 23:00:01|A|1.1.1.1|2.2.2.2|jp99.289599.xyz
 EOF
@@ -148,6 +154,13 @@ cat > "$DDNS_STATE_DIR/.cf_last_change_A" <<'EOF'
 EOF
 [[ "$(ddns_record_status_line A jp99.289599.xyz "$DDNS_SAMPLE_LOG")" = *"A jp99.289599.xyz 未变化 4.4.4.4"* ]] || { echo "DDNS newer state status should beat old log status" >&2; exit 1; }
 [[ "$(ddns_record_change_line A jp99.289599.xyz "$DDNS_SAMPLE_LOG")" = *"A jp99.289599.xyz 更新成功 3.3.3.3 → 4.4.4.4"* ]] || { echo "DDNS current state change should be shown" >&2; exit 1; }
+cat > "$DDNS_STATE_DIR/.cf_last_change_A" <<'EOF'
+2026-07-02 23:21:01|A|4.4.4.4|5.5.5.5|jp99.289599.xyz|synced
+EOF
+cat > "$DDNS_STATE_DIR/.cf_last_status_A" <<'EOF'
+2026-07-02 23:22:01|A|jp99.289599.xyz|unchanged|5.5.5.5|5.5.5.5
+EOF
+[[ "$(ddns_record_change_line A jp99.289599.xyz "$DDNS_SAMPLE_LOG")" = *"A jp99.289599.xyz IP变化 4.4.4.4 → 5.5.5.5"* ]] || { echo "DDNS synced state change should be shown" >&2; exit 1; }
 grep -q "新端口已测试可登录吗" "$ROOT/src/modules/ssh.sh" || { echo "SSH new port confirmation prompt missing" >&2; exit 1; }
 grep -q "自动回滚已取消" "$ROOT/src/modules/ssh.sh" || { echo "SSH rollback cancellation message missing" >&2; exit 1; }
 grep -q "关闭旧端口防火墙规则" "$ROOT/src/modules/ssh.sh" || { echo "SSH old firewall rule prompt missing" >&2; exit 1; }
@@ -310,9 +323,9 @@ MON_TRAFFIC_DAILY_BASELINE_RESET=yes
 [[ "$(monitor_traffic_usage_triplet daily)" = "0 0 0" ]] || { echo "Daily rollover should not inherit old traffic" >&2; exit 1; }
 MANIFEST="$TMP/manifest.json"
 cat > "$MANIFEST" <<'EOF'
-{"name":"SSH-Hardening","version":"V3.9.41","sha256":"abc123"}
+{"name":"SSH-Hardening","version":"V3.9.42","sha256":"abc123"}
 EOF
-[[ "$(self_manifest_value "$MANIFEST" version)" = "V3.9.41" ]] || { echo "Manifest parsing failed" >&2; exit 1; }
+[[ "$(self_manifest_value "$MANIFEST" version)" = "V3.9.42" ]] || { echo "Manifest parsing failed" >&2; exit 1; }
 
 DAILY_REPORT_CALLS=0
 monitor_alert_daily_report() { DAILY_REPORT_CALLS=$((DAILY_REPORT_CALLS + 1)); }
