@@ -41,6 +41,39 @@ ddns_domain_dot() {
     esac
 }
 
+ddns_interval_normalize() {
+    local value="${1:-5}"
+    echo "$value" | grep -qE '^[0-9]+$' || { echo 5; return; }
+    if [ "$value" -ge 1 ] && [ "$value" -le 59 ]; then
+        echo "$value"
+    else
+        echo 5
+    fi
+}
+
+ddns_interval_min() {
+    local value
+    value=$(ddns_cfg_get INTERVAL_MIN 2>/dev/null || true)
+    ddns_interval_normalize "${value:-5}"
+}
+
+ddns_cron_expr() {
+    local interval
+    interval=$(ddns_interval_normalize "${1:-$(ddns_interval_min)}")
+    if [ "$interval" -eq 1 ]; then
+        echo "* * * * *"
+    else
+        printf '*/%s * * * *\n' "$interval"
+    fi
+}
+
+ddns_prompt_interval() {
+    local default="${1:-5}" input
+    default=$(ddns_interval_normalize "$default")
+    read -rp "  检测间隔分钟（1-59，默认${default}，常用 1/2/5）: " input
+    ddns_interval_normalize "${input:-$default}"
+}
+
 ddns_log_path() {
     local log_path
     log_path=$(ddns_cfg_get LOG 2>/dev/null)
@@ -395,6 +428,8 @@ ddns_install_cloudflare() {
     local DDNS_TTL="60"
     read -rp "  TTL 秒数（默认60）: " DDNS_TTL_IN
     [ -n "$DDNS_TTL_IN" ] && echo "$DDNS_TTL_IN" | grep -qE '^[0-9]+$' && DDNS_TTL="$DDNS_TTL_IN"
+    local DDNS_INTERVAL_MIN
+    DDNS_INTERVAL_MIN=$(ddns_prompt_interval 5)
 
     echo ""
     menu_div
@@ -402,6 +437,7 @@ ddns_install_cloudflare() {
     [ "$DDNS_ENABLE_AAAA" = "true" ] && echo -e "  IPv6 AAAA : ${BOLD}${DDNS_DOMAIN6}${NC}" || echo -e "  IPv6 AAAA : ${DIM}未启用${NC}"
     echo -e "  代理   : ${BOLD}$([ "$DDNS_PROXIED" = "true" ] && echo '开启' || echo '关闭')${NC}"
     echo -e "  TTL    : ${BOLD}${DDNS_TTL}${NC}"
+    echo -e "  间隔   : ${BOLD}${DDNS_INTERVAL_MIN} 分钟${NC}"
     echo -e "  Token  : ${BOLD}${DDNS_TOKEN:0:8}…${NC}"
     menu_div
     echo ""
@@ -450,6 +486,7 @@ ddns_install_cloudflare() {
         echo "ENABLE_AAAA=${DDNS_ENABLE_AAAA}"
         echo "PROXIED=${DDNS_PROXIED}"
         echo "TTL=${DDNS_TTL}"
+        echo "INTERVAL_MIN=${DDNS_INTERVAL_MIN}"
         echo "LOG=${DDNS_LOG}"
     } > "$DDNS_ZONE_FILE"
 
@@ -709,9 +746,9 @@ DDNS_INNER
     sed -i "s|__LOG__|${DDNS_LOG_ESC}|g" "$DDNS_SCRIPT"
     chmod 700 "$DDNS_SCRIPT"
 
-    local CRON_JOB="*/5 * * * * ${DDNS_SCRIPT} >> ${DDNS_LOG} 2>&1"
+    local CRON_JOB; CRON_JOB="$(ddns_cron_expr "$DDNS_INTERVAL_MIN") ${DDNS_SCRIPT} >> ${DDNS_LOG} 2>&1"
     ( crontab -l 2>/dev/null | grep -v "ddns.sh"; echo "$CRON_JOB" ) | crontab -
-    info "crontab 已设置（每5分钟自动更新）✓"
+    info "crontab 已设置（每 ${DDNS_INTERVAL_MIN} 分钟自动更新）✓"
     ddns_start_cron_service >/dev/null 2>&1 || true
 
     echo ""
@@ -802,6 +839,8 @@ ddns_install_huawei() {
     local DDNS_TTL="300"
     read -rp "  TTL 秒数（默认300）: " DDNS_TTL_IN
     [ -n "$DDNS_TTL_IN" ] && echo "$DDNS_TTL_IN" | grep -qE '^[0-9]+$' && DDNS_TTL="$DDNS_TTL_IN"
+    local DDNS_INTERVAL_MIN
+    DDNS_INTERVAL_MIN=$(ddns_prompt_interval 5)
 
     echo ""
     menu_div
@@ -809,6 +848,7 @@ ddns_install_huawei() {
     [ "$DDNS_ENABLE_AAAA" = "true" ] && echo -e "  IPv6 AAAA : ${BOLD}${DDNS_DOMAIN6}${NC}" || echo -e "  IPv6 AAAA : ${DIM}未启用${NC}"
     echo -e "  Endpoint  : ${BOLD}${DDNS_ENDPOINT}${NC}"
     echo -e "  TTL       : ${BOLD}${DDNS_TTL}${NC}"
+    echo -e "  间隔      : ${BOLD}${DDNS_INTERVAL_MIN} 分钟${NC}"
     echo -e "  AK        : ${BOLD}${DDNS_HW_AK:0:8}…${NC}"
     menu_div
     echo ""
@@ -836,6 +876,7 @@ ddns_install_huawei() {
         echo "ENABLE_AAAA=${DDNS_ENABLE_AAAA}"
         echo "ENDPOINT=${DDNS_ENDPOINT}"
         echo "TTL=${DDNS_TTL}"
+        echo "INTERVAL_MIN=${DDNS_INTERVAL_MIN}"
         echo "LOG=${DDNS_LOG}"
     } > "$DDNS_ZONE_FILE"
 
@@ -1262,9 +1303,9 @@ DDNS_HUAWEI_INNER
     sed -i "s|__LOG__|${DDNS_LOG_ESC}|g" "$DDNS_SCRIPT"
     chmod 700 "$DDNS_SCRIPT"
 
-    local CRON_JOB="*/5 * * * * ${DDNS_SCRIPT} >> ${DDNS_LOG} 2>&1"
+    local CRON_JOB; CRON_JOB="$(ddns_cron_expr "$DDNS_INTERVAL_MIN") ${DDNS_SCRIPT} >> ${DDNS_LOG} 2>&1"
     ( crontab -l 2>/dev/null | grep -v "ddns.sh"; echo "$CRON_JOB" ) | crontab -
-    info "crontab 已设置（每5分钟自动更新）✓"
+    info "crontab 已设置（每 ${DDNS_INTERVAL_MIN} 分钟自动更新）✓"
     ddns_start_cron_service >/dev/null 2>&1 || true
 
     echo ""
@@ -1316,11 +1357,13 @@ ddns_resume() {
             return
         fi
     fi
-    local LOG; LOG=$(ddns_log_path)
-    local CRON_JOB="*/5 * * * * ${DDNS_SCRIPT} >> ${LOG} 2>&1"
+    local LOG INTERVAL_MIN CRON_JOB
+    LOG=$(ddns_log_path)
+    INTERVAL_MIN=$(ddns_interval_min)
+    CRON_JOB="$(ddns_cron_expr "$INTERVAL_MIN") ${DDNS_SCRIPT} >> ${LOG} 2>&1"
     ( crontab -l 2>/dev/null | grep -v "ddns.sh"; echo "$CRON_JOB" ) | crontab -
     ddns_start_cron_service >/dev/null 2>&1 || true
-    info "DDNS 自动更新已恢复 ✓"
+    info "DDNS 自动更新已恢复（每 ${INTERVAL_MIN} 分钟）✓"
 }
 
 # ── 卸载 DDNS ─────────────────────────────────────────────
@@ -1509,7 +1552,7 @@ ddns_menu() {
         print_header "$D_TITLE"
 
         if [ "$D_ST" != "not_installed" ] && [ -f "$DDNS_ZONE_FILE" ]; then
-            local D_DOMAIN4 D_DOMAIN6 D_MODE_LABEL D_PROVIDER D_PROXIED D_ENDPOINT D_TTL D_LOG
+            local D_DOMAIN4 D_DOMAIN6 D_MODE_LABEL D_PROVIDER D_PROXIED D_ENDPOINT D_TTL D_INTERVAL D_LOG
             D_DOMAIN4=$(ddns_cfg_domain4)
             D_DOMAIN6=$(ddns_cfg_domain6)
             D_MODE_LABEL=$(ddns_mode_label)
@@ -1517,6 +1560,7 @@ ddns_menu() {
             D_PROXIED=$(ddns_cfg_get PROXIED)
             D_ENDPOINT=$(ddns_cfg_get ENDPOINT)
             D_TTL=$(ddns_cfg_get TTL)
+            D_INTERVAL=$(ddns_interval_min)
             D_LOG=$(ddns_log_path)
             echo -e "  状态 : ${D_COLOR}${BOLD}${D_LABEL}${NC}"
             echo -e "  服务商 : ${BOLD}${D_PROVIDER_LABEL}${NC}"
@@ -1537,7 +1581,7 @@ ddns_menu() {
                 echo -e "  代理 : ${BOLD}$([ "$D_PROXIED" = "true" ] && echo '开启' || echo '关闭')${NC}"
             fi
             echo -e "  TTL  : ${BOLD}${D_TTL:-60}${NC}"
-            echo -e "  定时 : ${DIM}每5分钟自动更新${NC}"
+            echo -e "  定时 : ${DIM}每 ${D_INTERVAL} 分钟自动更新${NC}"
             ddns_cfg_enable_a && ddns_print_record_summary "IPv4" A "$D_DOMAIN4" "$D_LOG"
             ddns_cfg_enable_aaaa && ddns_print_record_summary "IPv6" AAAA "$D_DOMAIN6" "$D_LOG"
         elif [ -f "$DDNS_ZONE_FILE" ]; then

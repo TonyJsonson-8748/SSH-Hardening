@@ -1,4 +1,4 @@
-# VPS 开荒脚本 V3.9.38
+# VPS 开荒脚本 V3.9.39
 
 > **银趴火山帮** 出品 · SSH · BBR · DDNS · Caddy · Firewall · NFT 转发
 
@@ -71,7 +71,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/chnnic/SSH-Hardening/refs/he
 /___/_/  /_/_/   /_/  |_/_/ |_| /_/     \____/_/    /____/
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  VPS TOOLS  ·  V3.9.38
+  VPS TOOLS  ·  V3.9.39
   VPS 开荒脚本 · 银趴火山帮
 ────────────────────────────────────────────────────────────────
   SSH · BBR · DDNS · Caddy · Firewall · NFT · Monitor
@@ -237,9 +237,10 @@ bash <(curl -fsSL https://raw.githubusercontent.com/chnnic/SSH-Hardening/refs/he
 - Cloudflare 支持代理（橙云）开关
 - 华为云使用 AK/SK 签名调用 DNS API
 - 自定义 TTL（Cloudflare 默认 60 秒，华为云默认 300 秒）
+- 自定义检测间隔（1-59 分钟，默认 5 分钟，常用 1/2/5）
 
 **运行机制：**
-- crontab 每 5 分钟执行
+- crontab 按配置间隔执行，默认每 5 分钟
 - IP 未变化时仅记录日志，不请求 API
 - IP 多源备用：`ipify.org → ifconfig.me → ip.sb`
 - IPv6 外部探测失败时，会回退读取本机 `scope global` IPv6 地址
@@ -542,7 +543,7 @@ DNS 设置会自动识别 `systemd-resolved`、NetworkManager、resolvconf 或�
 | `/etc/systemd/system/nftpf-ddns.timer` | NFT DDNS 自动刷新 timer |
 | `/root/.cf_token` | Cloudflare API Token（600） |
 | `/root/.hw_dns_aksk` | 华为云 DNS AK/SK（600） |
-| `/root/.cf_zone` | DDNS 服务商、域名、模式、Endpoint、TTL 配置 |
+| `/root/.cf_zone` | DDNS 服务商、域名、模式、Endpoint、TTL、检测间隔配置 |
 | `/root/.cf_tg` | Telegram Bot 配置（600） |
 | `/root/ddns.sh` | DDNS 执行脚本（700） |
 | `/var/log/ddns.log` | DDNS 日志（自动轮转 500 行） |
@@ -581,6 +582,7 @@ GitHub Actions 还会在 Debian、Ubuntu、Alpine、Rocky Linux 容器中加载�
 
 | 版本 | 主要变更 |
 |------|---------|
+| **V3.9.39** | DDNS 支持自定义检测间隔分钟数，安装、修改和恢复自动更新时写入对应 cron，可设 1 / 2 / 5 分钟等 |
 | **V3.9.38** | DDNS IPv6 外部探测失败时回退读取本机全局 IPv6，避免有公网 IPv6 但 `curl -6` 不通时报“无法获取公网 IPv6” |
 | **V3.9.37** | DDNS 新增华为云 DNS 服务商，支持 AK/SK 签名调用华为云 DNS API 更新 A / AAAA 记录，并保留 Cloudflare 旧配置兼容 |
 | **V3.9.36** | 流量监控记录上次网卡计数，VPS 重启或网卡计数重置后把已用流量滚入持久 offset，避免今日/周期统计回到 0 |

@@ -11,6 +11,7 @@ source "$ROOT/SSH-Hardening.sh"
 for fn in systemd_available show_cli_help main_menu ssh_tools_menu fail2ban_menu bbr_menu firewall_menu dns_menu \
     ip_config_menu caddy_menu nft_menu ddns_menu ddns_install ddns_install_cloudflare ddns_install_huawei ddns_run_now ddns_view_logs ddns_status \
     ddns_provider ddns_provider_label ddns_sed_escape ddns_domain_dot \
+    ddns_interval_normalize ddns_interval_min ddns_cron_expr ddns_prompt_interval \
     ddns_cfg_enable_a ddns_cfg_enable_aaaa ddns_cfg_domain4 ddns_cfg_domain6 ddns_primary_domain ddns_mode_label ddns_build_domain \
     ddns_latest_log_line ddns_latest_change_log_line ddns_record_status_line ddns_record_change_line ddns_print_record_summary \
     system_toolbox_menu \
@@ -52,6 +53,15 @@ ddns_cfg_enable_aaaa || { echo "Legacy DDNS IPv6 enable detection failed" >&2; e
 [[ "$(ddns_cfg_domain6)" = "home.example.com" ]] || { echo "Legacy DDNS IPv6 domain failed" >&2; exit 1; }
 [[ "$(ddns_mode_label)" = "IPv4 + IPv6（同域名）" ]] || { echo "Legacy DDNS mode label failed" >&2; exit 1; }
 [[ "$(ddns_provider)" = "cloudflare" ]] || { echo "Legacy DDNS provider fallback failed" >&2; exit 1; }
+[[ "$(ddns_interval_min)" = "5" ]] || { echo "Legacy DDNS interval fallback failed" >&2; exit 1; }
+[[ "$(ddns_interval_normalize 1)" = "1" ]] || { echo "DDNS interval 1 should be valid" >&2; exit 1; }
+[[ "$(ddns_interval_normalize 2)" = "2" ]] || { echo "DDNS interval 2 should be valid" >&2; exit 1; }
+[[ "$(ddns_interval_normalize 5)" = "5" ]] || { echo "DDNS interval 5 should be valid" >&2; exit 1; }
+[[ "$(ddns_interval_normalize 0)" = "5" ]] || { echo "DDNS interval 0 should fall back to 5" >&2; exit 1; }
+[[ "$(ddns_interval_normalize 60)" = "5" ]] || { echo "DDNS interval 60 should fall back to 5" >&2; exit 1; }
+[[ "$(ddns_cron_expr 1)" = "* * * * *" ]] || { echo "DDNS interval 1 cron expression failed" >&2; exit 1; }
+[[ "$(ddns_cron_expr 2)" = "*/2 * * * *" ]] || { echo "DDNS interval 2 cron expression failed" >&2; exit 1; }
+[[ "$(ddns_cron_expr 5)" = "*/5 * * * *" ]] || { echo "DDNS interval 5 cron expression failed" >&2; exit 1; }
 cat > "$DDNS_ZONE_FILE" <<'EOF'
 DOMAIN=v4.example.com
 DOMAIN4=v4.example.com
@@ -59,9 +69,11 @@ DOMAIN6=v6.example.com
 MODE=dual
 ENABLE_A=true
 ENABLE_AAAA=true
+INTERVAL_MIN=2
 EOF
 [[ "$(ddns_primary_domain)" = "v4.example.com" ]] || { echo "DDNS primary domain failed" >&2; exit 1; }
 [[ "$(ddns_mode_label)" = "IPv4 + IPv6（分别设置）" ]] || { echo "Split DDNS mode label failed" >&2; exit 1; }
+[[ "$(ddns_interval_min)" = "2" ]] || { echo "Configured DDNS interval failed" >&2; exit 1; }
 [[ "$(ddns_build_domain @ example.com)" = "example.com" ]] || { echo "DDNS root domain build failed" >&2; exit 1; }
 [[ "$(ddns_build_domain v6.example.com example.com)" = "v6.example.com" ]] || { echo "DDNS full domain build failed" >&2; exit 1; }
 [[ "$(ddns_domain_dot example.com)" = "example.com." ]] || { echo "DDNS trailing-dot helper failed" >&2; exit 1; }
@@ -273,9 +285,9 @@ MON_TRAFFIC_DAILY_BASELINE_RESET=yes
 [[ "$(monitor_traffic_usage_triplet daily)" = "0 0 0" ]] || { echo "Daily rollover should not inherit old traffic" >&2; exit 1; }
 MANIFEST="$TMP/manifest.json"
 cat > "$MANIFEST" <<'EOF'
-{"name":"SSH-Hardening","version":"V3.9.38","sha256":"abc123"}
+{"name":"SSH-Hardening","version":"V3.9.39","sha256":"abc123"}
 EOF
-[[ "$(self_manifest_value "$MANIFEST" version)" = "V3.9.38" ]] || { echo "Manifest parsing failed" >&2; exit 1; }
+[[ "$(self_manifest_value "$MANIFEST" version)" = "V3.9.39" ]] || { echo "Manifest parsing failed" >&2; exit 1; }
 
 DAILY_REPORT_CALLS=0
 monitor_alert_daily_report() { DAILY_REPORT_CALLS=$((DAILY_REPORT_CALLS + 1)); }
