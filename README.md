@@ -578,6 +578,19 @@ tests/fault-injection.sh
 
 GitHub Actions 还会在 Debian、Ubuntu、Alpine、Rocky Linux 容器中加载生成脚本并执行冒烟测试。
 
+### BBR 独立仓同步
+
+`src/modules/bbr.sh` 同时发布到 [chnnic/BBR-tune](https://github.com/chnnic/BBR-tune)。修改 BBR 行为或其依赖的 core helper 后，必须在同一批工作中同步并推送独立仓：
+
+```bash
+cd ../BBR-tune
+scripts/sync-from-upstream.sh ../SSH-Hardening
+scripts/sync-from-upstream.sh --check ../SSH-Hardening
+tests/smoke.sh
+```
+
+详细规则由主仓 [AGENTS.md](AGENTS.md) 和独立仓 `SYNC_BBR.md` 共同维护。
+
 ---
 
 ## 版本沿革（近期）
