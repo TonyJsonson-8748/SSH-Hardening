@@ -23,7 +23,7 @@ for fn in docker_install docker_status docker_select_container docker_upgrade_co
     declare -F "$fn" >/dev/null || { echo "Missing Docker function: $fn" >&2; exit 1; }
 done
 
-for fn in self_offline_bundle_create self_offline_bundle_install self_update self_manifest_value self_remote_main_sha monitor_alert_check monitor_alert_config_menu monitor_alert_home_menu monitor_alert_daily_report monitor_alert_host_label monitor_alert_host_label_html monitor_alert_html_escape monitor_alert_set_host_label monitor_time_normalize monitor_date_normalize monitor_int_normalize monitor_traffic_reset_day_valid monitor_traffic_totals monitor_traffic_delta_bytes monitor_traffic_reconcile_counters monitor_traffic_usage_triplet monitor_traffic_usage_text monitor_traffic_set_cycle_usage_split_gb monitor_alert_service_state monitor_alert_any_service_state monitor_alert_ssh_state monitor_alert_test_snapshot monitor_alert_resource_snapshot monitor_alert_traffic_snapshot monitor_alert_renew_snapshot monitor_alert_renew_mark_paid monitor_alert_notify monitor_alert_history_add monitor_alert_history_view monitor_alert_cooldown_seconds monitor_alert_time_to_minutes monitor_alert_in_silence monitor_alert_metrics monitor_alert_metrics_sample monitor_alert_trend_line monitor_alert_trend_summary monitor_alert_level_label monitor_alert_level_icon monitor_alert_level_rank monitor_alert_worst_level monitor_alert_daily_cron_expr monitor_alert_cron_command monitor_alert_install_cron monitor_alert_remove_cron monitor_alert_cron_status monitor_alert_next_daily_time monitor_alert_configured_without_cron monitor_alert_service_menu monitor_alert_notify_menu monitor_alert_resource_menu monitor_alert_traffic_menu monitor_alert_daily_menu monitor_alert_renew_menu monitor_alert_advanced_menu monitor_alert_quick_setup_menu config_health_check diagnostic_bundle_create; do
+for fn in self_offline_bundle_create self_offline_bundle_install self_update self_manifest_value self_remote_main_sha monitor_alert_check monitor_alert_config_menu monitor_alert_home_menu monitor_alert_daily_report monitor_alert_host_label monitor_alert_host_label_html monitor_alert_html_escape monitor_alert_set_host_label monitor_time_normalize monitor_date_normalize monitor_int_normalize monitor_positive_number_valid monitor_positive_int_valid monitor_percent_valid monitor_renew_notice_days_valid monitor_traffic_interfaces monitor_traffic_reset_day_valid monitor_traffic_totals monitor_traffic_delta_bytes monitor_traffic_reconcile_counters monitor_traffic_usage_triplet monitor_traffic_usage_text monitor_traffic_set_cycle_usage_split_gb monitor_alert_service_state monitor_alert_any_service_state monitor_alert_ssh_state monitor_alert_test_snapshot monitor_alert_resource_snapshot monitor_alert_traffic_snapshot monitor_alert_renew_snapshot monitor_alert_renew_mark_paid monitor_alert_renew_reset_state monitor_alert_notify monitor_alert_telegram_send monitor_alert_history_add monitor_alert_history_view monitor_alert_cooldown_seconds monitor_alert_time_to_minutes monitor_alert_in_silence monitor_alert_metrics monitor_alert_metrics_sample monitor_alert_trend_line monitor_alert_trend_summary monitor_alert_level_label monitor_alert_level_icon monitor_alert_level_rank monitor_alert_worst_level monitor_alert_daily_cron_expr monitor_alert_cron_command monitor_alert_cron_without_managed monitor_alert_acquire_lock monitor_alert_install_cron monitor_alert_remove_cron monitor_alert_cron_status monitor_alert_next_daily_time monitor_alert_configured_without_cron monitor_alert_service_menu monitor_alert_notify_menu monitor_alert_resource_menu monitor_alert_traffic_menu monitor_alert_daily_menu monitor_alert_renew_menu monitor_alert_advanced_menu monitor_alert_quick_setup_menu config_health_check diagnostic_bundle_create; do
     declare -F "$fn" >/dev/null || { echo "Missing new function: $fn" >&2; exit 1; }
 done
 
@@ -244,6 +244,37 @@ MON_ALERT_COOLDOWN_MIN=7
 [[ "$(monitor_alert_daily_cron_expr 2359)" = "59 23 * * *" ]] || { echo "Daily cron 2359 expression failed" >&2; exit 1; }
 [[ "$(monitor_alert_level_label critical)" = "严重" ]] || { echo "Alert level label failed" >&2; exit 1; }
 [[ "$(monitor_alert_worst_level warning critical)" = "critical" ]] || { echo "Alert level ranking failed" >&2; exit 1; }
+monitor_percent_valid 85 || { echo "Valid monitor percentage rejected" >&2; exit 1; }
+! monitor_percent_valid 101 || { echo "Invalid monitor percentage accepted" >&2; exit 1; }
+monitor_positive_number_valid 0.5 || { echo "Valid positive monitor number rejected" >&2; exit 1; }
+! monitor_positive_number_valid '50GB' || { echo "Invalid monitor number accepted" >&2; exit 1; }
+monitor_positive_int_valid 30 || { echo "Valid positive monitor integer rejected" >&2; exit 1; }
+! monitor_positive_int_valid 0 || { echo "Zero monitor integer accepted" >&2; exit 1; }
+monitor_renew_notice_days_valid '30,7,3,1,0' || { echo "Valid renewal notice list rejected" >&2; exit 1; }
+! monitor_renew_notice_days_valid '30,bad,1' || { echo "Invalid renewal notice list accepted" >&2; exit 1; }
+(
+    MON_TRAFFIC_INTERFACES=
+    ip() {
+        case "$1" in
+            -4) echo 'default via 192.0.2.1 dev eth0' ;;
+            -6) echo 'default via 2001:db8::1 dev eth0'; echo 'default via 2001:db8::2 dev eth1' ;;
+        esac
+    }
+    [[ "$(monitor_traffic_interfaces)" = "eth0 eth1" ]] || { echo "Default-route traffic interface detection failed" >&2; exit 1; }
+    export MON_TRAFFIC_INTERFACES='ens3,docker0'
+    [[ "$(monitor_traffic_interfaces)" = "ens3 docker0" ]] || { echo "Configured traffic interface parsing failed" >&2; exit 1; }
+)
+MONITOR_CRON_SAMPLE=$(printf '%s\n' \
+    '*/10 * * * * /usr/local/bin/vps-tools --monitor-alert # vps-monitor-alert' \
+    '5 * * * * /opt/vps-monitor-alert-helper' \
+    '0 8 * * * * /usr/local/bin/vps-tools --monitor-alert # VPS_TOOLS_DAILY_JOB')
+MONITOR_CRON_FILTERED=$(printf '%s\n' "$MONITOR_CRON_SAMPLE" | monitor_alert_cron_without_managed)
+[[ "$MONITOR_CRON_FILTERED" = '5 * * * * /opt/vps-monitor-alert-helper' ]] || { echo "Monitor cron cleanup removed an unrelated job" >&2; exit 1; }
+(
+    export MONITOR_ALERT_LOCK_FILE="$TMP/monitor.lock"
+    monitor_alert_acquire_lock || { echo "Monitor lock acquisition failed" >&2; exit 1; }
+    ! (monitor_alert_acquire_lock) || { echo "Concurrent monitor lock acquisition succeeded" >&2; exit 1; }
+)
 monitor_traffic_reset_day_valid 31 || { echo "Reset day 31 should be valid" >&2; exit 1; }
 ! monitor_traffic_reset_day_valid 32 || { echo "Reset day 32 should be invalid" >&2; exit 1; }
 [[ "$(monitor_traffic_current_cycle_start 31 2026-02-15)" = "2026-01-31" ]] || { echo "Previous short-month reset calculation failed" >&2; exit 1; }
@@ -349,11 +380,18 @@ MON_TRAFFIC_LAST_BYTES=3600
 # shellcheck disable=SC2034 # consumed by monitor_traffic_reconcile_counters
 MON_TRAFFIC_DAILY_BASELINE_RESET=yes
 [[ "$(monitor_traffic_usage_triplet daily)" = "0 0 0" ]] || { echo "Daily rollover should not inherit old traffic" >&2; exit 1; }
+(
+    METRICS_FILE="$TMP/monitor.metrics"
+    NOW=$(date +%s)
+    printf '%s 10 20 0.10 1073741824\n%s 11 21 0.20 536870912\n' "$((NOW - 120))" "$((NOW - 60))" > "$METRICS_FILE"
+    monitor_alert_metrics() { echo "$METRICS_FILE"; }
+    [[ "$(monitor_alert_trend_line '测试趋势' 3600)" = *'流量 +0.50G'* ]] || { echo "Monitor trend did not preserve traffic across a counter reset" >&2; exit 1; }
+)
 MANIFEST="$TMP/manifest.json"
 cat > "$MANIFEST" <<'EOF'
-{"name":"SSH-Hardening","version":"V3.9.43","sha256":"abc123"}
+{"name":"SSH-Hardening","version":"V3.9.44","sha256":"abc123"}
 EOF
-[[ "$(self_manifest_value "$MANIFEST" version)" = "V3.9.43" ]] || { echo "Manifest parsing failed" >&2; exit 1; }
+[[ "$(self_manifest_value "$MANIFEST" version)" = "V3.9.44" ]] || { echo "Manifest parsing failed" >&2; exit 1; }
 
 DAILY_REPORT_CALLS=0
 monitor_alert_daily_report() { DAILY_REPORT_CALLS=$((DAILY_REPORT_CALLS + 1)); }
@@ -372,6 +410,26 @@ MON_DAILY_REPORT_TIME=00:00
 monitor_alert_daily_report_check
 [[ "$DAILY_REPORT_CALLS" -eq 0 ]] || { echo "Daily report repeated on the same day" >&2; exit 1; }
 
+(
+    STATE_SET_CALLS=0
+    monitor_alert_daily_report() { return 1; }
+    monitor_daily_report_due() { return 0; }
+    monitor_alert_state_get() { return 1; }
+    monitor_alert_state_set() { STATE_SET_CALLS=$((STATE_SET_CALLS + 1)); }
+    monitor_alert_history_add() { :; }
+    audit_action() { :; }
+    export MON_DAILY_REPORT_ENABLED=yes
+    export MON_DAILY_REPORT_TIME=00:00
+    ! monitor_alert_daily_report_check || { echo "Failed daily report returned success" >&2; exit 1; }
+    [[ "$STATE_SET_CALLS" -eq 0 ]] || { echo "Failed daily report was marked as sent" >&2; exit 1; }
+)
+
+(
+    monitor_alert_cfg_get() { case "$1" in BOT_TOKEN) echo token ;; CHAT_ID) echo chat ;; esac; }
+    monitor_alert_telegram_send() { return 1; }
+    ! monitor_alert_notify title body || { echo "Failed Telegram request returned success" >&2; exit 1; }
+)
+
 RENEW_NOTIFY_CALLS=0
 monitor_alert_notify() { RENEW_NOTIFY_CALLS=$((RENEW_NOTIFY_CALLS + 1)); }
 # shellcheck disable=SC2034 # consumed by monitor_alert_renew_check
@@ -384,6 +442,25 @@ MON_RENEW_NOTICE_DAYS=0
 MON_RENEW_LAST_ALERT=$(date +%F)
 monitor_alert_renew_check
 [[ "$RENEW_NOTIFY_CALLS" -eq 0 ]] || { echo "Renew reminder repeated on the same day" >&2; exit 1; }
+
+(
+    monitor_alert_notify() { return 0; }
+    monitor_alert_history_add() { :; }
+    monitor_alert_state_get() { return 1; }
+    monitor_alert_state_set() { :; }
+    monitor_alert_save_cfg() { :; }
+    audit_action() { :; }
+    export MON_RENEW_ENABLED=yes
+    export MON_RENEW_MODE=interval
+    MON_RENEW_NEXT_DATE=$(date +%F)
+    ORIGINAL_RENEW_DATE="$MON_RENEW_NEXT_DATE"
+    export MON_RENEW_INTERVAL_DAYS=365
+    export MON_RENEW_MONTH_DAY=1
+    export MON_RENEW_NOTICE_DAYS=0
+    export MON_RENEW_LAST_ALERT=
+    monitor_alert_renew_check
+    [[ "$MON_RENEW_NEXT_DATE" = "$ORIGINAL_RENEW_DATE" ]] || { echo "Due renewal date advanced without payment confirmation" >&2; exit 1; }
+)
 
 OS=$(detect_os)
 [ -n "$OS" ] || { echo "OS detection returned empty" >&2; exit 1; }
