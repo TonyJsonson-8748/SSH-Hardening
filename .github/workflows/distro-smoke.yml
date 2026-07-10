@@ -14,16 +14,16 @@ jobs:
         include:
           - image: debian:12
             pm: apt
-            setup: apt-get update && apt-get install -y bash
+            setup: apt-get update && apt-get install -y bash python3
           - image: ubuntu:24.04
             pm: apt
-            setup: apt-get update && apt-get install -y bash
+            setup: apt-get update && apt-get install -y bash python3
           - image: alpine:3.20
             pm: apk
-            setup: apk add --no-cache bash
+            setup: apk add --no-cache bash python3
           - image: rockylinux:9
             pm: dnf
-            setup: dnf install -y bash
+            setup: dnf install -y bash python3
     steps:
       - name: Checkout
         uses: actions/checkout@v5
