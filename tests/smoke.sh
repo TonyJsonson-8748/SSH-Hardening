@@ -19,6 +19,141 @@ for fn in systemd_available show_cli_help main_menu ssh_tools_menu fail2ban_menu
     declare -F "$fn" >/dev/null || { echo "Missing function: $fn" >&2; exit 1; }
 done
 
+for fn in bbr_preflight bbr_runtime_snapshot bbr_ensure_baseline bbr_restore_runtime_snapshot bbr_baseline_value bbr_config_has_key \
+    bbr_apply_sysctl bbr_generate_config bbr_bdp_mb bbr_buffer_target_mb bbr_recommend_profile \
+    bbr_tc_qdisc_safe_to_replace bbr_tc_apply_runtime bbr_default_route_info bbr_route_token \
+    bbr_route_strip_cwnd bbr_apply_initcwnd_route volcano_tcp_profile; do
+    declare -F "$fn" >/dev/null || { echo "Missing BBR function: $fn" >&2; exit 1; }
+done
+
+BBR_BASELINE_FILE="$TMP/bbr-baseline.conf"
+cat > "$BBR_BASELINE_FILE" <<'EOF'
+netXipv4Xip_forward = 9
+net.ipv4.ip_forward = 1
+net.core.somaxconn = 4096
+EOF
+[[ "$(bbr_baseline_value net.ipv4.ip_forward)" = "1" ]] || { echo "BBR baseline key matching was not exact" >&2; exit 1; }
+[[ "$(bbr_config_dynamic_scene_keys 'net.ipv6.conf.eth9.accept_ra = 2')" = net.ipv6.conf.eth9.accept_ra ]] || { echo "BBR old IPv6 interface cleanup key was not detected" >&2; exit 1; }
+BBR_RESTORE_LOG="$TMP/bbr-restore.log"
+# shellcheck disable=SC2329 # test stub used indirectly by bbr_restore_baseline_key
+sysctl() {
+    [ "${1:-}" = -w ] && printf '%s\n' "$2" >> "$BBR_RESTORE_LOG"
+}
+bbr_restore_baseline_key net.core.somaxconn
+grep -qx 'net.core.somaxconn=4096' "$BBR_RESTORE_LOG" || { echo "BBR baseline restore used the wrong value" >&2; exit 1; }
+unset -f sysctl
+
+(
+    BBR_BASELINE_FILE="$TMP/bbr-growing-baseline.conf"
+    printf 'net.ipv4.ip_forward = 0\n' > "$BBR_BASELINE_FILE"
+    # shellcheck disable=SC2329 # test stub used indirectly by bbr_ensure_baseline
+    bbr_managed_keys() { printf '%s\n' net.ipv4.ip_forward net.ipv6.conf.eth0.accept_ra; }
+    # shellcheck disable=SC2329 # test stub used indirectly by bbr_ensure_baseline
+    sysctl() {
+        [ "${1:-}" = -n ] && [ "${2:-}" = net.ipv6.conf.eth0.accept_ra ] && echo 1
+    }
+    bbr_ensure_baseline
+    [[ "$(bbr_baseline_value net.ipv4.ip_forward)" = 0 ]] || { echo "BBR baseline overwrote an existing value" >&2; exit 1; }
+    [[ "$(bbr_baseline_value net.ipv6.conf.eth0.accept_ra)" = 1 ]] || { echo "BBR baseline did not capture a newly managed interface" >&2; exit 1; }
+)
+
+(
+    SYSCTL_FILE="$TMP/bbr-sysctl.conf"
+    BBR_BASELINE_FILE="$TMP/bbr-transaction-baseline.conf"
+    printf 'net.ipv4.tcp_congestion_control = cubic\n' > "$SYSCTL_FILE"
+    # shellcheck disable=SC2329 # test stub used indirectly by bbr_apply_sysctl
+    ensure_sysctl() { :; }
+    # shellcheck disable=SC2329 # test stub used indirectly by bbr_apply_sysctl
+    bbr_ensure_baseline() { :; }
+    # shellcheck disable=SC2329 # test stub used indirectly by bbr_apply_sysctl
+    bbr_runtime_snapshot() {
+        printf 'net.core.default_qdisc = fq_codel\nnet.ipv4.tcp_congestion_control = cubic\n' > "$1"
+    }
+    # shellcheck disable=SC2329 # test stub used indirectly by bbr_apply_sysctl
+    sysctl() {
+        case "${2:-}" in net.ipv4.tcp_congestion_control=bbr) return 1 ;; *) return 0 ;; esac
+    }
+    CONFIG=$(printf '%s\n' 'net.core.default_qdisc = fq' 'net.ipv4.tcp_congestion_control = bbr')
+    if bbr_apply_sysctl "$CONFIG" baseline >/dev/null 2>&1; then
+        echo "BBR core sysctl failure returned success" >&2
+        exit 1
+    fi
+    grep -qx 'net.ipv4.tcp_congestion_control = cubic' "$SYSCTL_FILE" || {
+        echo "BBR failed apply replaced the previous persistent config" >&2
+        exit 1
+    }
+)
+
+(
+    PREFLIGHT_CALLED=0
+    BACKUP_CALLED=0
+    # shellcheck disable=SC2329 # test stub used indirectly by volcano_tcp_profile
+    bbr_preflight() { PREFLIGHT_CALLED=1; return 1; }
+    # shellcheck disable=SC2329 # must stay uncalled when preflight fails
+    bbr_backup_sysctl() { BACKUP_CALLED=1; }
+    if volcano_tcp_profile balanced >/dev/null 2>&1; then
+        echo "BBR smart profile ignored a failed preflight" >&2
+        exit 1
+    fi
+    [ "$PREFLIGHT_CALLED" -eq 1 ] || { echo "BBR smart profile skipped preflight" >&2; exit 1; }
+    [ "$BACKUP_CALLED" -eq 0 ] || { echo "BBR smart profile changed state after failed preflight" >&2; exit 1; }
+)
+
+(
+    # shellcheck disable=SC2329 # test stub used indirectly by bbr_generate_config
+    bbr_default_ipv6_iface() { echo eth0; }
+    CONFIG=$(bbr_generate_config 12582912 12582912 '32768 49152 98304' 131072 2 32768 10 1048576 relay)
+    grep -qx 'net.ipv6.conf.eth0.accept_ra = 2' <<< "$CONFIG" || { echo "BBR forwarding profile missing IPv6 accept_ra=2" >&2; exit 1; }
+)
+
+bbr_tc_qdisc_safe_to_replace fq || { echo "BBR rejected a safe default qdisc" >&2; exit 1; }
+! bbr_tc_qdisc_safe_to_replace cake || { echo "BBR would overwrite a foreign CAKE qdisc" >&2; exit 1; }
+(
+    # shellcheck disable=SC2034 # consumed by bbr_tc_is_owned
+    TC_STATE_FILE="$TMP/no-tc-state"
+    TC_TEST_LOG="$TMP/tc-test.log"
+    export TC_TEST_LOG
+    FAKE_TC="$TMP/fake-tc"
+    cat > "$FAKE_TC" <<'EOF'
+#!/bin/sh
+if [ "$1 $2" = "qdisc show" ]; then
+    echo 'qdisc cake 8001: root refcnt 2 bandwidth 100Mbit'
+    exit 0
+fi
+printf '%s\n' "$*" >> "$TC_TEST_LOG"
+EOF
+    chmod +x "$FAKE_TC"
+    if bbr_tc_apply_runtime eth0 100 100 "$FAKE_TC" >/dev/null 2>&1; then
+        echo "BBR accepted a foreign root qdisc" >&2
+        exit 1
+    fi
+    [ ! -s "$TC_TEST_LOG" ] || { echo "BBR modified a foreign root qdisc" >&2; exit 1; }
+)
+[[ "$(bbr_route_token 'default dev eth0 proto static metric 100' dev)" = eth0 ]] || { echo "BBR direct default route device parsing failed" >&2; exit 1; }
+[[ -z "$(bbr_route_token 'default dev eth0 proto static metric 100' via)" ]] || { echo "BBR direct default route invented a gateway" >&2; exit 1; }
+[[ "$(bbr_route_strip_cwnd 'default via 192.0.2.1 dev eth0 metric 100 initcwnd 50 initrwnd 50')" = 'default via 192.0.2.1 dev eth0 metric 100' ]] || { echo "BBR initcwnd route cleanup failed" >&2; exit 1; }
+(
+    ROUTE_CALL="$TMP/bbr-route-call"
+    # shellcheck disable=SC2329 # test stub used indirectly by bbr_apply_initcwnd_route
+    ip() { printf '%s\n' "$*" > "$ROUTE_CALL"; }
+    bbr_apply_initcwnd_route 4 'default dev eth0 proto static metric 100' 50
+    grep -qx -- '-4 route replace default dev eth0 proto static metric 100 initcwnd 50 initrwnd 50' "$ROUTE_CALL" || {
+        echo "BBR direct route initcwnd application was malformed" >&2
+        exit 1
+    }
+)
+[[ "$(bbr_bdp_mb 100 50)" != "0.00" ]] || { echo "BBR BDP estimate was truncated to zero" >&2; exit 1; }
+[[ "$(bbr_buffer_target_mb 100 50)" = "1" ]] || { echo "BBR BDP buffer target rounding failed" >&2; exit 1; }
+[[ "$(bbr_recommend_profile 4095)" = balanced ]] || { echo "BBR sub-4GB recommendation changed unexpectedly" >&2; exit 1; }
+[[ "$(bbr_recommend_profile 4096)" = throughput ]] || { echo "BBR 4GB recommendation does not match documentation" >&2; exit 1; }
+
+BBR_TC_HELPER_TEST="$TMP/tc-helper.sh"
+BBR_CWND_HELPER_TEST="$TMP/cwnd-helper.sh"
+awk 'p && /^TC_HELPER_EOF$/{exit} /<< '\''TC_HELPER_EOF'\''/{p=1; next} p{print}' "$ROOT/src/modules/bbr.sh" > "$BBR_TC_HELPER_TEST"
+awk 'p && /^CWND_HELPER_EOF$/{exit} /<< '\''CWND_HELPER_EOF'\''/{p=1; next} p{print}' "$ROOT/src/modules/bbr.sh" > "$BBR_CWND_HELPER_TEST"
+sh -n "$BBR_TC_HELPER_TEST" || { echo "Generated tc helper has syntax errors" >&2; exit 1; }
+sh -n "$BBR_CWND_HELPER_TEST" || { echo "Generated initcwnd helper has syntax errors" >&2; exit 1; }
+
 for fn in docker_install docker_status docker_select_container docker_upgrade_container docker_container_action docker_inspect_label docker_download_file docker_compose_basename docker_compose_fetch_and_deploy; do
     declare -F "$fn" >/dev/null || { echo "Missing Docker function: $fn" >&2; exit 1; }
 done
@@ -389,9 +524,9 @@ MON_TRAFFIC_DAILY_BASELINE_RESET=yes
 )
 MANIFEST="$TMP/manifest.json"
 cat > "$MANIFEST" <<'EOF'
-{"name":"SSH-Hardening","version":"V3.9.44","sha256":"abc123"}
+{"name":"SSH-Hardening","version":"V3.9.45","sha256":"abc123"}
 EOF
-[[ "$(self_manifest_value "$MANIFEST" version)" = "V3.9.44" ]] || { echo "Manifest parsing failed" >&2; exit 1; }
+[[ "$(self_manifest_value "$MANIFEST" version)" = "V3.9.45" ]] || { echo "Manifest parsing failed" >&2; exit 1; }
 
 DAILY_REPORT_CALLS=0
 monitor_alert_daily_report() { DAILY_REPORT_CALLS=$((DAILY_REPORT_CALLS + 1)); }

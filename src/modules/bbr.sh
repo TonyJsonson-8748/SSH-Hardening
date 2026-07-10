@@ -3,7 +3,187 @@
 # ══════════════════════════════════════════════════════════
 
 SERVICE_TC="/etc/systemd/system/tc-fq.service"
+SERVICE_TC_INIT="/etc/init.d/tc-fq"
+TC_HELPER="/usr/local/libexec/vps-tools-tc-fq"
+TC_STATE_FILE="/var/lib/vps-tools/tc-fq.state"
+SERVICE_CWND="/etc/systemd/system/initcwnd.service"
+SERVICE_CWND_INIT="/etc/init.d/initcwnd"
+CWND_HELPER="/usr/local/libexec/vps-tools-initcwnd"
+CWND_STATE_FILE="/var/lib/vps-tools/initcwnd.state"
 SYSCTL_FILE="/etc/sysctl.d/99-vps-bbr.conf"
+BBR_BASELINE_FILE="/var/lib/vps-tools/bbr-sysctl-baseline.conf"
+
+bbr_default_ipv6_iface() {
+    local DEV
+    DEV=$(ip -6 route get 2606:4700:4700::1111 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="dev"){print $(i+1); exit}}')
+    [ -n "$DEV" ] || DEV=$(ip -6 route show default 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="dev"){print $(i+1); exit}}')
+    echo "$DEV" | grep -qE '^[[:alnum:]_.-]{1,15}$' || DEV=""
+    printf '%s\n' "$DEV"
+}
+
+bbr_scene_keys() {
+    local IPV6_IFACE
+    IPV6_IFACE=$(bbr_default_ipv6_iface)
+    printf '%s\n' \
+        net.ipv4.ip_forward \
+        net.ipv6.conf.all.forwarding \
+        net.core.somaxconn \
+        net.core.netdev_max_backlog \
+        net.ipv4.tcp_max_syn_backlog \
+        net.netfilter.nf_conntrack_max \
+        net.netfilter.nf_conntrack_tcp_timeout_established \
+        net.netfilter.nf_conntrack_tcp_timeout_time_wait \
+        net.ipv4.ip_local_port_range \
+        net.ipv4.tcp_max_tw_buckets \
+        fs.file-max
+    [ -n "$IPV6_IFACE" ] && printf 'net.ipv6.conf.%s.accept_ra\n' "$IPV6_IFACE"
+}
+
+bbr_managed_keys() {
+    printf '%s\n' \
+        vm.swappiness \
+        vm.min_free_kbytes \
+        net.core.default_qdisc \
+        net.ipv4.tcp_congestion_control \
+        net.core.rmem_max \
+        net.core.wmem_max \
+        net.ipv4.tcp_rmem \
+        net.ipv4.tcp_wmem \
+        net.ipv4.tcp_mem \
+        net.ipv4.tcp_adv_win_scale \
+        net.ipv4.tcp_notsent_lowat \
+        net.ipv4.tcp_fastopen \
+        net.ipv4.tcp_fastopen_blackhole_timeout_sec \
+        net.ipv4.tcp_mtu_probing \
+        net.ipv4.tcp_ecn \
+        net.ipv4.tcp_slow_start_after_idle \
+        net.ipv4.tcp_tw_reuse \
+        net.ipv4.tcp_fin_timeout \
+        net.ipv4.tcp_keepalive_time \
+        net.ipv4.udp_rmem_min \
+        net.ipv4.udp_wmem_min
+    bbr_scene_keys
+}
+
+bbr_runtime_snapshot() {
+    local DEST="$1" EXTRA_CONFIG="${2:-}" DIR TMP KEY VALUE CAPTURED=0
+    DIR=$(dirname "$DEST")
+    mkdir -p "$DIR" 2>/dev/null || return 1
+    TMP=$(mktemp "${DEST}.tmp.XXXXXX") || return 1
+    {
+        echo "# VPS TOOLS BBR sysctl runtime snapshot"
+        echo "# captured: $(date '+%Y-%m-%d %H:%M:%S')"
+        while IFS= read -r KEY; do
+            [ -n "$KEY" ] || continue
+            if VALUE=$(sysctl -n "$KEY" 2>/dev/null); then
+                printf '%s = %s\n' "$KEY" "$VALUE"
+                CAPTURED=$(( CAPTURED + 1 ))
+            fi
+        done < <({ bbr_managed_keys; bbr_config_keys "$EXTRA_CONFIG"; } | awk '!seen[$0]++')
+    } > "$TMP"
+    if [ "$CAPTURED" -eq 0 ]; then
+        rm -f "$TMP"
+        return 1
+    fi
+    chmod 600 "$TMP" 2>/dev/null || true
+    mv "$TMP" "$DEST" || { rm -f "$TMP"; return 1; }
+}
+
+bbr_ensure_baseline() {
+    if [ ! -s "$BBR_BASELINE_FILE" ]; then
+        bbr_runtime_snapshot "$BBR_BASELINE_FILE" || {
+            error "无法保存 BBR 应用前运行参数基线"
+            return 1
+        }
+        return 0
+    fi
+
+    local TMP KEY VALUE ADDED=0
+    TMP=$(mktemp "${BBR_BASELINE_FILE}.tmp.XXXXXX") || return 1
+    cp "$BBR_BASELINE_FILE" "$TMP" || { rm -f "$TMP"; return 1; }
+    while IFS= read -r KEY; do
+        [ -n "$KEY" ] || continue
+        if ! bbr_baseline_value "$KEY" >/dev/null 2>&1 && VALUE=$(sysctl -n "$KEY" 2>/dev/null); then
+            printf '%s = %s\n' "$KEY" "$VALUE" >> "$TMP"
+            ADDED=$(( ADDED + 1 ))
+        fi
+    done < <(bbr_managed_keys)
+    if [ "$ADDED" -eq 0 ]; then
+        rm -f "$TMP"
+        return 0
+    fi
+    chmod 600 "$TMP" && mv "$TMP" "$BBR_BASELINE_FILE" || {
+        rm -f "$TMP"
+        error "无法保存 BBR 应用前运行参数基线"
+        return 1
+    }
+}
+
+bbr_baseline_value() {
+    local KEY="$1"
+    [ -f "$BBR_BASELINE_FILE" ] || return 1
+    awk -F= -v key="$KEY" '
+        {
+            lhs=$1
+            gsub(/^[[:space:]]+|[[:space:]]+$/, "", lhs)
+        }
+        lhs == key {
+            sub(/^[^=]*=[[:space:]]*/, "")
+            print
+            found=1
+            exit
+        }
+        END { if (!found) exit 1 }
+    ' "$BBR_BASELINE_FILE"
+}
+
+bbr_restore_baseline_key() {
+    local KEY="$1" VALUE
+    VALUE=$(bbr_baseline_value "$KEY" 2>/dev/null || true)
+    [ -n "$VALUE" ] || { warn "基线中没有 ${KEY}，保持当前运行值"; return 1; }
+    sysctl -w "${KEY}=${VALUE}" >/dev/null 2>&1 || {
+        warn "无法恢复基线参数：${KEY}"
+        return 1
+    }
+}
+
+bbr_restore_runtime_snapshot() {
+    local SNAPSHOT="$1" KEY VALUE FAILED=0
+    [ -f "$SNAPSHOT" ] || return 1
+    while IFS='=' read -r KEY VALUE; do
+        KEY=$(printf '%s' "$KEY" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+        VALUE=$(printf '%s' "$VALUE" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+        case "$KEY" in ""|\#*) continue ;; esac
+        sysctl -w "${KEY}=${VALUE}" >/dev/null 2>&1 || FAILED=1
+    done < "$SNAPSHOT"
+    return "$FAILED"
+}
+
+bbr_config_has_key() {
+    local CONFIG="$1" KEY="$2"
+    printf '%s\n' "$CONFIG" | awk -F= -v key="$KEY" '
+        {
+            lhs=$1
+            gsub(/^[[:space:]]+|[[:space:]]+$/, "", lhs)
+            if (lhs == key) found=1
+        }
+        END { exit !found }
+    '
+}
+
+bbr_config_keys() {
+    printf '%s\n' "$1" | awk -F= '
+        {
+            lhs=$1
+            gsub(/^[[:space:]]+|[[:space:]]+$/, "", lhs)
+            if (lhs ~ /^[[:alnum:]_.-]+$/) print lhs
+        }
+    '
+}
+
+bbr_config_dynamic_scene_keys() {
+    bbr_config_keys "$1" | awk '/^net\.ipv6\.conf\..+\.accept_ra$/ { print }'
+}
 
 # ── 状态显示 ──────────────────────────────────────────────
 bbr_print_status() {
@@ -12,7 +192,8 @@ bbr_print_status() {
     [ -z "$RATE" ] && RATE="未设置"
     local BBR; BBR=$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null || echo "未知")
     local CWND
-    CWND=$(ip route show 2>/dev/null | grep "^default" | grep -oE 'initcwnd [0-9]+' | awk '{print $2}')
+    CWND=$(ip -4 route show default 2>/dev/null | grep -oE 'initcwnd [0-9]+' | head -1 | awk '{print $2}')
+    [ -n "$CWND" ] || CWND=$(ip -6 route show default 2>/dev/null | grep -oE 'initcwnd [0-9]+' | head -1 | awk '{print $2}')
     [ -z "$CWND" ] && CWND="10（默认）"
 
     # 读取缓冲区大小
@@ -45,11 +226,14 @@ bbr_print_status() {
 
 # ── 备份 sysctl ───────────────────────────────────────────
 bbr_backup_sysctl() {
-    if [ -f "$SYSCTL_FILE" ]; then
-        local BAK
-        BAK="${SYSCTL_FILE}.bak.$(date +%Y%m%d_%H%M%S)"
-        cp "$SYSCTL_FILE" "$BAK"
-        info "已备份至：$BAK"
+    local BAK
+    BAK="${SYSCTL_FILE}.bak.$(date +%Y%m%d_%H%M%S)"
+    [ -e "$BAK" ] && BAK="${BAK}.$$"
+    if bbr_runtime_snapshot "$BAK"; then
+        info "已备份当前运行参数至：$BAK"
+    else
+        error "BBR 运行参数备份失败"
+        return 1
     fi
 }
 
@@ -57,8 +241,8 @@ bbr_backup_sysctl() {
 bbr_restore_sysctl() {
     print_header "还原 TCP sysctl 配置"
 
-    # 用 /tmp 临时文件列表替代 bash 数组（兼容 Alpine ash）
-    local LIST_FILE="/tmp/vps_bbr_bak_$$"
+    local LIST_FILE
+    LIST_FILE=$(mktemp "${TMPDIR:-/tmp}/vps_bbr_bak.XXXXXX") || { error "无法创建备份列表"; return 1; }
     ls -t "${SYSCTL_FILE}.bak."* 2>/dev/null > "$LIST_FILE"
 
     if [ ! -s "$LIST_FILE" ]; then
@@ -98,11 +282,14 @@ bbr_restore_sysctl() {
         *)
             # 纯数字且在范围内
             if echo "$CH" | grep -qE '^[0-9]+$' && [ "$CH" -ge 1 ] && [ "$CH" -le "$TOTAL" ]; then
-                local T
+                local T CONFIG
                 T=$(sed -n "${CH}p" "$LIST_FILE")
-                cp "$T" "$SYSCTL_FILE"
-                ensure_sysctl && sysctl -p "$SYSCTL_FILE" > /dev/null 2>&1
-                info "已还原：$(basename "$T") ✓"
+                CONFIG=$(cat "$T")
+                if bbr_apply_sysctl "$CONFIG" baseline; then
+                    info "已还原运行参数：$(basename "$T") ✓"
+                else
+                    error "还原未完全成功，请查看上方失败参数"
+                fi
             else
                 error "无效选项"
             fi
@@ -113,19 +300,31 @@ bbr_restore_sysctl() {
 
 # ── 应用 sysctl ───────────────────────────────────────────
 bbr_apply_sysctl() {
-    local CONFIG="$1"
+    local CONFIG="$1" STALE_MODE="${2:-ask}" TX_SNAPSHOT SNAPSHOT_CONFIG="$1"
     ensure_sysctl || return 1
-    mkdir -p "$(dirname "$SYSCTL_FILE")" 2>/dev/null || true
+    bbr_ensure_baseline || return 1
+    mkdir -p "$(dirname "$SYSCTL_FILE")" 2>/dev/null || return 1
+    TX_SNAPSHOT=$(mktemp "${TMPDIR:-/tmp}/vps-bbr-transaction.XXXXXX") || {
+        error "无法创建 BBR 回滚快照"
+        return 1
+    }
+    [ ! -f "$SYSCTL_FILE" ] || SNAPSHOT_CONFIG="${SNAPSHOT_CONFIG}"$'\n'"$(cat "$SYSCTL_FILE")"
+    if ! bbr_runtime_snapshot "$TX_SNAPSHOT" "$SNAPSHOT_CONFIG"; then
+        rm -f "$TX_SNAPSHOT"
+        error "无法保存 BBR 应用前快照"
+        return 1
+    fi
 
     # ── 切换预设时复位「旧配置写过、但新配置不再包含」的场景专有键 ──
     # 否则从中转/落地降级回普通预设后，ip_forward / conntrack 等会一直残留在内核里。
     # 仅复位本脚本场景预设管理的键，且新配置确实不含该键时才动；ip_forward 谨慎处理。
     if [ -f "$SYSCTL_FILE" ]; then
-        local SCENE_KEYS="net.ipv4.ip_forward net.ipv6.conf.all.forwarding net.core.somaxconn net.core.netdev_max_backlog net.ipv4.tcp_max_syn_backlog net.netfilter.nf_conntrack_max net.netfilter.nf_conntrack_tcp_timeout_established net.netfilter.nf_conntrack_tcp_timeout_time_wait net.ipv4.ip_local_port_range net.ipv4.tcp_max_tw_buckets fs.file-max"
+        local SCENE_KEYS
+        SCENE_KEYS=$({ bbr_scene_keys; bbr_config_dynamic_scene_keys "$(cat "$SYSCTL_FILE")"; } | awk '!seen[$0]++')
         local k STALE=""
         for k in $SCENE_KEYS; do
             # 旧文件里有该键，但新配置里没有 → 视为需要清理的残留
-            if grep -qE "^${k} *=" "$SYSCTL_FILE" 2>/dev/null && ! echo "$CONFIG" | grep -qE "^${k} *="; then
+            if bbr_config_has_key "$(cat "$SYSCTL_FILE")" "$k" && ! bbr_config_has_key "$CONFIG" "$k"; then
                 STALE="$STALE $k"
             fi
         done
@@ -136,56 +335,255 @@ bbr_apply_sysctl() {
             if echo "$STALE" | grep -q 'ip_forward'; then
                 warn "其中 ip_forward 复位后将关闭内核转发，若本机仍在做端口转发/中转请勿复位"
             fi
-            read -rp "  是否复位这些残留参数为系统默认？(y/N，默认N): " DORST
-            [ -z "$DORST" ] && DORST="n"
-            if echo "$DORST" | grep -qiE '^y(es)?$'; then
-                for k in $STALE; do
-                    # 端口范围 / tw_buckets / file-max 复位成 0 非法或有害，给内核安全默认
-                    case "$k" in
-                        net.ipv4.ip_forward|net.ipv6.conf.all.forwarding) sysctl -w "${k}=0" >/dev/null 2>&1 ;;
-                        net.ipv4.ip_local_port_range) sysctl -w "${k}=32768 60999" >/dev/null 2>&1 || true ;;
-                        net.ipv4.tcp_max_tw_buckets)  sysctl -w "${k}=131072" >/dev/null 2>&1 || true ;;
-                        fs.file-max)                  : ;;  # file-max 抬高无害，不复位（避免误伤其他服务）
-                        *) sysctl -w "${k}=0" >/dev/null 2>&1 || true ;;
-                    esac
-                done
-                info "残留场景参数已复位"
+            local DORST="n"
+            if [ "$STALE_MODE" = baseline ]; then
+                DORST="y"
             else
-                warn "保留残留参数（仍生效于当前内核，直到下次手动复位或重启）"
+                read -rp "  是否恢复这些残留参数到首次调优前基线？(y/N，默认N): " DORST
+                [ -z "$DORST" ] && DORST="n"
+            fi
+            if echo "$DORST" | grep -qiE '^y(es)?$'; then
+                local RESTORE_FAILED=0
+                for k in $STALE; do
+                    bbr_restore_baseline_key "$k" || RESTORE_FAILED=1
+                done
+                if [ "$RESTORE_FAILED" -eq 0 ]; then
+                    info "残留场景参数已恢复到首次调优前基线"
+                else
+                    warn "部分残留参数缺少基线或恢复失败，已保持原值"
+                fi
+            else
+                warn "保留残留参数（仍生效于当前内核）"
             fi
         fi
     fi
 
     # 逐行应用并生成持久化文件；不支持的参数写成注释，避免重启时 sysctl 报错。
-    local SKIPPED=0 TMP_FILE
-    TMP_FILE="${SYSCTL_FILE}.tmp.$$"
-    : > "$TMP_FILE" || { error "无法写入临时配置：$TMP_FILE"; return 1; }
+    local SKIPPED=0 CORE_FAILED=0 TMP_FILE
+    TMP_FILE=$(mktemp "${SYSCTL_FILE}.tmp.XXXXXX") || {
+        rm -f "$TX_SNAPSHOT"
+        error "无法创建 sysctl 临时配置"
+        return 1
+    }
     while IFS= read -r line; do
-        if echo "$line" | grep -qE '^\s*#|^\s*$'; then
+        if echo "$line" | grep -qE '^[[:space:]]*#|^[[:space:]]*$'; then
             echo "$line" >> "$TMP_FILE"
             continue
         fi
         local KEY VAL
-        KEY=$(echo "$line" | cut -d= -f1 | tr -d ' ')
-        VAL=$(echo "$line" | cut -d= -f2- | sed 's/^ //')
+        KEY=$(printf '%s' "$line" | cut -d= -f1 | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+        VAL=$(printf '%s' "$line" | cut -d= -f2- | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
         if sysctl -w "${KEY}=${VAL}" > /dev/null 2>&1; then
             echo "$line" >> "$TMP_FILE"
         else
             warn "跳过不支持的参数：${KEY}"
             echo "# skipped unsupported: $line" >> "$TMP_FILE"
             SKIPPED=$(( SKIPPED + 1 ))
+            [ "$KEY" = "net.ipv4.tcp_congestion_control" ] && CORE_FAILED=1
         fi
     done <<< "$CONFIG"
 
-    mv "$TMP_FILE" "$SYSCTL_FILE" || { rm -f "$TMP_FILE"; error "无法更新 ${SYSCTL_FILE}"; return 1; }
+    if [ "$CORE_FAILED" -eq 1 ]; then
+        rm -f "$TMP_FILE"
+        bbr_restore_runtime_snapshot "$TX_SNAPSHOT" || warn "部分运行参数自动回滚失败"
+        rm -f "$TX_SNAPSHOT"
+        error "BBR 拥塞算法未能启用，已回滚本次参数修改"
+        return 1
+    fi
+    if ! mv "$TMP_FILE" "$SYSCTL_FILE"; then
+        rm -f "$TMP_FILE"
+        bbr_restore_runtime_snapshot "$TX_SNAPSHOT" || warn "部分运行参数自动回滚失败"
+        rm -f "$TX_SNAPSHOT"
+        error "无法更新 ${SYSCTL_FILE}，已回滚本次参数修改"
+        return 1
+    fi
+    rm -f "$TX_SNAPSHOT"
 
     if [ "$SKIPPED" -gt 0 ]; then
         warn "共跳过 ${SKIPPED} 个不支持的参数（已在配置文件中注释，重启后不报错）"
     fi
     info "sysctl 配置已应用到 ${SYSCTL_FILE} ✓"
+    return 0
 }
 
 # ── 应用 tc 限速 ──────────────────────────────────────────
+bbr_tc_qdisc_type() {
+    awk 'NR==1 { print $2 }' <<< "$1"
+}
+
+bbr_tc_qdisc_handle() {
+    awk 'NR==1 { print $3 }' <<< "$1"
+}
+
+bbr_tc_qdisc_safe_to_replace() {
+    case "$1" in
+        ""|mq|fq|fq_codel|noqueue|pfifo_fast) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+bbr_state_value() {
+    local FILE="$1" KEY="$2"
+    [ -f "$FILE" ] || return 1
+    awk -F= -v key="$KEY" '$1 == key { sub(/^[^=]*=/, ""); print; exit }' "$FILE"
+}
+
+bbr_tc_is_owned() {
+    local DEV="$1" TC_BIN="$2" STATE_DEV LINE TYPE HANDLE
+    STATE_DEV=$(bbr_state_value "$TC_STATE_FILE" DEV 2>/dev/null || true)
+    [ "$STATE_DEV" = "$DEV" ] || return 1
+    LINE=$("$TC_BIN" qdisc show dev "$DEV" 2>/dev/null | head -1)
+    TYPE=$(bbr_tc_qdisc_type "$LINE")
+    HANDLE=$(bbr_tc_qdisc_handle "$LINE")
+    [ "$TYPE" = htb ] && [ "$HANDLE" = "1:" ]
+}
+
+bbr_tc_apply_runtime() {
+    local DEV="$1" RATE="$2" BURST_KB="$3" TC_BIN="$4"
+    local LINE TYPE WAS_OWNED=0
+    LINE=$("$TC_BIN" qdisc show dev "$DEV" 2>/dev/null | head -1)
+    TYPE=$(bbr_tc_qdisc_type "$LINE")
+    bbr_tc_is_owned "$DEV" "$TC_BIN" && WAS_OWNED=1
+    if [ "$WAS_OWNED" -eq 0 ] && ! bbr_tc_qdisc_safe_to_replace "$TYPE"; then
+        error "检测到非本工具管理的 root qdisc：${TYPE:-未知}，已拒绝覆盖"
+        echo -e "  ${DIM}请先用 tc qdisc show dev ${DEV} 确认现有 QoS 配置${NC}"
+        return 1
+    fi
+
+    [ -n "$LINE" ] && "$TC_BIN" qdisc del dev "$DEV" root 2>/dev/null || true
+    if ! "$TC_BIN" qdisc add dev "$DEV" root handle 1: htb default 10 2>/dev/null \
+        || ! "$TC_BIN" class add dev "$DEV" parent 1: classid 1:10 htb \
+                rate "${RATE}mbit" ceil "${RATE}mbit" burst "${BURST_KB}kb" cburst "${BURST_KB}kb" 2>/dev/null \
+        || ! "$TC_BIN" qdisc add dev "$DEV" parent 1:10 handle 100: fq maxrate "${RATE}mbit" 2>/dev/null; then
+        error "tc 规则应用失败（内核可能缺 sch_htb / sch_fq 模块）"
+        "$TC_BIN" qdisc del dev "$DEV" root 2>/dev/null || true
+        if [ "$WAS_OWNED" -eq 1 ] && [ -x "$TC_HELPER" ]; then
+            "$TC_HELPER" apply >/dev/null 2>&1 || warn "旧 tc 限速规则自动恢复失败"
+        fi
+        return 1
+    fi
+}
+
+bbr_tc_write_persistence() {
+    local DEV="$1" RATE="$2" BURST_KB="$3" TMP
+    mkdir -p "$(dirname "$TC_HELPER")" "$(dirname "$TC_STATE_FILE")" 2>/dev/null || {
+        error "无法创建 tc 持久化目录"
+        return 1
+    }
+    TMP=$(mktemp "${TC_STATE_FILE}.tmp.XXXXXX") || return 1
+    printf 'DEV=%s\nRATE=%s\nBURST_KB=%s\n' "$DEV" "$RATE" "$BURST_KB" > "$TMP" || {
+        rm -f "$TMP"
+        return 1
+    }
+    chmod 600 "$TMP" && mv "$TMP" "$TC_STATE_FILE" || { rm -f "$TMP"; return 1; }
+
+    TMP=$(mktemp "${TC_HELPER}.tmp.XXXXXX") || return 1
+    cat > "$TMP" << 'TC_HELPER_EOF'
+#!/bin/sh
+STATE=/var/lib/vps-tools/tc-fq.state
+state_value() { awk -F= -v key="$1" '$1 == key { sub(/^[^=]*=/, ""); print; exit }' "$STATE"; }
+DEV=$(state_value DEV)
+RATE=$(state_value RATE)
+BURST_KB=$(state_value BURST_KB)
+TC=$(command -v tc 2>/dev/null || echo /sbin/tc)
+[ -n "$DEV" ] && echo "$RATE" | grep -qE '^[0-9]+$' && echo "$BURST_KB" | grep -qE '^[0-9]+$' || exit 1
+LINE=$("$TC" qdisc show dev "$DEV" 2>/dev/null | head -1)
+TYPE=$(printf '%s\n' "$LINE" | awk 'NR==1 { print $2 }')
+HANDLE=$(printf '%s\n' "$LINE" | awk 'NR==1 { print $3 }')
+OWNED=0
+[ "$TYPE" = htb ] && [ "$HANDLE" = "1:" ] && OWNED=1
+if [ "${1:-apply}" = remove ]; then
+    [ "$OWNED" -eq 0 ] || "$TC" qdisc del dev "$DEV" root
+    exit $?
+fi
+if [ "${1:-apply}" = status ]; then
+    [ "$OWNED" -eq 1 ]
+    exit $?
+fi
+case "$TYPE" in ""|mq|fq|fq_codel|noqueue|pfifo_fast) : ;; htb) [ "$OWNED" -eq 1 ] || exit 1 ;; *) exit 1 ;; esac
+[ -z "$LINE" ] || "$TC" qdisc del dev "$DEV" root 2>/dev/null || true
+"$TC" qdisc add dev "$DEV" root handle 1: htb default 10 && \
+"$TC" class add dev "$DEV" parent 1: classid 1:10 htb rate "${RATE}mbit" ceil "${RATE}mbit" burst "${BURST_KB}kb" cburst "${BURST_KB}kb" && \
+"$TC" qdisc add dev "$DEV" parent 1:10 handle 100: fq maxrate "${RATE}mbit"
+TC_HELPER_EOF
+    chmod 700 "$TMP" && mv "$TMP" "$TC_HELPER" || { rm -f "$TMP"; return 1; }
+
+    if systemd_available; then
+        TMP=$(mktemp "${SERVICE_TC}.tmp.XXXXXX") || return 1
+        cat > "$TMP" << EOF
+[Unit]
+Description=VPS TOOLS TC egress shaping
+After=network-online.target
+Wants=network-online.target
+[Service]
+Type=oneshot
+ExecStart=${TC_HELPER} apply
+ExecStop=${TC_HELPER} remove
+RemainAfterExit=yes
+[Install]
+WantedBy=multi-user.target
+EOF
+        mv "$TMP" "$SERVICE_TC" || { rm -f "$TMP"; return 1; }
+        systemctl daemon-reload >/dev/null 2>&1 \
+            && systemctl enable tc-fq --quiet >/dev/null 2>&1 \
+            && systemctl restart tc-fq >/dev/null 2>&1 || {
+                error "tc 已立即生效，但 systemd 持久化失败"
+                return 1
+            }
+    elif command -v rc-service >/dev/null 2>&1 && command -v rc-update >/dev/null 2>&1; then
+        bbr_write_init_script "$SERVICE_TC_INIT" "$TC_HELPER" openrc || return 1
+        rc-update add tc-fq default >/dev/null 2>&1 \
+            && rc-service tc-fq restart >/dev/null 2>&1 || {
+                error "tc 已立即生效，但 OpenRC 持久化失败"
+                return 1
+            }
+    elif command -v update-rc.d >/dev/null 2>&1 && command -v service >/dev/null 2>&1; then
+        bbr_write_init_script "$SERVICE_TC_INIT" "$TC_HELPER" sysv || return 1
+        update-rc.d tc-fq defaults >/dev/null 2>&1 \
+            && service tc-fq restart >/dev/null 2>&1 || {
+                error "tc 已立即生效，但 SysV 持久化失败"
+                return 1
+            }
+    else
+        error "tc 已立即生效，但未检测到支持的服务管理器，无法设置开机恢复"
+        return 1
+    fi
+}
+
+bbr_write_init_script() {
+    local DEST="$1" HELPER="$2" MODE="$3" TMP
+    TMP=$(mktemp "${DEST}.tmp.XXXXXX") || return 1
+    if [ "$MODE" = openrc ]; then
+        cat > "$TMP" << EOF
+#!/sbin/openrc-run
+description="VPS TOOLS network tuning"
+depend() { need net; }
+start() { ebegin "Applying VPS TOOLS network tuning"; ${HELPER} apply; eend \$?; }
+stop() { ebegin "Stopping VPS TOOLS network tuning"; ${HELPER} remove; eend \$?; }
+status() { ${HELPER} status; }
+EOF
+    else
+        cat > "$TMP" << EOF
+#!/bin/sh
+### BEGIN INIT INFO
+# Provides:          $(basename "$DEST")
+# Required-Start:    \$network
+# Required-Stop:     \$network
+# Default-Start:     2 3 4 5
+# Default-Stop:      0 1 6
+# Short-Description: VPS TOOLS network tuning
+### END INIT INFO
+case "\${1:-start}" in
+    start|restart) ${HELPER} apply ;;
+    stop) ${HELPER} remove ;;
+    status) ${HELPER} status ;;
+    *) echo "Usage: \$0 {start|stop|restart|status}" >&2; exit 2 ;;
+esac
+EOF
+    fi
+    chmod 755 "$TMP" && mv "$TMP" "$DEST" || { rm -f "$TMP"; return 1; }
+}
+
 bbr_apply_tc() {
     local RATE="$1"
     local DEV; DEV=$(default_iface)
@@ -199,35 +597,45 @@ bbr_apply_tc() {
     local BURST_KB=$RATE
     [ "$BURST_KB" -lt 32 ] && BURST_KB=32
 
-    # 关键：用 htb 做「聚合」整形（真正硬上限），叶子挂 fq 保留 BBR pacing。
-    # 旧版多队列网卡用 root tbf 会顶掉 fq、废掉 BBR pacing，且单纯 fq maxrate
-    # 只能限「每流」不能限聚合。htb(整形) + fq(pacing) 才同时满足两者。
-    "$TC_BIN" qdisc del dev "$DEV" root 2>/dev/null
-    if ! "$TC_BIN" qdisc add dev "$DEV" root handle 1: htb default 10 2>/dev/null \
-        || ! "$TC_BIN" class add dev "$DEV" parent 1: classid 1:10 htb \
-                rate "${RATE}mbit" ceil "${RATE}mbit" burst "${BURST_KB}kb" cburst "${BURST_KB}kb" 2>/dev/null \
-        || ! "$TC_BIN" qdisc add dev "$DEV" parent 1:10 handle 100: fq maxrate "${RATE}mbit" 2>/dev/null; then
-        error "tc 规则应用失败（内核可能缺 sch_htb / sch_fq 模块）"
-        "$TC_BIN" qdisc del dev "$DEV" root 2>/dev/null
+    bbr_tc_apply_runtime "$DEV" "$RATE" "$BURST_KB" "$TC_BIN" || return 1
+    bbr_tc_write_persistence "$DEV" "$RATE" "$BURST_KB" || {
+        error "tc 已立即生效，但持久化配置未完成"
         return 1
+    }
+    info "tc 限速已应用：${RATE}Mbps（htb 聚合整形 + fq pacing，burst ${BURST_KB}KB）✓"
+    return 0
+}
+
+bbr_remove_tc() {
+    local TC_BIN DEV FAILED=0
+    TC_BIN=$(command -v tc 2>/dev/null || echo /sbin/tc)
+    DEV=$(bbr_state_value "$TC_STATE_FILE" DEV 2>/dev/null || true)
+    [ -n "$DEV" ] || DEV=$(default_iface)
+    if [ -x "$TC_BIN" ] && [ -n "$DEV" ]; then
+        if bbr_tc_is_owned "$DEV" "$TC_BIN"; then
+            "$TC_BIN" qdisc del dev "$DEV" root 2>/dev/null || FAILED=1
+        elif [ -f "$TC_STATE_FILE" ]; then
+            warn "当前 root qdisc 已不是本工具规则，未执行删除"
+        fi
     fi
 
-    cat > "$SERVICE_TC" << EOF
-[Unit]
-Description=TC egress shaping ${RATE}Mbps (htb shape + fq pacing for BBR)
-After=network-online.target
-Wants=network-online.target
-[Service]
-Type=oneshot
-ExecStart=/bin/sh -c 'TC=\$(command -v tc || echo /sbin/tc); DEV=\$(ip route get 1.1.1.1 2>/dev/null | awk '"'"'{for(i=1;i<=NF;i++) if(\$i=="dev"){print \$(i+1); exit}}'"'"'); [ -n "\$DEV" ] || DEV=\$(ip route 2>/dev/null | awk '"'"'/^default/{print \$5; exit}'"'"'); [ -n "\$DEV" ] || exit 1; "\$TC" qdisc del dev "\$DEV" root 2>/dev/null; "\$TC" qdisc add dev "\$DEV" root handle 1: htb default 10 && "\$TC" class add dev "\$DEV" parent 1: classid 1:10 htb rate ${RATE}mbit ceil ${RATE}mbit burst ${BURST_KB}kb cburst ${BURST_KB}kb && "\$TC" qdisc add dev "\$DEV" parent 1:10 handle 100: fq maxrate ${RATE}mbit'
-RemainAfterExit=yes
-[Install]
-WantedBy=multi-user.target
-EOF
-    svc_daemon_reload
-    svc_enable tc-fq
-    rc-service tc-fq restart 2>/dev/null || systemctl restart tc-fq 2>/dev/null || true
-    info "tc 限速已应用：${RATE}Mbps（htb 聚合整形 + fq pacing，burst ${BURST_KB}KB）✓"
+    if systemd_available; then
+        systemctl disable --now tc-fq >/dev/null 2>&1 || true
+        rm -f "$SERVICE_TC"
+        systemctl daemon-reload >/dev/null 2>&1 || FAILED=1
+    elif command -v rc-update >/dev/null 2>&1; then
+        rc-service tc-fq stop >/dev/null 2>&1 || true
+        rc-update del tc-fq default >/dev/null 2>&1 || true
+    elif command -v update-rc.d >/dev/null 2>&1; then
+        service tc-fq stop >/dev/null 2>&1 || true
+        update-rc.d -f tc-fq remove >/dev/null 2>&1 || true
+    fi
+    rm -f "$SERVICE_TC_INIT" "$TC_HELPER" "$TC_STATE_FILE"
+    if [ "$FAILED" -ne 0 ]; then
+        error "取消 tc 限速时发生错误"
+        return 1
+    fi
+    info "已取消本工具管理的 tc 限速 ✓"
 }
 
 # ── 生成 sysctl 配置内容 ──────────────────────────────────
@@ -272,6 +680,15 @@ EOF
     # 中转机 / 落地机 / 线路落地机 共同需要的转发与 conntrack
     case "$PROFILE_NAME" in
         relay|landing|line_landing)
+            local IPV6_IFACE
+            IPV6_IFACE=$(bbr_default_ipv6_iface)
+            if [ -n "$IPV6_IFACE" ]; then
+                cat << EOF
+
+# 开启 IPv6 forwarding 前保留公网网卡的 SLAAC 路由通告
+net.ipv6.conf.${IPV6_IFACE}.accept_ra = 2
+EOF
+            fi
             cat << EOF
 
 # ── 转发与并发（中转/落地必备）──
@@ -300,6 +717,16 @@ EOF
 }
 
 # ── 确认并应用参数 ────────────────────────────────────────
+bbr_preflight() {
+    ensure_sysctl || return 1
+    if ! has_sysctl_write; then
+        error "当前容器无 sysctl 写入权限，无法应用配置"
+        echo -e "  ${DIM}需要宿主机开启 privileged 模式或 sysctl 白名单${NC}"
+        return 1
+    fi
+    bbr_check_kernel || return 1
+}
+
 # ── 检测常见代理 service 的 LimitNOFILE，偏低则提示写 drop-in ──
 # fs.file-max 只是系统总上限，单进程 fd 上限由 systemd 的 LimitNOFILE 决定。
 bbr_check_limitnofile() {
@@ -347,26 +774,16 @@ bbr_confirm_apply() {
     echo -e "  swappiness   : ${BOLD}${SWAP}${NC}"
     echo -e "  ${YELLOW}──────────────────────────────────────────${NC}"
     echo ""
-    # 先检测 sysctl 写入权限
-    if ! has_sysctl_write; then
-        error "当前容器无 sysctl 写入权限，无法应用配置"
-        echo -e "  ${DIM}需要宿主机开启 privileged 模式或 sysctl 白名单${NC}"
-        return
-    fi
-
-    # 再检测内核是否支持 BBR
-    if ! bbr_check_kernel; then
-        echo ""
-        read -rp "  内核不支持 BBR，仍要继续写入配置？(y/N，默认N): " FORCE
-        [ -z "$FORCE" ] && FORCE="n"
-        if ! echo "$FORCE" | grep -qiE '^y(es)?$'; then warn "已取消"; return; fi
-    fi
+    bbr_preflight || return 1
 
     # 先提示备份（默认Y）
     if [ -f "$SYSCTL_FILE" ]; then
         read -rp "  备份当前 sysctl 配置？(Y/n，默认Y): " DO_BAK
         [ -z "$DO_BAK" ] && DO_BAK="y"
-        echo "$DO_BAK" | grep -qiE '^y(es)?$' && bbr_backup_sysctl
+        if echo "$DO_BAK" | grep -qiE '^y(es)?$' && ! bbr_backup_sysctl; then
+            error "无法安全备份，已取消应用"
+            return 1
+        fi
         echo ""
     fi
     read -rp "  确认应用以上配置？(Y/n，默认Y): " CONFIRM
@@ -375,8 +792,13 @@ bbr_confirm_apply() {
 
     local CONFIG
     CONFIG=$(bbr_generate_config "$RMEM" "$WMEM" "$TCP_MEM" "$NOTSENT" "$ADV_WIN" "$MIN_FREE" "$SWAP" "$TCP_RMEM_DEFAULT" "$PROFILE_NAME")
-    [ "$PROFILE_NAME" = "relay" ] || [ "$PROFILE_NAME" = "landing" ] || [ "$PROFILE_NAME" = "line_landing" ] && ensure_conntrack_module
-    bbr_apply_sysctl "$CONFIG"
+    case "$PROFILE_NAME" in
+        relay|landing|line_landing) ensure_conntrack_module || warn "无法预加载 nf_conntrack，将按内核实际支持情况应用" ;;
+    esac
+    bbr_apply_sysctl "$CONFIG" || {
+        error "BBR TCP 调优配置应用失败"
+        return 1
+    }
     # 场景预设（转发机）额外检测代理 service 的 fd 上限
     case "$PROFILE_NAME" in
         relay|landing|line_landing) bbr_check_limitnofile ;;
@@ -384,16 +806,25 @@ bbr_confirm_apply() {
     echo ""
     info "BBR TCP 调优配置完成 ✓"
     warn "建议配合限速设置使用，避免 Retr 爆炸"
+    return 0
 }
 
 # ── 自动计算模式：根据 BDP 推导缓冲区 ───────────────────
+bbr_bdp_mb() {
+    awk -v bw="$1" -v lat="$2" 'BEGIN { printf "%.2f", bw * lat / 8000 }'
+}
+
+bbr_buffer_target_mb() {
+    local BW_MBPS="$1" LAT_MS="$2"
+    printf '%s\n' $(( (BW_MBPS * LAT_MS * 3 + 15999) / 16000 ))
+}
+
 bbr_auto_calc() {
     local MEM_MB=$1 LAT_MS=$2 BW_MBPS=$3 MEM_LBL=$4 LAT_LBL=$5 BW_LBL=$6
 
-    # 合并为单表达式避免双重整数截断：
-    # 旧写法 BW/8 再 ×LAT/1000 两次取整，低带宽×低延迟会被归零（显示 BDP 0MB）
-    local BDP_MB=$(( BW_MBPS * LAT_MS / 8000 ))
-    local BUF_CALC=$(( BDP_MB * 3 / 2 ))
+    local BDP_MB BUF_CALC
+    BDP_MB=$(bbr_bdp_mb "$BW_MBPS" "$LAT_MS")
+    BUF_CALC=$(bbr_buffer_target_mb "$BW_MBPS" "$LAT_MS")
 
     local RMEM WMEM ADV_WIN NOTSENT TCP_RMEM_DEFAULT
     if   [ "$BUF_CALC" -le 10 ];  then RMEM=12582912;   WMEM=12582912;   ADV_WIN=2; NOTSENT=131072;  TCP_RMEM_DEFAULT=1048576
@@ -715,12 +1146,7 @@ bbr_menu_tc() {
     esac
 
     if [ "$RATE" -eq 0 ]; then
-        # 删除 root qdisc，内核会自动恢复默认（mq/fq_codel 等），无需手动重建 mq
-        tc qdisc del dev "$DEV" root 2>/dev/null
-        svc_disable tc-fq
-        rm -f "$SERVICE_TC"
-        svc_daemon_reload
-        info "已取消限速 ✓"
+        bbr_remove_tc
     else
         bbr_apply_tc "$RATE"
     fi
@@ -741,6 +1167,129 @@ is_lxc() {
     grep -qa "lxc" /proc/1/environ 2>/dev/null     || [ -f /run/systemd/container ]     || grep -qa "container=lxc" /proc/1/environ 2>/dev/null     || { [ -f /proc/1/cgroup ] && grep -qa "lxc" /proc/1/cgroup 2>/dev/null; }
 }
 
+bbr_default_route_info() {
+    local ROUTE
+    ROUTE=$(ip -4 route show default 2>/dev/null | head -1)
+    if [ -n "$ROUTE" ]; then
+        printf '4|%s\n' "$ROUTE"
+        return 0
+    fi
+    ROUTE=$(ip -6 route show default 2>/dev/null | head -1)
+    [ -n "$ROUTE" ] || return 1
+    printf '6|%s\n' "$ROUTE"
+}
+
+bbr_route_token() {
+    local ROUTE="$1" TOKEN="$2"
+    awk -v token="$TOKEN" '{ for (i=1; i<=NF; i++) if ($i == token) { print $(i+1); exit } }' <<< "$ROUTE"
+}
+
+bbr_route_strip_cwnd() {
+    awk '
+        {
+            out=""
+            for (i=1; i<=NF; i++) {
+                if ($i == "initcwnd" || $i == "initrwnd") { i++; continue }
+                out = out (out == "" ? "" : " ") $i
+            }
+            print out
+        }
+    ' <<< "$1"
+}
+
+bbr_apply_initcwnd_route() {
+    local FAMILY="$1" ROUTE="$2" VAL="$3" BASE_ROUTE
+    local -a ROUTE_ARGS
+    BASE_ROUTE=$(bbr_route_strip_cwnd "$ROUTE")
+    read -r -a ROUTE_ARGS <<< "$BASE_ROUTE"
+    [ "${ROUTE_ARGS[0]:-}" = default ] || return 1
+    ip "-${FAMILY}" route replace "${ROUTE_ARGS[@]}" initcwnd "$VAL" initrwnd "$VAL"
+}
+
+bbr_cwnd_write_persistence() {
+    local FAMILY="$1" ROUTE="$2" VAL="$3" TMP
+    [ -n "$ROUTE" ] || return 1
+    mkdir -p "$(dirname "$CWND_HELPER")" "$(dirname "$CWND_STATE_FILE")" 2>/dev/null || return 1
+    TMP=$(mktemp "${CWND_STATE_FILE}.tmp.XXXXXX") || return 1
+    printf 'FAMILY=%s\nVALUE=%s\n' "$FAMILY" "$VAL" > "$TMP" || {
+        rm -f "$TMP"
+        return 1
+    }
+    chmod 600 "$TMP" && mv "$TMP" "$CWND_STATE_FILE" || { rm -f "$TMP"; return 1; }
+
+    TMP=$(mktemp "${CWND_HELPER}.tmp.XXXXXX") || return 1
+    cat > "$TMP" << 'CWND_HELPER_EOF'
+#!/bin/sh
+STATE=/var/lib/vps-tools/initcwnd.state
+state_value() { awk -F= -v key="$1" '$1 == key { sub(/^[^=]*=/, ""); print; exit }' "$STATE"; }
+FAMILY=$(state_value FAMILY)
+VALUE=$(state_value VALUE)
+case "$FAMILY" in 4|6) : ;; *) exit 1 ;; esac
+echo "$VALUE" | grep -qE '^[0-9]+$' || exit 1
+case "${1:-apply}" in
+    remove) exit 0 ;;
+    status) ip "-${FAMILY}" route show default 2>/dev/null | grep -q "initcwnd ${VALUE}"; exit $? ;;
+esac
+ROUTE=$(ip "-${FAMILY}" route show default 2>/dev/null | head -1 | awk '
+    {
+        out=""
+        for (i=1; i<=NF; i++) {
+            if ($i == "initcwnd" || $i == "initrwnd") { i++; continue }
+            out = out (out == "" ? "" : " ") $i
+        }
+        print out
+    }
+')
+[ -n "$ROUTE" ] || exit 1
+# ROUTE comes from iproute2 and is split back into individual route arguments.
+# shellcheck disable=SC2086
+set -- $ROUTE
+[ "${1:-}" = default ] || exit 1
+ip "-${FAMILY}" route replace "$@" initcwnd "$VALUE" initrwnd "$VALUE"
+CWND_HELPER_EOF
+    chmod 700 "$TMP" && mv "$TMP" "$CWND_HELPER" || { rm -f "$TMP"; return 1; }
+
+    if systemd_available; then
+        TMP=$(mktemp "${SERVICE_CWND}.tmp.XXXXXX") || return 1
+        cat > "$TMP" << EOF
+[Unit]
+Description=VPS TOOLS TCP initcwnd
+After=network-online.target
+Wants=network-online.target
+[Service]
+Type=oneshot
+ExecStart=${CWND_HELPER} apply
+RemainAfterExit=yes
+[Install]
+WantedBy=multi-user.target
+EOF
+        mv "$TMP" "$SERVICE_CWND" || { rm -f "$TMP"; return 1; }
+        systemctl daemon-reload >/dev/null 2>&1 \
+            && systemctl enable initcwnd --quiet >/dev/null 2>&1 \
+            && systemctl restart initcwnd >/dev/null 2>&1 || {
+                error "initcwnd 已立即生效，但 systemd 持久化失败"
+                return 1
+            }
+    elif command -v rc-service >/dev/null 2>&1 && command -v rc-update >/dev/null 2>&1; then
+        bbr_write_init_script "$SERVICE_CWND_INIT" "$CWND_HELPER" openrc || return 1
+        rc-update add initcwnd default >/dev/null 2>&1 \
+            && rc-service initcwnd restart >/dev/null 2>&1 || {
+                error "initcwnd 已立即生效，但 OpenRC 持久化失败"
+                return 1
+            }
+    elif command -v update-rc.d >/dev/null 2>&1 && command -v service >/dev/null 2>&1; then
+        bbr_write_init_script "$SERVICE_CWND_INIT" "$CWND_HELPER" sysv || return 1
+        update-rc.d initcwnd defaults >/dev/null 2>&1 \
+            && service initcwnd restart >/dev/null 2>&1 || {
+                error "initcwnd 已立即生效，但 SysV 持久化失败"
+                return 1
+            }
+    else
+        error "initcwnd 已立即生效，但未检测到支持的服务管理器，无法设置开机恢复"
+        return 1
+    fi
+}
+
 bbr_menu_initcwnd() {
     print_header "initcwnd 设置"
 
@@ -757,14 +1306,20 @@ bbr_menu_initcwnd() {
         return
     fi
 
-    local DEV GW ONLINK
-    DEV=$(default_iface)
-    GW=$(ip route | awk '/^default/{print $3}')
-    ONLINK=$(ip route | grep "^default" | grep -q "onlink" && echo "onlink" || echo "")
-    local CUR; CUR=$(ip route show | grep "^default" | grep -oE 'initcwnd [0-9]+' | awk '{print $2}')
+    local ROUTE_INFO FAMILY ROUTE DEV GW
+    ROUTE_INFO=$(bbr_default_route_info) || {
+        error "未找到 IPv4 或 IPv6 默认路由"
+        return 1
+    }
+    FAMILY=${ROUTE_INFO%%|*}
+    ROUTE=${ROUTE_INFO#*|}
+    DEV=$(bbr_route_token "$ROUTE" dev)
+    GW=$(bbr_route_token "$ROUTE" via)
+    [ -n "$DEV" ] || { error "默认路由缺少出口网卡"; return 1; }
+    local CUR; CUR=$(bbr_route_token "$ROUTE" initcwnd)
     CUR="${CUR:-10（默认）}"
 
-    echo -e "  网卡：${BOLD}${DEV}${NC}  网关：${BOLD}${GW}${NC}  当前 initcwnd：${BOLD}${CUR}${NC}"
+    echo -e "  协议：${BOLD}IPv${FAMILY}${NC}  网卡：${BOLD}${DEV}${NC}  网关：${BOLD}${GW:-直连}${NC}  当前 initcwnd：${BOLD}${CUR}${NC}"
     echo ""
     menu_div
     menu_item "1" "10 · 默认保守"
@@ -792,32 +1347,17 @@ bbr_menu_initcwnd() {
         *) warn "无效选项"; return ;;
     esac
 
-    if [ -n "$GW" ]; then
-        ip route change default via "$GW" dev "$DEV" $ONLINK initcwnd "$VAL" initrwnd "$VAL"
-    else
-        ip route change default dev "$DEV" $ONLINK initcwnd "$VAL" initrwnd "$VAL"
-    fi || {
+    bbr_apply_initcwnd_route "$FAMILY" "$ROUTE" "$VAL" || {
         error "ip route change 失败"
         echo ""
         echo -e "  ${DIM}如果你在 LXC/OpenVZ 容器内，此操作会被宿主机拒绝，这是正常现象${NC}"
         return
     }
 
-    local SERVICE_CWND="/etc/systemd/system/initcwnd.service"
-    cat > "$SERVICE_CWND" << EOF
-[Unit]
-Description=Set TCP initcwnd
-After=network.target
-[Service]
-Type=oneshot
-ExecStart=/bin/bash -c 'GW=\$(ip route | awk '"'"'/^default/{print \$3}'"'"'); DEV=\$(ip route | awk '"'"'/^default/{print \$5}'"'"'); ONLINK=\$(ip route | grep "^default" | grep -q "onlink" && echo "onlink" || echo ""); if [ -n "\$GW" ]; then ip route change default via "\$GW" dev "\$DEV" \$ONLINK initcwnd ${VAL} initrwnd ${VAL}; else ip route change default dev "\$DEV" \$ONLINK initcwnd ${VAL} initrwnd ${VAL}; fi'
-RemainAfterExit=yes
-[Install]
-WantedBy=multi-user.target
-EOF
-    svc_daemon_reload
-    svc_enable initcwnd
-    rc-service initcwnd restart 2>/dev/null || systemctl restart initcwnd 2>/dev/null || true
+    bbr_cwnd_write_persistence "$FAMILY" "$ROUTE" "$VAL" || {
+        error "initcwnd 已立即生效，但持久化配置未完成"
+        return 1
+    }
     info "initcwnd 已设置为 ${VAL}，重启后自动生效 ✓"
 }
 
@@ -864,7 +1404,6 @@ volcano_tcp_profile() {
             TCP_RMEM_DEFAULT=4194304
             LABEL="高吞吐传输 — 大带宽/万兆/下载上传优先" ;;
         relay)
-            ensure_conntrack_module
             # 中转机：两进两出，需要均衡缓冲+低延迟+大并发
             local _MEM_MB; _MEM_MB=$(( $(grep MemTotal /proc/meminfo 2>/dev/null | awk '{print $2}') / 1024 ))
             if [ "${_MEM_MB:-0}" -lt 1024 ]; then
@@ -881,7 +1420,6 @@ volcano_tcp_profile() {
             TCP_RMEM_DEFAULT=1048576
             LABEL="中转机 — 双向流量/大并发/均衡延迟与吞吐" ;;
         landing)
-            ensure_conntrack_module
             # 落地机：流量主要是单向上行，跨境延迟高，需要大缓冲吃满带宽
             local _MEM_MB; _MEM_MB=$(( $(grep MemTotal /proc/meminfo 2>/dev/null | awk '{print $2}') / 1024 ))
             if [ "${_MEM_MB:-0}" -lt 1024 ]; then
@@ -898,7 +1436,6 @@ volcano_tcp_profile() {
             TCP_RMEM_DEFAULT=4194304
             LABEL="落地机 — 跨境上行/大缓冲吃满带宽" ;;
         line_landing)
-            ensure_conntrack_module
             # 线路落地机：直连用户/CN2/IPLC 线路，低延迟优先+中等吞吐
             local _MEM_MB; _MEM_MB=$(( $(grep MemTotal /proc/meminfo 2>/dev/null | awk '{print $2}') / 1024 ))
             if [ "${_MEM_MB:-0}" -lt 1024 ]; then
@@ -917,20 +1454,42 @@ volcano_tcp_profile() {
         *) error "未知预设：$PROFILE"; return 1 ;;
     esac
 
+    bbr_preflight || return 1
+    case "$PROFILE" in
+        relay|landing|line_landing) ensure_conntrack_module || warn "无法预加载 nf_conntrack，将按内核实际支持情况应用" ;;
+    esac
     echo -e "  预设：${BOLD}${LABEL}${NC}"
     echo -e "  缓冲：${BOLD}${BUF_MB}MB${NC}  拥塞控制：${BOLD}BBR + fq${NC}"
     echo ""
-    bbr_backup_sysctl
+    bbr_backup_sysctl || {
+        error "无法安全备份，已取消应用"
+        return 1
+    }
     local CONFIG
     CONFIG=$(bbr_generate_config "$RMEM" "$WMEM" "$TCP_MEM" "$NOTSENT" "$ADV_WIN" "$MIN_FREE" "$SWAP" "$TCP_RMEM_DEFAULT" "$PROFILE")
-    bbr_apply_sysctl "$CONFIG"
+    bbr_apply_sysctl "$CONFIG" || {
+        error "TCP 预设「${PROFILE}」应用失败"
+        return 1
+    }
     case "$PROFILE" in
         relay|landing|line_landing) bbr_check_limitnofile ;;
     esac
     info "TCP 预设「${PROFILE}」已应用 ✓"
+    return 0
 }
 
 # ── 智能 TCP 调优向导 ────────────────────────────────────
+bbr_recommend_profile() {
+    local MEM_MB="$1"
+    if [ "$MEM_MB" -lt 768 ]; then
+        echo latency
+    elif [ "$MEM_MB" -lt 4096 ]; then
+        echo balanced
+    else
+        echo throughput
+    fi
+}
+
 bbr_smart_wizard() {
     print_header "智能 TCP 调优向导"
     local MEM_KB MEM_MB KERNEL CUR_CC
@@ -968,16 +1527,12 @@ bbr_smart_wizard() {
         5) PROFILE="landing" ;;
         6) PROFILE="line_landing" ;;
         7)
-            if [ "$MEM_MB" -lt 768 ]; then
-                PROFILE="latency"
-                warn "小内存机器，推荐低延迟/轻量参数"
-            elif [ "$MEM_MB" -lt 1536 ]; then
-                PROFILE="balanced"
-                info "1GB 左右机器，推荐均衡模式"
-            else
-                PROFILE="balanced"
-                info "2GB+ 机器，推荐均衡；大流量场景可选高吞吐或场景化预设"
-            fi
+            PROFILE=$(bbr_recommend_profile "$MEM_MB")
+            case "$PROFILE" in
+                latency) warn "小内存机器，推荐低延迟/轻量参数" ;;
+                balanced) info "内存低于 4GB，推荐均衡模式" ;;
+                throughput) info "内存达到 4GB，推荐高吞吐模式" ;;
+            esac
             ;;
         0) return ;;
         00) safe_clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;
@@ -988,7 +1543,7 @@ bbr_smart_wizard() {
     read -rp "  确认应用「${PROFILE}」？(Y/n，默认Y): " CONFIRM
     [ -z "$CONFIRM" ] && CONFIRM="y"
     if ! echo "$CONFIRM" | grep -qiE '^y(es)?$'; then warn "已取消"; return; fi
-    volcano_tcp_profile "$PROFILE"
+    volcano_tcp_profile "$PROFILE" || return 1
 }
 
 
@@ -1071,10 +1626,14 @@ bbr_diagnose() {
     has_sysctl_write && SYSCTL_WRITABLE="是"
 
     SERVICE_STATE="未安装"
-    if command -v systemctl &>/dev/null && [ -f "$SERVICE_TC" ]; then
+    if systemd_available && [ -f "$SERVICE_TC" ]; then
         SERVICE_STATE=$(systemctl is-enabled tc-fq 2>/dev/null || echo "已安装未启用")
-    elif [ -f "$SERVICE_TC" ]; then
-        SERVICE_STATE="已安装"
+    elif [ -f "$SERVICE_TC_INIT" ]; then
+        if command -v rc-service >/dev/null 2>&1 && rc-service tc-fq status >/dev/null 2>&1; then
+            SERVICE_STATE="已启用"
+        else
+            SERVICE_STATE="已安装未运行"
+        fi
     fi
 
     echo -e "  内核版本: ${BOLD}${KERNEL}${NC}"
@@ -1099,7 +1658,7 @@ bbr_diagnose() {
 bbr_menu() {
     # 进入时检测一次 sysctl 写入权限
     local _BBR_NO_SYSCTL=0
-    if ! has_sysctl_write; then
+    if ! ensure_sysctl || ! has_sysctl_write; then
         _BBR_NO_SYSCTL=1
     fi
     while true; do

@@ -1,4 +1,4 @@
-# VPS 开荒脚本 V3.9.44
+# VPS 开荒脚本 V3.9.45
 
 > **银趴火山帮** 出品 · SSH · BBR · DDNS · Caddy · Firewall · NFT 转发
 
@@ -71,7 +71,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/chnnic/SSH-Hardening/refs/he
 /___/_/  /_/_/   /_/  |_/_/ |_| /_/     \____/_/    /____/
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  VPS TOOLS  ·  V3.9.44
+  VPS TOOLS  ·  V3.9.45
   VPS 开荒脚本 · 银趴火山帮
 ────────────────────────────────────────────────────────────────
   SSH · BBR · DDNS · Caddy · Firewall · NFT · Monitor
@@ -171,13 +171,14 @@ bash <(curl -fsSL https://raw.githubusercontent.com/chnnic/SSH-Hardening/refs/he
 - 缓冲区超过物理内存一半自动降级或警告
 - 无 sysctl 写入权限（无特权容器）自动检测并提示
 - 内核 BBR 支持检测（kernel ≥ 4.9）
-- 应用前自动备份旧 sysctl 配置
-- 切换预设时检测并复位上一场景遗留的转发/conntrack 残留键（ip_forward 单独警告）
-- 逐行 `sysctl -w` 应用，跳过 Alpine 等内核不支持的参数（如 `default_qdisc`）
+- 首次调优保存运行参数基线，每次应用保存运行快照；失败时自动回滚
+- 切换预设时检测上一场景遗留的转发/conntrack 参数，并恢复到首次调优前基线（`ip_forward` 单独警告）
+- 中转/落地场景开启 IPv6 forwarding 时，为公网出口设置 `accept_ra=2`，保留 SLAAC 路由通告
+- 逐行 `sysctl -w` 应用；非核心参数不支持时注释跳过，BBR 核心参数失败则拒绝持久化
 
 **其他功能：**
-- tc 限速（200M / 500M / 780M / 1G / 2G / 自定义）：`htb` 聚合整形 + `fq` 叶子保留 BBR pacing，burst 随速率缩放（避免高速率跑不满线）
-- initcwnd（10 / 50 / 100 / 自定义）
+- tc 限速（200M / 500M / 780M / 1G / 2G / 自定义）：`htb` 聚合整形 + `fq` 叶子保留 BBR pacing；拒绝覆盖 CAKE 等非本工具 QoS
+- initcwnd（10 / 50 / 100 / 自定义），支持 IPv4/IPv6、无网关默认路由和 systemd/OpenRC/SysV 持久化
 - 备份 / 还原 sysctl（按时间戳）
 
 **代理专项参数：**
@@ -537,6 +538,7 @@ DNS 设置会自动识别 `systemd-resolved`、NetworkManager、resolvconf 或�
 | `/var/log/vps-tools-audit.log` | 脚本操作审计日志（600） |
 | `SSH-Hardening.sh.sha256` | 自更新完整性校验值 |
 | `/etc/sysctl.d/99-vps-bbr.conf` | BBR TCP 配置 |
+| `/var/lib/vps-tools/bbr-sysctl-baseline.conf` | BBR 首次调优前运行参数基线（600） |
 | `/etc/nftables.conf` | NFT 转发配置（脚本托管） |
 | `/etc/nft-port-forward/rules.db` | NFT 转发规则数据库 |
 | `/etc/nft-port-forward/access.conf` | NFT 访问控制配置 |
@@ -582,6 +584,7 @@ GitHub Actions 还会在 Debian、Ubuntu、Alpine、Rocky Linux 容器中加载�
 
 | 版本 | 主要变更 |
 |------|---------|
+| **V3.9.45** | 修复 BBR 场景切换写入危险默认值、智能向导绕过预检和应用失败误报；增加运行参数回滚、IPv6 RA 保护、tc 规则所有权、跨 init 持久化、无网关/IPv6 initcwnd 路由解析，并修正 BDP 与 4GB 推荐逻辑 |
 | **V3.9.44** | 修复监控告警通知失败仍标记成功、续费日期未经确认自动推进、冷却签名随指标变化失效、cron 并发重复推送、多网卡流量重复统计和阈值输入缺少校验 |
 | **V3.9.43** | 修复 DDNS 二次确认分支无法触发、失败状态覆盖最近成功 IP、短间隔并发执行、华为云查询失败误创建及 cron 误匹配；敏感凭据输入不再回显 |
 | **V3.9.42** | DDNS 检测到本机公网 IP 变化时，即使 DNS 记录已同步，也会记录 `IP变化` 并推送 Telegram |
