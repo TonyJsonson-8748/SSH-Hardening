@@ -410,8 +410,10 @@ FIRST_DIRECTIVE=$(grep -m1 -E '^(Include|PasswordAuthentication|Match)' "$SSHD_S
         return 1
     }
     ! nft_write_and_apply >/dev/null 2>&1 || { echo "NFT apply failure returned success" >&2; exit 1; }
-    cmp -s "$NFT_CONFIG_FILE" "$NFT_TEST/main.expected" || { echo "NFT apply failure did not restore main config" >&2; exit 1; }
-    cmp -s "$NFT_MANAGED_FILE" "$NFT_TEST/managed.expected" || { echo "NFT apply failure did not restore managed config" >&2; exit 1; }
+    [ "$(cat "$NFT_CONFIG_FILE")" = "$(cat "$NFT_TEST/main.expected")" ] \
+        || { echo "NFT apply failure did not restore main config" >&2; exit 1; }
+    [ "$(cat "$NFT_MANAGED_FILE")" = "$(cat "$NFT_TEST/managed.expected")" ] \
+        || { echo "NFT apply failure did not restore managed config" >&2; exit 1; }
 )
 )
 monitor_alert_service_state() { case "$1" in ssh) echo stopped ;; sshd) echo running ;; *) echo unknown ;; esac; }
