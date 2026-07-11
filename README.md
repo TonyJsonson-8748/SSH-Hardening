@@ -1,4 +1,4 @@
-# VPS 开荒脚本 V3.9.45
+# VPS 开荒脚本 V3.9.46
 
 > **银趴火山帮** 出品 · SSH · BBR · DDNS · Caddy · Firewall · NFT 转发
 
@@ -71,7 +71,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/chnnic/SSH-Hardening/refs/he
 /___/_/  /_/_/   /_/  |_/_/ |_| /_/     \____/_/    /____/
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  VPS TOOLS  ·  V3.9.45
+  VPS TOOLS  ·  V3.9.46
   VPS 开荒脚本 · 银趴火山帮
 ────────────────────────────────────────────────────────────────
   SSH · BBR · DDNS · Caddy · Firewall · NFT · Monitor
@@ -383,7 +383,8 @@ IP 真实变化时推送通知，实时读取 `/root/.cf_tg`，兼容 crontab �
 **持久化与跨发行版：**
 - 规则数据：`/etc/nft-port-forward/rules.db`
 - 访问控制：`/etc/nft-port-forward/access.conf`
-- nftables 配置：`/etc/nftables.conf`（仅托管 `nftpf_*` 表，自动校验语法）
+- nftables 主配置：`/etc/nftables.conf`（保留用户规则，只加入 VPS Tools include）
+- VPS Tools 托管规则：`/etc/nftables.d/vps-tools-nftpf.nft`（仅包含 `nftpf_*` 表，事务应用）
 - 自动安装 nftables（apt / apk / yum / dnf）
 - 自动开启 IP 转发
 - 服务自启：systemd / OpenRC 双支持
@@ -539,7 +540,8 @@ DNS 设置会自动识别 `systemd-resolved`、NetworkManager、resolvconf 或�
 | `SSH-Hardening.sh.sha256` | 自更新完整性校验值 |
 | `/etc/sysctl.d/99-vps-bbr.conf` | BBR TCP 配置 |
 | `/var/lib/vps-tools/bbr-sysctl-baseline.conf` | BBR 首次调优前运行参数基线（600） |
-| `/etc/nftables.conf` | NFT 转发配置（脚本托管） |
+| `/etc/nftables.conf` | nftables 主配置（保留用户规则） |
+| `/etc/nftables.d/vps-tools-nftpf.nft` | VPS Tools 托管的 NFT 转发规则 |
 | `/etc/nft-port-forward/rules.db` | NFT 转发规则数据库 |
 | `/etc/nft-port-forward/access.conf` | NFT 访问控制配置 |
 | `/etc/systemd/system/nftpf-ddns.timer` | NFT DDNS 自动刷新 timer |
@@ -597,6 +599,7 @@ tests/smoke.sh
 
 | 版本 | 主要变更 |
 |------|---------|
+| **V3.9.46** | 修复 UFW 放行失败仍启用导致断联、配置导入可覆盖任意路径、NFT 覆盖用户规则及失败无回滚、Swap 关闭失败仍删除、DDNS 占位记录与 cron 假成功、Caddy/Fail2ban/DNS/IPv6/NTP 错误传播；换源支持 deb822 并为 RPM 仓库增加验证回滚 |
 | **V3.9.45** | 修复 BBR 场景切换写入危险默认值、智能向导绕过预检和应用失败误报；增加运行参数回滚、IPv6 RA 保护、tc 规则所有权、跨 init 持久化、无网关/IPv6 initcwnd 路由解析，并修正 BDP 与 4GB 推荐逻辑 |
 | **V3.9.44** | 修复监控告警通知失败仍标记成功、续费日期未经确认自动推进、冷却签名随指标变化失效、cron 并发重复推送、多网卡流量重复统计和阈值输入缺少校验 |
 | **V3.9.43** | 修复 DDNS 二次确认分支无法触发、失败状态覆盖最近成功 IP、短间隔并发执行、华为云查询失败误创建及 cron 误匹配；敏感凭据输入不再回显 |

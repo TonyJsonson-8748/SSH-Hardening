@@ -85,6 +85,124 @@ config_export_archive "$EXPORT_PATH" test >/dev/null || { echo "Export helper fa
 config_import_archive() { [ "$1" = "$EXPORT_PATH" ]; }
 config_import_archive "$EXPORT_PATH" >/dev/null || { echo "Import helper failed" >&2; exit 1; }
 
+# Imported archives may contain only the explicit VPS Tools configuration allowlist.
+mkdir -p "$TMP/archive-source/etc"
+printf 'not allowed\n' > "$TMP/archive-source/etc/passwd"
+tar -czf "$TMP/malicious-config.tar.gz" -C "$TMP/archive-source" etc/passwd
+config_archive_validate "$TMP/malicious-config.tar.gz" >/dev/null 2>&1 && {
+    echo "Config import accepted a path outside the allowlist" >&2
+    exit 1
+}
+mkdir -p "$TMP/archive-source/root"
+printf 'valid\n' > "$TMP/archive-source/root/.vps-monitor"
+tar -czf "$TMP/valid-config.tar.gz" -C "$TMP/archive-source" root/.vps-monitor
+config_archive_validate "$TMP/valid-config.tar.gz" >/dev/null \
+    || { echo "Config import rejected an allowlisted path" >&2; exit 1; }
+(
+    export CONFIG_RESTORE_ROOT="$TMP/restored-root"
+    config_archive_extract "$TMP/valid-config.tar.gz" >/dev/null
+    grep -qx valid "$CONFIG_RESTORE_ROOT/root/.vps-monitor" \
+        || { echo "Allowlisted config archive was not restored" >&2; exit 1; }
+)
+
+# Firewall installation must never enable UFW when the SSH allow rule failed.
+(
+    UFW_LOG="$TMP/ufw.log"
+    print_header() { :; }
+    info() { :; }
+    error() { :; }
+    pkg_install() { return 0; }
+    safety_arm() { return 0; }
+    safety_confirm() { :; }
+    get_config() { echo 2222; }
+    ufw() {
+        printf '%s\n' "$*" >> "$UFW_LOG"
+        [ "$1 $2" != "allow 2222/tcp" ]
+    }
+    fw_install ufw >/dev/null 2>&1 && { echo "UFW install succeeded after SSH allow failure" >&2; exit 1; }
+    ! grep -q -- '--force enable' "$UFW_LOG" || { echo "UFW was enabled without its SSH rule" >&2; exit 1; }
+)
+
+# Atomic replacement must leave the destination untouched when staging fails.
+(
+    SOURCE="$TMP/update-source"
+    DEST="$TMP/update-dest"
+    printf 'new\n' > "$SOURCE"
+    printf 'old\n' > "$DEST"
+    install() { return 1; }
+    ! self_atomic_replace "$SOURCE" "$DEST" || { echo "Atomic update ignored install failure" >&2; exit 1; }
+    grep -qx old "$DEST" || { echo "Atomic update damaged the current script" >&2; exit 1; }
+)
+
+# Caddy startup failure must propagate instead of reporting success.
+(
+    CADDYFILE="$TMP/Caddyfile"
+    : > "$CADDYFILE"
+    info() { :; }
+    error() { :; }
+    svc_is_active() { return 1; }
+    svc_start() { return 1; }
+    caddy() { [ "$1" = validate ]; }
+    ! caddy_reload_config >/dev/null 2>&1 || { echo "Caddy reload hid a startup failure" >&2; exit 1; }
+)
+
+# Fail2ban DEFAULT changes must not rewrite the same key in another jail.
+(
+    export F2B_JAIL_LOCAL="$TMP/jail.local"
+    cat > "$F2B_JAIL_LOCAL" <<'EOF'
+[DEFAULT]
+bantime = 3600
+[sshd]
+bantime = 120
+enabled = true
+EOF
+    fail2ban-client() { return 0; }
+    f2b_set_param bantime 7200 >/dev/null
+    [ "$(awk '/^\[DEFAULT\]/{s=1;next} /^\[/{s=0} s && /^bantime/{print $3}' "$F2B_JAIL_LOCAL")" = 7200 ] || exit 1
+    [ "$(awk '/^\[sshd\]/{s=1;next} /^\[/{s=0} s && /^bantime/{print $3}' "$F2B_JAIL_LOCAL")" = 120 ] \
+        || { echo "Fail2ban DEFAULT update changed sshd override" >&2; exit 1; }
+)
+
+# DDNS cron write errors must propagate.
+(
+    crontab() { return 1; }
+    ! ddns_install_cron_job '* * * * * /root/ddns.sh' >/dev/null 2>&1 \
+        || { echo "DDNS cron helper hid a write failure" >&2; exit 1; }
+)
+
+# Swap deletion must stop before touching fstab/files when swapoff fails.
+(
+    print_header() { :; }
+    menu_div() { :; }
+    info() { :; }
+    warn() { :; }
+    error() { :; }
+    swapon() {
+        case "$*" in
+            '--show --noheadings') echo '/tmp/vps-tools-test.swap' ;;
+            '--show --bytes --noheadings') echo '/tmp/vps-tools-test.swap file 1048576 0 -2' ;;
+        esac
+    }
+    swapoff() { return 1; }
+    ! swap_delete <<< $'1\ny' >/dev/null 2>&1 || { echo "Swap delete ignored swapoff failure" >&2; exit 1; }
+)
+
+# NTP enablement must report a timedatectl failure.
+(
+    print_header() { :; }
+    info() { :; }
+    error() { :; }
+    sleep() { :; }
+    timedatectl() { [ "${1:-}" = show ] && echo yes && return 0; return 1; }
+    systemctl() {
+        case "$1" in
+            list-unit-files) echo 'systemd-timesyncd.service enabled'; return 0 ;;
+            *) return 0 ;;
+        esac
+    }
+    ! ts_enable_ntp >/dev/null 2>&1 || { echo "NTP enablement hid timedatectl failure" >&2; exit 1; }
+)
+
 # Offline bundle creation must package a local script and offline install must place it at the target path.
 LOCAL_SCRIPT="$TMP/local-script"
 cat > "$LOCAL_SCRIPT" <<'EOF'

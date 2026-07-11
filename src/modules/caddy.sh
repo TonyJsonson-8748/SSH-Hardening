@@ -38,8 +38,12 @@ caddy_post_install() {
 CEOF
         info "已创建默认 Caddyfile：$CADDYFILE"
     fi
+    command -v caddy >/dev/null 2>&1 || { error "Caddy 可执行文件不存在"; return 1; }
     svc_enable caddy
-    svc_start caddy || true
+    if ! svc_start caddy && ! caddy start --config "$CADDYFILE" &>/dev/null; then
+        error "Caddy 启动失败"
+        return 1
+    fi
     info "Caddy 已启动 ✓"
 }
 
@@ -56,19 +60,19 @@ caddy_install() {
         curl -fsSL https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt \
             | tee /etc/apt/sources.list.d/caddy-stable.list &>/dev/null
         apt-get update -qq &>/dev/null
-        apt-get install -y caddy 2>/dev/null && info "Caddy 安装成功 ✓" || caddy_install_binary
+        if apt-get install -y caddy 2>/dev/null; then info "Caddy 安装成功 ✓"; else caddy_install_binary || return 1; fi
     elif command -v apk &>/dev/null; then
-        apk add --no-cache caddy 2>/dev/null && info "Caddy 安装成功 ✓" || caddy_install_binary
+        if apk add --no-cache caddy 2>/dev/null; then info "Caddy 安装成功 ✓"; else caddy_install_binary || return 1; fi
     elif command -v yum &>/dev/null; then
         yum install -y yum-plugin-copr &>/dev/null
         yum copr enable @caddy/caddy -y &>/dev/null
-        yum install -y caddy 2>/dev/null && info "Caddy 安装成功 ✓" || caddy_install_binary
+        if yum install -y caddy 2>/dev/null; then info "Caddy 安装成功 ✓"; else caddy_install_binary || return 1; fi
     elif command -v dnf &>/dev/null; then
         dnf install -y yum-plugin-copr &>/dev/null
         dnf copr enable @caddy/caddy -y &>/dev/null
-        dnf install -y caddy 2>/dev/null && info "Caddy 安装成功 ✓" || caddy_install_binary
+        if dnf install -y caddy 2>/dev/null; then info "Caddy 安装成功 ✓"; else caddy_install_binary || return 1; fi
     else
-        caddy_install_binary
+        caddy_install_binary || return 1
     fi
 
     caddy_post_install
@@ -89,8 +93,9 @@ caddy_install_binary() {
     local URL="https://github.com/caddyserver/caddy/releases/latest/download/caddy_linux_${ARCH}.tar.gz"
 
     if curl -fsSL "$URL" -o "$TMP/caddy.tar.gz"; then
-        tar -xzf "$TMP/caddy.tar.gz" -C "$TMP"
-        install -m 755 "$TMP/caddy" /usr/local/bin/caddy
+        tar -xzf "$TMP/caddy.tar.gz" -C "$TMP" || { rm -rf "$TMP"; error "Caddy 压缩包解压失败"; return 1; }
+        [ -f "$TMP/caddy" ] || { rm -rf "$TMP"; error "Caddy 压缩包缺少可执行文件"; return 1; }
+        install -m 755 "$TMP/caddy" /usr/local/bin/caddy || { rm -rf "$TMP"; error "Caddy 安装失败"; return 1; }
         rm -rf "$TMP"
         info "Caddy 二进制安装到 /usr/local/bin/caddy ✓"
     else
@@ -145,17 +150,20 @@ caddy_uninstall() {
 # 安全追加 Caddy 配置块：先备份 → 追加 → validate，失败则还原，不污染正式配置
 caddy_append_safe() {
     local BLOCK="$1"
-    local BAK
-    BAK="${CADDYFILE}.bak.$(date +%Y%m%d_%H%M%S)"
-    cp "$CADDYFILE" "$BAK" 2>/dev/null
-    printf '%s\n' "$BLOCK" >> "$CADDYFILE"
-    if caddy validate --config "$CADDYFILE" 2>/tmp/caddy_err; then
-        rm -f "$BAK" 2>/dev/null
+    local TMP
+    mkdir -p "$(dirname "$CADDYFILE")" || return 1
+    TMP=$(mktemp "${CADDYFILE}.tmp.XXXXXX") || return 1
+    if [ -f "$CADDYFILE" ]; then
+        cp "$CADDYFILE" "$TMP" || { rm -f "$TMP"; return 1; }
+    else
+        : > "$TMP"
+    fi
+    printf '%s\n' "$BLOCK" >> "$TMP" || { rm -f "$TMP"; return 1; }
+    if caddy validate --config "$TMP" 2>/tmp/caddy_err; then
+        mv "$TMP" "$CADDYFILE" || { rm -f "$TMP"; return 1; }
         return 0
     fi
-    # 验证失败：还原备份
-    cp "$BAK" "$CADDYFILE" 2>/dev/null
-    rm -f "$BAK" 2>/dev/null
+    rm -f "$TMP"
     error "新配置验证失败，已还原（未写入）："
     while IFS= read -r l; do echo -e "  ${RED}$l${NC}"; done < /tmp/caddy_err
     return 1
@@ -167,10 +175,13 @@ caddy_reload_config() {
     if caddy validate --config "$CADDYFILE" 2>/tmp/caddy_err; then
         info "语法验证通过 ✓"
         if svc_is_active caddy; then
-            caddy reload --config "$CADDYFILE" 2>/dev/null && info "配置已重载 ✓"
+            caddy reload --config "$CADDYFILE" 2>/dev/null || { error "Caddy 配置重载失败"; return 1; }
+            info "配置已重载 ✓"
         else
-            svc_start caddy \
-                || caddy start --config "$CADDYFILE" &>/dev/null
+            if ! svc_start caddy && ! caddy start --config "$CADDYFILE" &>/dev/null; then
+                error "Caddy 启动失败"
+                return 1
+            fi
             info "Caddy 已启动 ✓"
         fi
     else
@@ -380,18 +391,25 @@ caddy_del_site() {
     [ -z "${CONFIRM}" ] && CONFIRM="y"
     if ! echo "${CONFIRM}" | grep -qiE '^y(es)?$'; then warn "已取消"; return; fi
 
-    python3 - "$CADDYFILE" "$DOMAIN" << 'PYEOF'
+    local TMP BAK
+    TMP=$(mktemp "${CADDYFILE}.tmp.XXXXXX") || return 1
+    BAK="${CADDYFILE}.bak.$(date +%Y%m%d_%H%M%S)"
+    if ! python3 - "$CADDYFILE" "$TMP" "$DOMAIN" << 'PYEOF'
 import sys
-path, domain = sys.argv[1], sys.argv[2]
+path, output, domain = sys.argv[1], sys.argv[2], sys.argv[3]
 with open(path) as f:
     lines = f.readlines()
 result = []
 skip = False
 depth = 0
+found = False
 for line in lines:
     s = line.strip()
-    if not skip and s.startswith(domain) and '{' in s:
+    header = s.split('{', 1)[0].strip() if '{' in s else ''
+    addresses = [item.strip() for item in header.split(',')]
+    if not skip and domain in addresses and '{' in s:
         skip = True
+        found = True
         depth = s.count('{') - s.count('}')
         while result and result[-1].strip() == '':
             result.pop()
@@ -402,11 +420,33 @@ for line in lines:
             skip = False
         continue
     result.append(line)
-with open(path, 'w') as f:
+if not found:
+    raise SystemExit(2)
+with open(output, 'w') as f:
     f.writelines(result)
 PYEOF
-
-    caddy_reload_config && info "站点 ${DOMAIN} 已删除 ✓"
+    then
+        rm -f "$TMP"
+        error "无法生成删除后的 Caddy 配置"
+        return 1
+    fi
+    if ! caddy validate --config "$TMP" 2>/tmp/caddy_err; then
+        rm -f "$TMP"
+        error "删除后的 Caddy 配置验证失败，原配置未修改"
+        return 1
+    fi
+    cp "$CADDYFILE" "$BAK" || { rm -f "$TMP"; return 1; }
+    mv "$TMP" "$CADDYFILE" || { rm -f "$TMP"; return 1; }
+    if caddy_reload_config; then
+        rm -f "$BAK"
+        info "站点 ${DOMAIN} 已删除 ✓"
+    else
+        cp "$BAK" "$CADDYFILE" 2>/dev/null || true
+        rm -f "$BAK"
+        caddy_reload_config >/dev/null 2>&1 || true
+        error "站点删除应用失败，已恢复原配置"
+        return 1
+    fi
 }
 
 # ── SSL 证书状态 ──────────────────────────────────────────
@@ -527,9 +567,19 @@ caddy_edit_raw() {
     echo ""
     ui_continue
     [ -f "$CADDYFILE" ] || { mkdir -p /etc/caddy; touch "$CADDYFILE"; }
+    local BAK
+    BAK="${CADDYFILE}.bak.$(date +%Y%m%d_%H%M%S)"
+    cp "$CADDYFILE" "$BAK" || { error "无法备份 Caddyfile"; return 1; }
     open_editor "$CADDYFILE"
     echo ""
-    caddy_reload_config
+    if caddy_reload_config; then
+        rm -f "$BAK"
+    else
+        cp "$BAK" "$CADDYFILE" 2>/dev/null || true
+        rm -f "$BAK"
+        error "编辑后的配置无效，已恢复原文件"
+        return 1
+    fi
 }
 
 # ── Caddy 主菜单 ──────────────────────────────────────────

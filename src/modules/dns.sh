@@ -39,23 +39,32 @@ dns_write() {
 
     if command -v resolvectl >/dev/null 2>&1 && { svc_is_active systemd-resolved || { [ -L "$RESOLV" ] && readlink "$RESOLV" | grep -q 'systemd/resolve'; }; }; then
         BACKEND="systemd-resolved"
-        mkdir -p /etc/systemd/resolved.conf.d
-        {
+        mkdir -p /etc/systemd/resolved.conf.d || return 1
+        if ! {
             echo "[Resolve]"
             echo "DNS=$ALL_DNS"
             echo "FallbackDNS="
-        } > /etc/systemd/resolved.conf.d/99-vps-tools.conf
+        } > /etc/systemd/resolved.conf.d/99-vps-tools.conf; then
+            error "无法写入 systemd-resolved 配置"
+            return 1
+        fi
         svc_restart systemd-resolved || { error "systemd-resolved 重启失败"; return 1; }
     elif command -v nmcli >/dev/null 2>&1 && svc_is_active NetworkManager; then
         BACKEND="NetworkManager"
+        local NM_COUNT=0
         while IFS= read -r CON; do
             [ -n "$CON" ] || continue
-            nmcli connection modify "$CON" ipv4.ignore-auto-dns yes ipv4.dns "$V4_LIST" 2>/dev/null || true
+            NM_COUNT=$((NM_COUNT + 1))
+            nmcli connection modify "$CON" ipv4.ignore-auto-dns yes ipv4.dns "$V4_LIST" 2>/dev/null \
+                || { error "NetworkManager IPv4 DNS 写入失败：$CON"; return 1; }
             if [ "$HAS_V6" = true ] && [ -n "$V6_LIST" ]; then
-                nmcli connection modify "$CON" ipv6.ignore-auto-dns yes ipv6.dns "$V6_LIST" 2>/dev/null || true
+                nmcli connection modify "$CON" ipv6.ignore-auto-dns yes ipv6.dns "$V6_LIST" 2>/dev/null \
+                    || { error "NetworkManager IPv6 DNS 写入失败：$CON"; return 1; }
             fi
-        done < <(nmcli -t -f NAME connection show --active 2>/dev/null)
-        nmcli device reapply "$(default_iface)" 2>/dev/null || svc_restart NetworkManager
+        done < <(nmcli -g NAME connection show --active 2>/dev/null)
+        [ "$NM_COUNT" -gt 0 ] || { error "NetworkManager 没有活动连接"; return 1; }
+        nmcli device reapply "$(default_iface)" 2>/dev/null || svc_restart NetworkManager \
+            || { error "NetworkManager DNS 应用失败"; return 1; }
     elif command -v resolvconf >/dev/null 2>&1; then
         BACKEND="resolvconf"
         mkdir -p /etc/resolvconf/resolv.conf.d
@@ -67,10 +76,13 @@ dns_write() {
         cp -a "$RESOLV" "${RESOLV}.bak.$(date +%Y%m%d_%H%M%S)" 2>/dev/null || true
         local OTHER
         OTHER=$(grep -v "^nameserver" "$RESOLV" 2>/dev/null)
-        {
+        if ! {
             [ -n "$OTHER" ] && echo "$OTHER"
             for ip in $ALL_DNS; do echo "nameserver $ip"; done
-        } > "$RESOLV"
+        } > "$RESOLV"; then
+            error "无法写入 $RESOLV"
+            return 1
+        fi
     fi
 
     local DNS_OK=false
@@ -159,9 +171,22 @@ dns_menu() {
                 chattr -i /etc/resolv.conf 2>/dev/null
                 ui_continue
                 open_editor /etc/resolv.conf
-                info "DNS 配置已保存"
-                audit_action "手动编辑DNS配置" SUCCESS
-                safety_confirm
+                local MANUAL_DNS_OK=false
+                if command -v getent >/dev/null 2>&1 && getent hosts github.com >/dev/null 2>&1; then
+                    MANUAL_DNS_OK=true
+                elif command -v nslookup >/dev/null 2>&1 && nslookup github.com >/dev/null 2>&1; then
+                    MANUAL_DNS_OK=true
+                elif ping -c 1 -W 3 github.com >/dev/null 2>&1; then
+                    MANUAL_DNS_OK=true
+                fi
+                if [ "$MANUAL_DNS_OK" = true ]; then
+                    info "DNS 配置已保存并通过解析测试"
+                    audit_action "手动编辑DNS配置" SUCCESS
+                    safety_confirm
+                else
+                    error "DNS 解析测试失败，自动回滚计时器仍在运行"
+                    audit_action "手动编辑DNS配置失败" FAILED
+                fi
                 ;;
             0) return ;;
             00) safe_clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;

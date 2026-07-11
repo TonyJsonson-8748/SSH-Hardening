@@ -122,24 +122,8 @@ ip_disable_v6() {
     confirm_change_preview "关闭 IPv6" "立即禁用所有接口 IPv6" "写入 sysctl 持久化配置" || { warn "已取消"; return; }
     safety_arm disable_v6 || return 1
 
-    local SYSCTL_FILE="/etc/sysctl.d/99-vps-bbr.conf"
-
-    # 写入 sysctl
-    for KEY in net.ipv6.conf.all.disable_ipv6 net.ipv6.conf.default.disable_ipv6 net.ipv6.conf.lo.disable_ipv6; do
-        if grep -q "^${KEY}" "$SYSCTL_FILE" 2>/dev/null; then
-            sed -i "s|^${KEY}.*|${KEY} = 1|" "$SYSCTL_FILE"
-        else
-            echo "${KEY} = 1" >> "$SYSCTL_FILE"
-        fi
-    done
-
-    ensure_sysctl && sysctl -p "$SYSCTL_FILE" &>/dev/null
+    ip_apply_v6_state 1 || { error "IPv6 禁用失败，自动回滚计时器仍在运行"; return 1; }
     info "IPv6 已通过 sysctl 禁用 ✓"
-
-    # 立即生效（无需重启）
-    sysctl -w net.ipv6.conf.all.disable_ipv6=1 &>/dev/null
-    sysctl -w net.ipv6.conf.default.disable_ipv6=1 &>/dev/null
-    sysctl -w net.ipv6.conf.lo.disable_ipv6=1 &>/dev/null
 
     echo ""
     echo -e "  当前 IPv6 状态：${RED}${BOLD}已禁用${NC}"
@@ -150,23 +134,10 @@ ip_disable_v6() {
 
 ip_enable_v6() {
     print_header "开启 IPv6"
-    local SYSCTL_FILE="/etc/sysctl.d/99-vps-bbr.conf"
     confirm_change_preview "开启 IPv6" "移除 IPv6 禁用状态" "地址获取取决于服务商和 SLAAC" || { warn "已取消"; return; }
     safety_arm enable_v6 || return 1
 
-    # 移除或改为 0
-    for KEY in net.ipv6.conf.all.disable_ipv6 net.ipv6.conf.default.disable_ipv6 net.ipv6.conf.lo.disable_ipv6; do
-        if grep -q "^${KEY}" "$SYSCTL_FILE" 2>/dev/null; then
-            sed -i "s|^${KEY}.*|${KEY} = 0|" "$SYSCTL_FILE"
-        else
-            echo "${KEY} = 0" >> "$SYSCTL_FILE"
-        fi
-    done
-
-    sysctl -p "$SYSCTL_FILE" &>/dev/null
-    sysctl -w net.ipv6.conf.all.disable_ipv6=0 &>/dev/null
-    sysctl -w net.ipv6.conf.default.disable_ipv6=0 &>/dev/null
-    sysctl -w net.ipv6.conf.lo.disable_ipv6=0 &>/dev/null
+    ip_apply_v6_state 0 || { error "IPv6 开启失败，自动回滚计时器仍在运行"; return 1; }
 
     info "IPv6 已开启 ✓"
     echo ""
@@ -185,6 +156,22 @@ ip_enable_v6() {
     fi
     audit_action "开启IPv6" SUCCESS
     safety_confirm
+}
+
+ip_apply_v6_state() {
+    local VALUE="$1" SYSCTL_FILE="/etc/sysctl.d/99-ipv6-disable.conf" TMP KEY
+    ensure_sysctl || return 1
+    mkdir -p /etc/sysctl.d || return 1
+    TMP=$(mktemp "${SYSCTL_FILE}.tmp.XXXXXX") || return 1
+    for KEY in net.ipv6.conf.all.disable_ipv6 net.ipv6.conf.default.disable_ipv6 net.ipv6.conf.lo.disable_ipv6; do
+        printf '%s = %s\n' "$KEY" "$VALUE" >> "$TMP" || { rm -f "$TMP"; return 1; }
+    done
+    chmod 644 "$TMP" 2>/dev/null || true
+    mv "$TMP" "$SYSCTL_FILE" || { rm -f "$TMP"; return 1; }
+    sysctl -p "$SYSCTL_FILE" &>/dev/null || return 1
+    for KEY in net.ipv6.conf.all.disable_ipv6 net.ipv6.conf.default.disable_ipv6 net.ipv6.conf.lo.disable_ipv6; do
+        [ "$(sysctl -n "$KEY" 2>/dev/null)" = "$VALUE" ] || return 1
+    done
 }
 
 ip_config_menu() {

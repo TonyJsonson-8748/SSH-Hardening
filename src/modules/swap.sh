@@ -93,43 +93,52 @@ swap_create() {
         return
     fi
 
-    local SWAP_FILE="/swapfile"
-    # 如果已有 swapfile 先关闭
-    if [ -f "$SWAP_FILE" ]; then
-        warn "已存在 ${SWAP_FILE}，将先关闭旧 swap..."
-        swapoff "$SWAP_FILE" 2>/dev/null || true
-    fi
+    local SWAP_FILE NEW_SWAP OLD_SWAP
+    SWAP_FILE="${SWAP_FILE:-/swapfile}"
+    NEW_SWAP="${SWAP_FILE}.vps-tools.$$"
+    OLD_SWAP="${SWAP_FILE}.vps-tools.bak.$$"
 
     echo ""
     info "正在创建 ${SIZE_MB}MB swap 文件..."
 
     # 用 fallocate 或 dd 创建文件
     if command -v fallocate &>/dev/null; then
-        fallocate -l "${SIZE_MB}M" "$SWAP_FILE" 2>/dev/null || \
-            dd if=/dev/zero of="$SWAP_FILE" bs=1M count="$SIZE_MB" status=none
+        fallocate -l "${SIZE_MB}M" "$NEW_SWAP" 2>/dev/null || \
+            dd if=/dev/zero of="$NEW_SWAP" bs=1M count="$SIZE_MB" status=none
     else
-        dd if=/dev/zero of="$SWAP_FILE" bs=1M count="$SIZE_MB" status=progress
+        dd if=/dev/zero of="$NEW_SWAP" bs=1M count="$SIZE_MB" status=progress
     fi
 
-    if [ ! -f "$SWAP_FILE" ]; then
+    if [ ! -f "$NEW_SWAP" ]; then
         error "Swap 文件创建失败"; return
     fi
 
-    chmod 600 "$SWAP_FILE"
-    mkswap "$SWAP_FILE" &>/dev/null
-    swapon "$SWAP_FILE"
+    chmod 600 "$NEW_SWAP" || { rm -f "$NEW_SWAP"; return 1; }
+    mkswap "$NEW_SWAP" &>/dev/null || { rm -f "$NEW_SWAP"; error "Swap 格式化失败"; return 1; }
 
-    if ! swapon --show 2>/dev/null | grep -q "$SWAP_FILE"; then
-        error "Swap 启用失败（容器可能不支持）"
-        rm -f "$SWAP_FILE"
-        return
+    if swapon --show --noheadings 2>/dev/null | awk '{print $1}' | grep -qxF "$SWAP_FILE"; then
+        warn "已存在 ${SWAP_FILE}，正在安全替换..."
+        swapoff "$SWAP_FILE" 2>/dev/null || { rm -f "$NEW_SWAP"; error "旧 Swap 无法关闭，已取消替换"; return 1; }
     fi
+    if [ -f "$SWAP_FILE" ]; then
+        mv "$SWAP_FILE" "$OLD_SWAP" || { rm -f "$NEW_SWAP"; error "旧 Swap 文件备份失败"; return 1; }
+    fi
+    if ! mv "$NEW_SWAP" "$SWAP_FILE" || ! swapon "$SWAP_FILE" 2>/dev/null; then
+        rm -f "$SWAP_FILE" "$NEW_SWAP"
+        if [ -f "$OLD_SWAP" ]; then
+            mv "$OLD_SWAP" "$SWAP_FILE"
+            swapon "$SWAP_FILE" 2>/dev/null || true
+        fi
+        error "Swap 启用失败，已恢复旧文件"
+        return 1
+    fi
+    rm -f "$OLD_SWAP"
 
     info "Swap 已启用 ✓"
 
     # 写入 /etc/fstab 持久化
-    if ! grep -q "$SWAP_FILE" /etc/fstab 2>/dev/null; then
-        echo "${SWAP_FILE} none swap sw 0 0" >> /etc/fstab
+    if ! awk -v target="$SWAP_FILE" '$1 == target {found=1} END {exit !found}' /etc/fstab 2>/dev/null; then
+        echo "${SWAP_FILE} none swap sw 0 0" >> /etc/fstab || { error "无法写入 /etc/fstab，Swap 仅当前启动有效"; return 1; }
         info "已写入 /etc/fstab，重启后自动生效 ✓"
     fi
 
@@ -176,11 +185,16 @@ swap_delete() {
     [ -z "$CONFIRM" ] && CONFIRM="y"
     if ! echo "$CONFIRM" | grep -qiE '^y(es)?$'; then warn "已取消"; return; fi
 
-    swapoff "$TARGET" 2>/dev/null && info "Swap 已关闭 ✓"
+    if ! swapoff "$TARGET" 2>/dev/null; then
+        error "Swap 无法关闭，未修改 fstab，也未删除文件"
+        return 1
+    fi
+    info "Swap 已关闭 ✓"
 
     # 从 fstab 移除
-    if grep -q "$TARGET" /etc/fstab 2>/dev/null; then
-        grep -v "$TARGET" /etc/fstab > /etc/fstab.tmp && mv /etc/fstab.tmp /etc/fstab
+    if awk -v target="$TARGET" '$1 == target {found=1} END {exit !found}' /etc/fstab 2>/dev/null; then
+        awk -v target="$TARGET" '$1 != target {print}' /etc/fstab > /etc/fstab.tmp \
+            && mv /etc/fstab.tmp /etc/fstab || { error "更新 /etc/fstab 失败"; swapon "$TARGET" 2>/dev/null || true; return 1; }
         info "已从 /etc/fstab 移除 ✓"
     fi
 
@@ -223,16 +237,16 @@ swap_set_swappiness() {
     esac
 
     # 立即生效
-    echo "$VAL" > /proc/sys/vm/swappiness 2>/dev/null
+    echo "$VAL" > /proc/sys/vm/swappiness 2>/dev/null || { error "无法修改当前 swappiness"; return 1; }
 
     # 持久化到 sysctl.conf
     if grep -q "vm.swappiness" /etc/sysctl.conf 2>/dev/null; then
-        sed -i "s/^vm.swappiness.*/vm.swappiness = ${VAL}/" /etc/sysctl.conf
+        sed -i "s/^vm.swappiness.*/vm.swappiness = ${VAL}/" /etc/sysctl.conf || return 1
     else
-        echo "vm.swappiness = ${VAL}" >> /etc/sysctl.conf
+        echo "vm.swappiness = ${VAL}" >> /etc/sysctl.conf || return 1
     fi
 
-    sysctl -p &>/dev/null
+    sysctl -p &>/dev/null || { error "sysctl 配置加载失败"; return 1; }
     info "swappiness 已设置为 ${VAL}，重启后持续生效 ✓"
 }
 

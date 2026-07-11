@@ -16,6 +16,16 @@ file_sha256() {
     fi
 }
 
+self_atomic_replace() {
+    local SOURCE="$1" DEST="$2" INSTALL_TMP
+    mkdir -p "$(dirname "$DEST")" || return 1
+    INSTALL_TMP="$(dirname "$DEST")/.vps-tools.update.$$"
+    if ! install -m 755 "$SOURCE" "$INSTALL_TMP" || ! mv -f "$INSTALL_TMP" "$DEST"; then
+        rm -f "$INSTALL_TMP"
+        return 1
+    fi
+}
+
 self_manifest_value() {
     local FILE="$1" KEY="$2"
     sed -n 's/.*"'$KEY'"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$FILE" | head -1
@@ -175,16 +185,21 @@ self_update() {
 
     # 覆盖前保留当前可执行版本
     if [ -f "$LOCAL_SCRIPT" ]; then
-        mkdir -p "$VPS_VERSION_DIR"
+        mkdir -p "$VPS_VERSION_DIR" || { rm -f "$TMP_FILE"; error "无法创建版本备份目录"; return 1; }
         chmod 700 "$VPS_DATA_DIR" "$VPS_VERSION_DIR" 2>/dev/null || true
         local SAVED_VER
         SAVED_VER="${CUR_VER:-unknown}_$(date +%Y%m%d_%H%M%S).sh"
-        cp "$LOCAL_SCRIPT" "$VPS_VERSION_DIR/$SAVED_VER"
-        chmod 700 "$VPS_VERSION_DIR/$SAVED_VER"
+        cp "$LOCAL_SCRIPT" "$VPS_VERSION_DIR/$SAVED_VER" \
+            && chmod 700 "$VPS_VERSION_DIR/$SAVED_VER" \
+            || { rm -f "$TMP_FILE"; error "当前版本备份失败，已取消更新"; return 1; }
     fi
-    # 覆盖安装
-    cp "$TMP_FILE" "$LOCAL_SCRIPT"
-    chmod +x "$LOCAL_SCRIPT"
+    # 同目录写入后原子替换，避免磁盘满或中断破坏当前脚本。
+    if ! self_atomic_replace "$TMP_FILE" "$LOCAL_SCRIPT"; then
+        rm -f "$TMP_FILE"
+        error "更新文件安装失败，当前版本未被替换"
+        audit_action "脚本更新安装失败" FAILED
+        return 1
+    fi
     cp "$TMP_FILE" /tmp/ssh_hardening.sh 2>/dev/null
     rm -f "$TMP_FILE"
 

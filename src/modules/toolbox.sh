@@ -2,21 +2,77 @@
 #  系统检查、备份与诊断工具箱
 # ══════════════════════════════════════════════════════════
 
-config_backup_paths() {
+config_backup_allowed_roots() {
     local p
     for p in \
         etc/hostname etc/hosts \
         etc/ssh/sshd_config etc/ssh/sshd_config.d root/.ssh/authorized_keys \
-        etc/fail2ban etc/ufw etc/firewalld etc/nftables.conf etc/nft-port-forward \
+        etc/fail2ban etc/ufw etc/firewalld etc/nftables.conf etc/nftables.d/vps-tools-nftpf.nft etc/nft-port-forward \
         etc/sysctl.conf etc/sysctl.d/99-vps-bbr.conf etc/sysctl.d/99-ipv6-disable.conf \
         etc/gai.conf etc/resolv.conf etc/systemd/resolved.conf etc/systemd/resolved.conf.d \
         etc/NetworkManager/conf.d etc/NetworkManager/system-connections etc/resolvconf/resolv.conf.d \
-        etc/caddy root/ddns.sh root/.cf_token root/.cf_zone root/.cf_tg root/.cf_last_change \
+        etc/caddy root/ddns.sh root/.cf_token root/.hw_dns_aksk root/.cf_zone root/.cf_tg root/.cf_last_change \
         root/.cf_last_change_A root/.cf_last_change_AAAA root/.cf_last_status_A root/.cf_last_status_AAAA \
+        root/.vps-monitor root/.vps-monitor.state root/.vps-monitor.history root/.vps-monitor.metrics \
         var/spool/cron/crontabs/root var/spool/cron/root etc/crontabs/root; do
-        [ -e "/$p" ] || [ -L "/$p" ] || continue
         printf '%s\n' "$p"
     done
+}
+
+config_backup_paths() {
+    local p
+    while IFS= read -r p; do
+        [ -e "/$p" ] || [ -L "/$p" ] || continue
+        printf '%s\n' "$p"
+    done < <(config_backup_allowed_roots)
+}
+
+config_archive_validate() {
+    local FILE="$1" MEMBER ROOT OK
+    tar -tzf "$FILE" >/dev/null 2>&1 || { error "备份文件损坏"; return 1; }
+    while IFS= read -r MEMBER; do
+        MEMBER=${MEMBER#./}
+        MEMBER=${MEMBER%/}
+        [ -n "$MEMBER" ] || continue
+        case "$MEMBER" in /*|../*|*/../*|*/..) error "归档包含不安全路径：$MEMBER"; return 1 ;; esac
+        OK=false
+        while IFS= read -r ROOT; do
+            case "$MEMBER" in "$ROOT"|"$ROOT"/*) OK=true; break ;; esac
+        done < <(config_backup_allowed_roots)
+        [ "$OK" = true ] || { error "归档包含非 VPS Tools 配置路径：$MEMBER"; return 1; }
+    done < <(tar -tzf "$FILE")
+}
+
+config_archive_extract() {
+    local FILE="$1" STAGE LINK REL TARGET ROOT SRC DEST RESTORE_ROOT
+    RESTORE_ROOT="${CONFIG_RESTORE_ROOT:-/}"
+    STAGE=$(mktemp -d) || return 1
+    if ! tar -xzf "$FILE" -C "$STAGE" --no-same-owner 2>/dev/null; then
+        rm -rf "$STAGE"
+        error "导入包解压失败"
+        return 1
+    fi
+    while IFS= read -r LINK; do
+        REL=${LINK#"$STAGE"/}
+        TARGET=$(readlink "$LINK" 2>/dev/null || true)
+        case "$TARGET" in
+            /*)
+                case "$REL:$TARGET" in
+                    etc/resolv.conf:/run/systemd/resolve/*|etc/resolv.conf:/run/NetworkManager/*|etc/resolv.conf:/run/resolvconf/*) ;;
+                    *) rm -rf "$STAGE"; error "归档包含不安全符号链接：$REL -> $TARGET"; return 1 ;;
+                esac
+                ;;
+            ../*|*/../*|*/..) rm -rf "$STAGE"; error "归档包含越界符号链接：$REL -> $TARGET"; return 1 ;;
+        esac
+    done < <(find "$STAGE" -type l 2>/dev/null)
+    while IFS= read -r ROOT; do
+        SRC="$STAGE/$ROOT"
+        DEST="${RESTORE_ROOT%/}/$ROOT"
+        [ -e "$SRC" ] || [ -L "$SRC" ] || continue
+        mkdir -p "$(dirname "$DEST")" || { rm -rf "$STAGE"; return 1; }
+        cp -a "$SRC" "$(dirname "$DEST")/" || { rm -rf "$STAGE"; error "恢复路径失败：$ROOT"; return 1; }
+    done < <(config_backup_allowed_roots)
+    rm -rf "$STAGE"
 }
 
 config_backup_prune() {
@@ -90,13 +146,13 @@ config_backup_create() {
 config_backup_restore() {
     local FILE="$1"
     [ -f "$FILE" ] || { error "备份不存在"; return 1; }
-    tar -tzf "$FILE" >/dev/null 2>&1 || { error "备份文件损坏"; return 1; }
+    config_archive_validate "$FILE" || return 1
     warn "恢复将覆盖当前配置，并重启相关服务。"
     read -rp "  输入 RESTORE 确认恢复: " CONFIRM
     [ "$CONFIRM" = "RESTORE" ] || { warn "已取消"; return; }
     config_backup_create before_restore true >/dev/null || return 1
     safety_arm config_restore || return 1
-    if ! tar -xzf "$FILE" -C / 2>/dev/null; then
+    if ! config_archive_extract "$FILE"; then
         error "恢复失败，已保留恢复前快照"
         audit_action "恢复配置 $(basename "$FILE")" FAILED
         return 1
@@ -175,7 +231,7 @@ config_export_archive() {
 config_import_archive() {
     local FILE="$1"
     [ -f "$FILE" ] || { error "导入包不存在"; return 1; }
-    tar -tzf "$FILE" >/dev/null 2>&1 || { error "导入包损坏"; return 1; }
+    config_archive_validate "$FILE" || return 1
     config_backup_restore "$FILE"
 }
 
@@ -936,18 +992,26 @@ monitor_alert_cron_command() {
 }
 
 monitor_alert_acquire_lock() {
-    local LOCK_FILE LOCK_PARENT
+    local LOCK_FILE LOCK_PARENT LOCK_PID
     LOCK_FILE=$(monitor_alert_lock_file)
     LOCK_PARENT=$(dirname "$LOCK_FILE")
     mkdir -p "$LOCK_PARENT" 2>/dev/null || return 1
-    if command -v flock >/dev/null 2>&1; then
+    if [ "${MONITOR_ALERT_FORCE_MKDIR_LOCK:-0}" != 1 ] && command -v flock >/dev/null 2>&1; then
         exec 9> "$LOCK_FILE" || return 1
         flock -n 9
         return
     fi
     MONITOR_ALERT_LOCK_DIR="${LOCK_FILE}.d"
-    mkdir "$MONITOR_ALERT_LOCK_DIR" 2>/dev/null || return 1
-    trap 'rmdir "$MONITOR_ALERT_LOCK_DIR" 2>/dev/null || true' EXIT
+    if ! mkdir "$MONITOR_ALERT_LOCK_DIR" 2>/dev/null; then
+        LOCK_PID=$(cat "$MONITOR_ALERT_LOCK_DIR/pid" 2>/dev/null || true)
+        if [ -n "$LOCK_PID" ] && kill -0 "$LOCK_PID" 2>/dev/null; then
+            return 1
+        fi
+        rm -rf "$MONITOR_ALERT_LOCK_DIR" 2>/dev/null || return 1
+        mkdir "$MONITOR_ALERT_LOCK_DIR" 2>/dev/null || return 1
+    fi
+    printf '%s\n' "$$" > "$MONITOR_ALERT_LOCK_DIR/pid" || { rm -rf "$MONITOR_ALERT_LOCK_DIR"; return 1; }
+    trap 'rm -rf "$MONITOR_ALERT_LOCK_DIR" 2>/dev/null || true' EXIT
 }
 
 monitor_alert_daily_cron_expr() {
@@ -2678,6 +2742,7 @@ safety_arm() {
 #!/bin/bash
 sleep 180
 tar -xzf '$SNAP' -C / >/dev/null 2>&1
+tar -tzf '$SNAP' 2>/dev/null | grep -qx 'etc/sysctl.d/99-ipv6-disable.conf' || rm -f /etc/sysctl.d/99-ipv6-disable.conf
 sshd -t >/dev/null 2>&1 && (systemctl restart ssh 2>/dev/null || systemctl restart sshd 2>/dev/null || service ssh restart 2>/dev/null || service sshd restart 2>/dev/null)
 systemctl restart systemd-resolved >/dev/null 2>&1 || true
 systemctl restart NetworkManager >/dev/null 2>&1 || true

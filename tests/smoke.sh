@@ -367,6 +367,52 @@ FIRST_DIRECTIVE=$(grep -m1 -E '^(Include|PasswordAuthentication|Match)' "$SSHD_S
     [[ "$NFT_CONFIG" != *"flush ruleset"* ]] || { echo "NFT config must not flush the host ruleset" >&2; exit 1; }
     [[ "$NFT_CONFIG" = *"table ip nftpf_nat"* ]] || { echo "NFT IPv4 table name should be script-scoped" >&2; exit 1; }
     [[ "$NFT_CONFIG" = *"table ip6 nftpf_nat"* ]] || { echo "NFT IPv6 table name should be script-scoped" >&2; exit 1; }
+
+(
+    NFT_TEST="$TMP/nft-transaction"
+    mkdir -p "$NFT_TEST/state"
+    NFT_CONFIG_FILE="$NFT_TEST/nftables.conf"
+    NFT_MANAGED_FILE="$NFT_TEST/vps-tools.nft"
+    NFT_STATE_DIR="$NFT_TEST/state"
+    NFT_RULES_FILE="$NFT_STATE_DIR/rules.db"
+    NFT_ACCESS_FILE="$NFT_STATE_DIR/access.conf"
+    : > "$NFT_RULES_FILE"
+    printf 'mode=off\n' > "$NFT_ACCESS_FILE"
+    printf '#!/usr/sbin/nft -f\ntable inet user_firewall {}\n' > "$NFT_CONFIG_FILE"
+    systemd_available() { return 1; }
+    nft() {
+        [ "${1:-}" = list ] && return 1
+        return 0
+    }
+    nft_write_and_apply >/dev/null
+    grep -q 'table inet user_firewall' "$NFT_CONFIG_FILE" || { echo "NFT update replaced user config" >&2; exit 1; }
+    grep -Fq "$NFT_INCLUDE_MARKER" "$NFT_CONFIG_FILE" || { echo "NFT managed include missing" >&2; exit 1; }
+    [ -s "$NFT_MANAGED_FILE" ] || { echo "NFT managed rules file missing" >&2; exit 1; }
+)
+(
+    NFT_TEST="$TMP/nft-rollback"
+    mkdir -p "$NFT_TEST/state"
+    NFT_CONFIG_FILE="$NFT_TEST/nftables.conf"
+    NFT_MANAGED_FILE="$NFT_TEST/vps-tools.nft"
+    NFT_STATE_DIR="$NFT_TEST/state"
+    NFT_RULES_FILE="$NFT_STATE_DIR/rules.db"
+    NFT_ACCESS_FILE="$NFT_STATE_DIR/access.conf"
+    : > "$NFT_RULES_FILE"
+    printf 'mode=off\n' > "$NFT_ACCESS_FILE"
+    printf '#!/usr/sbin/nft -f\ntable inet user_firewall {}\n' > "$NFT_CONFIG_FILE"
+    printf '# old managed rules\n' > "$NFT_MANAGED_FILE"
+    cp "$NFT_CONFIG_FILE" "$NFT_TEST/main.expected"
+    cp "$NFT_MANAGED_FILE" "$NFT_TEST/managed.expected"
+    systemd_available() { return 1; }
+    nft() {
+        [ "${1:-}" = list ] && return 1
+        [ "${1:-}" = -c ] && return 0
+        return 1
+    }
+    ! nft_write_and_apply >/dev/null 2>&1 || { echo "NFT apply failure returned success" >&2; exit 1; }
+    cmp -s "$NFT_CONFIG_FILE" "$NFT_TEST/main.expected" || { echo "NFT apply failure did not restore main config" >&2; exit 1; }
+    cmp -s "$NFT_MANAGED_FILE" "$NFT_TEST/managed.expected" || { echo "NFT apply failure did not restore managed config" >&2; exit 1; }
+)
 )
 monitor_alert_service_state() { case "$1" in ssh) echo stopped ;; sshd) echo running ;; *) echo unknown ;; esac; }
 [[ "$(monitor_alert_ssh_state)" = "running" ]] || { echo "SSH service alias check failed" >&2; exit 1; }
@@ -409,6 +455,13 @@ MONITOR_CRON_FILTERED=$(printf '%s\n' "$MONITOR_CRON_SAMPLE" | monitor_alert_cro
     export MONITOR_ALERT_LOCK_FILE="$TMP/monitor.lock"
     monitor_alert_acquire_lock || { echo "Monitor lock acquisition failed" >&2; exit 1; }
     ! (monitor_alert_acquire_lock) || { echo "Concurrent monitor lock acquisition succeeded" >&2; exit 1; }
+)
+(
+    export MONITOR_ALERT_FORCE_MKDIR_LOCK=1
+    export MONITOR_ALERT_LOCK_FILE="$TMP/monitor-stale.lock"
+    mkdir -p "${MONITOR_ALERT_LOCK_FILE}.d"
+    printf '99999999\n' > "${MONITOR_ALERT_LOCK_FILE}.d/pid"
+    monitor_alert_acquire_lock || { echo "Stale monitor fallback lock was not recovered" >&2; exit 1; }
 )
 monitor_traffic_reset_day_valid 31 || { echo "Reset day 31 should be valid" >&2; exit 1; }
 ! monitor_traffic_reset_day_valid 32 || { echo "Reset day 32 should be invalid" >&2; exit 1; }

@@ -193,18 +193,20 @@ ts_enable_ntp() {
     local CAN_NTP
     CAN_NTP=$(timedatectl show --property=CanNTP --value 2>/dev/null || echo "no")
 
-    if [ "$CAN_NTP" = "yes" ] && command -v systemctl &>/dev/null         && systemctl list-units --type=service 2>/dev/null | grep -q "systemd-timesyncd"; then
+    if [ "$CAN_NTP" = "yes" ] && command -v systemctl &>/dev/null \
+        && systemctl list-unit-files 2>/dev/null | grep -q '^systemd-timesyncd.service'; then
         # systemd-timesyncd 可用
-        timedatectl set-ntp true 2>/dev/null
-        systemctl enable systemd-timesyncd --quiet 2>/dev/null
-        systemctl restart systemd-timesyncd 2>/dev/null
+        timedatectl set-ntp true 2>/dev/null || { error "无法启用系统 NTP"; return 1; }
+        systemctl enable systemd-timesyncd --quiet 2>/dev/null || true
+        systemctl restart systemd-timesyncd 2>/dev/null || { error "systemd-timesyncd 启动失败"; return 1; }
+        systemctl is-active --quiet systemd-timesyncd 2>/dev/null || { error "systemd-timesyncd 未运行"; return 1; }
         info "systemd-timesyncd NTP 已开启 ✓"
     elif command -v chronyc &>/dev/null; then
         # chrony 已安装，自动探测服务名
         local CHRONY_SVC="chronyd"
         systemctl list-unit-files 2>/dev/null | grep -q "^chrony.service" && CHRONY_SVC="chrony"
         svc_enable "$CHRONY_SVC"
-        systemctl start "$CHRONY_SVC" 2>/dev/null || rc-service "$CHRONY_SVC" start 2>/dev/null || true
+        svc_start "$CHRONY_SVC" || { error "chrony 启动失败"; return 1; }
         sleep 1
         chronyc makestep &>/dev/null && info "chrony 强制同步 ✓"
         info "chrony NTP 自动同步已开启 ✓"
@@ -216,7 +218,7 @@ ts_enable_ntp() {
             local CHRONY_SVC="chronyd"
             systemctl list-unit-files 2>/dev/null | grep -q "^chrony.service" && CHRONY_SVC="chrony"
             svc_enable "$CHRONY_SVC"
-            systemctl start "$CHRONY_SVC" 2>/dev/null || rc-service "$CHRONY_SVC" start 2>/dev/null || true
+            svc_start "$CHRONY_SVC" || { error "chrony 启动失败"; return 1; }
             sleep 2
             chronyc makestep &>/dev/null && info "chrony 强制同步 ✓"
             info "chrony 已安装并开启自动同步 ✓"

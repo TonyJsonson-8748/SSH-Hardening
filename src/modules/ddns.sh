@@ -181,6 +181,40 @@ ddns_build_domain() {
     esac
 }
 
+ddns_fetch_public_ip() {
+    local FAMILY="$1" VALUE
+    case "$FAMILY" in
+        4) VALUE=$(curl -4 -fsS --max-time 8 https://api.ipify.org 2>/dev/null || curl -4 -fsS --max-time 8 https://api.ip.sb/ip 2>/dev/null) ;;
+        6) VALUE=$(curl -6 -fsS --max-time 8 https://api64.ipify.org 2>/dev/null || curl -6 -fsS --max-time 8 https://api.ip.sb/ip 2>/dev/null) ;;
+        *) return 1 ;;
+    esac
+    VALUE=${VALUE//$'\r'/}
+    VALUE=${VALUE//$'\n'/}
+    DDNS_IP_VALUE="$VALUE" python3 - "$FAMILY" <<'PY'
+import ipaddress
+import os
+import sys
+
+value = os.environ.get("DDNS_IP_VALUE", "")
+try:
+    address = ipaddress.ip_address(value)
+except ValueError:
+    raise SystemExit(1)
+if address.version != int(sys.argv[1]) or not address.is_global:
+    raise SystemExit(1)
+print(address.compressed)
+PY
+}
+
+ddns_install_cron_job() {
+    local CRON_JOB="$1"
+    if ! (crontab -l 2>/dev/null | ddns_cron_without_managed; echo "$CRON_JOB") | crontab -; then
+        error "写入 DDNS crontab 失败"
+        return 1
+    fi
+    ddns_start_cron_service >/dev/null 2>&1 || warn "cron 服务未能自动启动，请检查服务状态"
+}
+
 ddns_cf_record_ensure() {
     local zone_id="$1" token="$2" type="$3" domain="$4" placeholder="$5" ttl="$6" proxied="$7"
     local record_resp record_ok record_count create_body create_resp create_ok
@@ -554,11 +588,14 @@ ddns_install_cloudflare() {
     ZONE_ID=$(echo "$ZONE_RESP" | python3 -c         "import sys,json; print(json.load(sys.stdin)['result'][0]['id'])")
     info "Token 有效，Zone ID: ${ZONE_ID} ✓"
 
+    local DDNS_INITIAL_IP4="" DDNS_INITIAL_IP6=""
     if [ "$DDNS_ENABLE_A" = "true" ]; then
-        ddns_cf_record_ensure "$ZONE_ID" "$DDNS_TOKEN" A "$DDNS_DOMAIN4" "1.1.1.1" "$DDNS_TTL" "$DDNS_PROXIED" || return
+        DDNS_INITIAL_IP4=$(ddns_fetch_public_ip 4) || { error "无法获取有效公网 IPv4，未创建或修改 A 记录"; return 1; }
+        ddns_cf_record_ensure "$ZONE_ID" "$DDNS_TOKEN" A "$DDNS_DOMAIN4" "$DDNS_INITIAL_IP4" "$DDNS_TTL" "$DDNS_PROXIED" || return
     fi
     if [ "$DDNS_ENABLE_AAAA" = "true" ]; then
-        ddns_cf_record_ensure "$ZONE_ID" "$DDNS_TOKEN" AAAA "$DDNS_DOMAIN6" "::1" "$DDNS_TTL" "$DDNS_PROXIED" || return
+        DDNS_INITIAL_IP6=$(ddns_fetch_public_ip 6) || { error "无法获取有效公网 IPv6，未创建或修改 AAAA 记录"; return 1; }
+        ddns_cf_record_ensure "$ZONE_ID" "$DDNS_TOKEN" AAAA "$DDNS_DOMAIN6" "$DDNS_INITIAL_IP6" "$DDNS_TTL" "$DDNS_PROXIED" || return
     fi
 
     # 保存配置
@@ -912,18 +949,17 @@ DDNS_INNER
     sed -i "s|__LOG__|${DDNS_LOG_ESC}|g" "$DDNS_SCRIPT"
     chmod 700 "$DDNS_SCRIPT"
 
-    local CRON_JOB; CRON_JOB="$(ddns_cron_expr "$DDNS_INTERVAL_MIN") ${DDNS_SCRIPT} >> ${DDNS_LOG} 2>&1 ${DDNS_CRON_MARKER}"
-    ( crontab -l 2>/dev/null | ddns_cron_without_managed; echo "$CRON_JOB" ) | crontab -
-    info "crontab 已设置（每 ${DDNS_INTERVAL_MIN} 分钟自动更新）✓"
-    ddns_start_cron_service >/dev/null 2>&1 || true
-
     echo ""
     info "立即执行一次测试..."
     if bash "$DDNS_SCRIPT"; then
         tail -1 "$DDNS_LOG" 2>/dev/null | while IFS= read -r l; do echo -e "  ${GREEN}$l${NC}"; done
     else
         error "执行失败，请查看日志"
+        return 1
     fi
+    local CRON_JOB; CRON_JOB="$(ddns_cron_expr "$DDNS_INTERVAL_MIN") ${DDNS_SCRIPT} >> ${DDNS_LOG} 2>&1 ${DDNS_CRON_MARKER}"
+    ddns_install_cron_job "$CRON_JOB" || return 1
+    info "crontab 已设置（每 ${DDNS_INTERVAL_MIN} 分钟自动更新）✓"
     echo ""
     info "DDNS 配置完成 ✓"
     [ "$DDNS_ENABLE_A" = "true" ] && echo -e "  IPv4 : ${BOLD}${DDNS_DOMAIN4}${NC}"
@@ -1547,18 +1583,17 @@ DDNS_HUAWEI_INNER
     sed -i "s|__LOG__|${DDNS_LOG_ESC}|g" "$DDNS_SCRIPT"
     chmod 700 "$DDNS_SCRIPT"
 
-    local CRON_JOB; CRON_JOB="$(ddns_cron_expr "$DDNS_INTERVAL_MIN") ${DDNS_SCRIPT} >> ${DDNS_LOG} 2>&1 ${DDNS_CRON_MARKER}"
-    ( crontab -l 2>/dev/null | ddns_cron_without_managed; echo "$CRON_JOB" ) | crontab -
-    info "crontab 已设置（每 ${DDNS_INTERVAL_MIN} 分钟自动更新）✓"
-    ddns_start_cron_service >/dev/null 2>&1 || true
-
     echo ""
     info "立即执行一次测试..."
     if bash "$DDNS_SCRIPT"; then
         tail -1 "$DDNS_LOG" 2>/dev/null | while IFS= read -r l; do echo -e "  ${GREEN}$l${NC}"; done
     else
         error "执行失败，请查看日志"
+        return 1
     fi
+    local CRON_JOB; CRON_JOB="$(ddns_cron_expr "$DDNS_INTERVAL_MIN") ${DDNS_SCRIPT} >> ${DDNS_LOG} 2>&1 ${DDNS_CRON_MARKER}"
+    ddns_install_cron_job "$CRON_JOB" || return 1
+    info "crontab 已设置（每 ${DDNS_INTERVAL_MIN} 分钟自动更新）✓"
     echo ""
     info "华为云 DDNS 配置完成 ✓"
     [ "$DDNS_ENABLE_A" = "true" ] && echo -e "  IPv4 : ${BOLD}${DDNS_DOMAIN4}${NC}"
@@ -1605,8 +1640,7 @@ ddns_resume() {
     LOG=$(ddns_log_path)
     INTERVAL_MIN=$(ddns_interval_min)
     CRON_JOB="$(ddns_cron_expr "$INTERVAL_MIN") ${DDNS_SCRIPT} >> ${LOG} 2>&1 ${DDNS_CRON_MARKER}"
-    ( crontab -l 2>/dev/null | ddns_cron_without_managed; echo "$CRON_JOB" ) | crontab -
-    ddns_start_cron_service >/dev/null 2>&1 || true
+    ddns_install_cron_job "$CRON_JOB" || return 1
     info "DDNS 自动更新已恢复（每 ${INTERVAL_MIN} 分钟）✓"
 }
 

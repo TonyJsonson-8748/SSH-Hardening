@@ -285,59 +285,67 @@ f2b_config_params() {
     fi
 }
 
+f2b_write_section_param() {
+    local SECTION="$1" KEY="$2" VAL="$3" JAIL_LOCAL="${F2B_JAIL_LOCAL:-/etc/fail2ban/jail.local}" TMP
+    mkdir -p "$(dirname "$JAIL_LOCAL")" || return 1
+    TMP=$(mktemp "${JAIL_LOCAL}.tmp.XXXXXX") || return 1
+    [ -f "$JAIL_LOCAL" ] || : > "$JAIL_LOCAL"
+    awk -v section="$SECTION" -v key="$KEY" -v value="$VAL" '
+        function section_line(name) { return "[" name "]" }
+        /^\[[^]]+\][[:space:]]*$/ {
+            if (in_target && !written) print key " = " value
+            current = $0
+            gsub(/[[:space:]]+$/, "", current)
+            in_target = (current == section_line(section))
+            if (in_target) found_section = 1
+            written = 0
+            print
+            next
+        }
+        in_target && $0 ~ "^[[:space:]]*" key "[[:space:]]*=" {
+            if (!written) print key " = " value
+            written = 1
+            next
+        }
+        { print }
+        END {
+            if (in_target && !written) print key " = " value
+            if (!found_section) {
+                if (NR > 0) print ""
+                print section_line(section)
+                print key " = " value
+            }
+        }
+    ' "$JAIL_LOCAL" > "$TMP" || { rm -f "$TMP"; return 1; }
+    mv "$TMP" "$JAIL_LOCAL" || { rm -f "$TMP"; return 1; }
+}
+
+f2b_set_section_param() {
+    local SECTION="$1" KEY="$2" VAL="$3" JAIL_LOCAL="${F2B_JAIL_LOCAL:-/etc/fail2ban/jail.local}" BACKUP EXISTED=no
+    BACKUP=$(mktemp) || return 1
+    if [ -f "$JAIL_LOCAL" ]; then cp "$JAIL_LOCAL" "$BACKUP" || { rm -f "$BACKUP"; return 1; }; EXISTED=yes; fi
+    if ! f2b_write_section_param "$SECTION" "$KEY" "$VAL" \
+        || { command -v fail2ban-client >/dev/null 2>&1 && ! fail2ban-client -t >/dev/null 2>&1; }; then
+        [ "$EXISTED" = yes ] && cp "$BACKUP" "$JAIL_LOCAL" || rm -f "$JAIL_LOCAL"
+        rm -f "$BACKUP"
+        error "Fail2ban 配置验证失败，已恢复原配置"
+        return 1
+    fi
+    rm -f "$BACKUP"
+}
+
 # 写入参数到 jail.local [DEFAULT] 节
 f2b_set_param() {
     local KEY="$1" VAL="$2"
-    local JAIL_LOCAL="/etc/fail2ban/jail.local"
-
-    # 确保文件存在且有 [DEFAULT] 节
-    if [ ! -f "$JAIL_LOCAL" ]; then
-        echo -e "[DEFAULT]" > "$JAIL_LOCAL"
-    fi
-    if ! grep -q "^\[DEFAULT\]" "$JAIL_LOCAL"; then
-        sed -i "1i [DEFAULT]" "$JAIL_LOCAL"
-    fi
-
-    if grep -qE "^${KEY}\s*=" "$JAIL_LOCAL"; then
-        sed -i "s|^${KEY}\s*=.*|${KEY} = ${VAL}|" "$JAIL_LOCAL"
-    else
-        sed -i "/^\[DEFAULT\]/a ${KEY} = ${VAL}" "$JAIL_LOCAL"
-    fi
+    f2b_set_section_param DEFAULT "$KEY" "$VAL" || return 1
     info "${KEY} 已设置为 ${VAL} ✓"
 }
 
 # 写入参数到 jail.local [sshd] 节
 f2b_set_param_jail() {
     local KEY="$1" VAL="$2"
-    local JAIL_LOCAL="/etc/fail2ban/jail.local"
-
-    [ -f "$JAIL_LOCAL" ] || echo -e "[DEFAULT]
-
-[sshd]
-enabled = true" > "$JAIL_LOCAL"
-
-    if grep -q "^\[sshd\]" "$JAIL_LOCAL"; then
-        # 已有 [sshd] 节：在节内找 key 并替换，没有则在 [sshd] 下追加
-        if grep -A20 "^\[sshd\]" "$JAIL_LOCAL" | grep -qE "^${KEY}\s*="; then
-            # 替换 [sshd] 节内的 key（简单 sed，适配大多数结构）
-            awk -v k="$KEY" -v v="$VAL" '
-                /^\[sshd\]/{in_sshd=1}
-                /^\[/ && !/^\[sshd\]/{in_sshd=0}
-                in_sshd && $0 ~ "^"k"[[:space:]]*=" {print k" = "v; next}
-                {print}
-            ' "$JAIL_LOCAL" > "${JAIL_LOCAL}.tmp" && mv "${JAIL_LOCAL}.tmp" "$JAIL_LOCAL"
-        else
-            # 在 [sshd] 后追加
-            sed -i "/^\[sshd\]/a ${KEY} = ${VAL}" "$JAIL_LOCAL"
-        fi
-    else
-        # 没有 [sshd] 节，追加
-        printf '
-[sshd]
-enabled = true
-%s = %s
-' "$KEY" "$VAL" >> "$JAIL_LOCAL"
-    fi
+    f2b_set_section_param sshd enabled true || return 1
+    f2b_set_section_param sshd "$KEY" "$VAL" || return 1
     info "[sshd] ${KEY} 已设置为 ${VAL} ✓"
 }
 

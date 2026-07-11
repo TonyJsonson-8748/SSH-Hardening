@@ -2,6 +2,8 @@
 #  NFT 转发管理模块（端口转发 / DDNS / 访问控制）
 # ══════════════════════════════════════════════════════════
 NFT_CONFIG_FILE="${NFT_CONFIG_FILE:-/etc/nftables.conf}"
+NFT_MANAGED_FILE="${NFT_MANAGED_FILE:-/etc/nftables.d/vps-tools-nftpf.nft}"
+NFT_INCLUDE_MARKER="# VPS_TOOLS_NFTPF_INCLUDE"
 NFT_STATE_DIR="${NFT_STATE_DIR:-/etc/nft-port-forward}"
 NFT_RULES_FILE="${NFT_RULES_FILE:-$NFT_STATE_DIR/rules.db}"
 NFT_ACCESS_FILE="${NFT_ACCESS_FILE:-$NFT_STATE_DIR/access.conf}"
@@ -15,6 +17,41 @@ nft_ensure_state_dir() {
     mkdir -p "$NFT_STATE_DIR"
     touch "$NFT_RULES_FILE"
     [ -f "$NFT_ACCESS_FILE" ] || echo "mode=off" > "$NFT_ACCESS_FILE"
+}
+
+nft_main_config_prepare() {
+    local tmp legacy=false
+    mkdir -p "$(dirname "$NFT_CONFIG_FILE")" "$(dirname "$NFT_MANAGED_FILE")" || return 1
+    tmp=$(mktemp "${NFT_CONFIG_FILE}.tmp.XXXXXX") || return 1
+    if [ -f "$NFT_CONFIG_FILE" ] && grep -q '^# NFTPF_RENDER_VERSION=' "$NFT_CONFIG_FILE" 2>/dev/null; then
+        legacy=true
+        cp "$NFT_CONFIG_FILE" "${NFT_CONFIG_FILE}.bak.pre-vps-tools-include" 2>/dev/null || true
+        printf '%s\n\n' '#!/usr/sbin/nft -f' > "$tmp"
+    elif [ -f "$NFT_CONFIG_FILE" ]; then
+        grep -Fv -- "$NFT_INCLUDE_MARKER" "$NFT_CONFIG_FILE" > "$tmp" || true
+    else
+        printf '%s\n\n' '#!/usr/sbin/nft -f' > "$tmp"
+    fi
+    if ! grep -Fq -- "$NFT_MANAGED_FILE" "$tmp" 2>/dev/null; then
+        printf '\ninclude "%s" %s\n' "$NFT_MANAGED_FILE" "$NFT_INCLUDE_MARKER" >> "$tmp"
+    fi
+    chmod 755 "$tmp" 2>/dev/null || true
+    mv "$tmp" "$NFT_CONFIG_FILE" || { rm -f "$tmp"; return 1; }
+    [ "$legacy" = true ] && info "已将旧版独占配置迁移为独立 include，原文件已备份"
+    return 0
+}
+
+nft_main_config_remove_include() {
+    local tmp
+    [ -f "$NFT_CONFIG_FILE" ] || return 0
+    tmp=$(mktemp "${NFT_CONFIG_FILE}.tmp.XXXXXX") || return 1
+    grep -Fv -- "$NFT_INCLUDE_MARKER" "$NFT_CONFIG_FILE" > "$tmp" || true
+    mv "$tmp" "$NFT_CONFIG_FILE" || { rm -f "$tmp"; return 1; }
+}
+
+nft_main_has_external_rules() {
+    [ -f "$NFT_CONFIG_FILE" ] || return 1
+    sed -e '/^[[:space:]]*$/d' -e '/^[[:space:]]*#/d' "$NFT_CONFIG_FILE" | grep -q .
 }
 
 nft_install() {
@@ -63,7 +100,21 @@ nft_uninstall() {
         nft delete table ip6 nftpf_nat 2>/dev/null || true
     fi
 
-    # 3. 停止服务
+    # 3. 只移除脚本自己的持久化 include，保留用户配置。
+    rm -f "$NFT_MANAGED_FILE"
+    nft_main_config_remove_include || warn "无法从主配置移除 VPS Tools include"
+
+    # 4. 删除状态目录
+    rm -rf "$NFT_STATE_DIR"
+
+    # 主配置仍有其它规则时保留 nftables 服务和软件包。
+    if nft_main_has_external_rules; then
+        warn "检测到用户自有 nftables 配置，已保留 nftables 服务和软件包"
+        info "VPS Tools NFT 转发模块已卸载 ✓"
+        return 0
+    fi
+
+    # 5. 没有其它规则时停止服务并卸载软件包。
     if systemd_available; then
         systemctl stop nftables &>/dev/null || true
         systemctl disable nftables &>/dev/null || true
@@ -72,19 +123,6 @@ nft_uninstall() {
         rc-update del nftables default 2>/dev/null || true
     fi
 
-    # 4. 删除状态目录
-    rm -rf "$NFT_STATE_DIR"
-
-    # 5. 清空 nftables 配置（保留文件结构）
-    if [ -f "$NFT_CONFIG_FILE" ]; then
-        cat > "$NFT_CONFIG_FILE" <<NFTEOF
-#!/usr/sbin/nft -f
-
-# vps-tools nftpf tables removed by uninstall.
-NFTEOF
-    fi
-
-    # 6. 卸载软件包
     info "正在卸载 nftables 软件包..."
     if command -v apt-get &>/dev/null; then
         apt-get remove -y nftables 2>/dev/null
@@ -362,43 +400,43 @@ EOF
 }
 
 nft_write_and_apply() {
-    local tmp
-    tmp=$(mktemp) || return 1
-    nft_generate_config > "$tmp"
+    local candidate batch main_backup managed_backup main_existed=no managed_existed=no table family
+    mkdir -p "$(dirname "$NFT_MANAGED_FILE")" || return 1
+    candidate=$(mktemp "${NFT_MANAGED_FILE}.tmp.XXXXXX") || return 1
+    batch=$(mktemp) || { rm -f "$candidate"; return 1; }
+    nft_generate_config > "$candidate" || { rm -f "$candidate" "$batch"; return 1; }
 
-    if ! nft -c -f "$tmp" 2>&1; then
-        rm -f "$tmp"
+    for family in ip ip6; do
+        for table in nftpf_access nftpf_nat; do
+            nft list table "$family" "$table" &>/dev/null && printf 'delete table %s %s\n' "$family" "$table" >> "$batch"
+        done
+    done
+    cat "$candidate" >> "$batch"
+    if ! nft -c -f "$batch" 2>&1; then
+        rm -f "$candidate" "$batch"
         error "nftables 配置语法校验失败"
         return 1
     fi
 
-    [ -f "$NFT_CONFIG_FILE" ] && cp "$NFT_CONFIG_FILE" "${NFT_CONFIG_FILE}.bak.last"
-    mv "$tmp" "$NFT_CONFIG_FILE"
-    chmod +x "$NFT_CONFIG_FILE"
-    nft delete table ip nftpf_access &>/dev/null || true
-    nft delete table ip6 nftpf_access &>/dev/null || true
-    nft delete table ip nftpf_nat &>/dev/null || true
-    nft delete table ip6 nftpf_nat &>/dev/null || true
+    main_backup=$(mktemp) || { rm -f "$candidate" "$batch"; return 1; }
+    managed_backup=$(mktemp) || { rm -f "$candidate" "$batch" "$main_backup"; return 1; }
+    if [ -f "$NFT_CONFIG_FILE" ]; then cp "$NFT_CONFIG_FILE" "$main_backup" || return 1; main_existed=yes; fi
+    if [ -f "$NFT_MANAGED_FILE" ]; then cp "$NFT_MANAGED_FILE" "$managed_backup" || return 1; managed_existed=yes; fi
 
+    mv "$candidate" "$NFT_MANAGED_FILE" || { rm -f "$candidate" "$batch" "$main_backup" "$managed_backup"; return 1; }
+    chmod 755 "$NFT_MANAGED_FILE" 2>/dev/null || true
+    if ! nft_main_config_prepare || ! nft -f "$batch" &>/dev/null; then
+        [ "$managed_existed" = yes ] && cp "$managed_backup" "$NFT_MANAGED_FILE" || rm -f "$NFT_MANAGED_FILE"
+        [ "$main_existed" = yes ] && cp "$main_backup" "$NFT_CONFIG_FILE" || rm -f "$NFT_CONFIG_FILE"
+        rm -f "$batch" "$main_backup" "$managed_backup"
+        error "nftables 配置应用失败，持久化文件已恢复"
+        return 1
+    fi
+    rm -f "$batch" "$main_backup" "$managed_backup"
     if systemd_available; then
-        systemctl enable nftables &>/dev/null || true
-        if ! systemctl restart nftables &>/dev/null; then
-            nft -f "$NFT_CONFIG_FILE" &>/dev/null || {
-                error "nftables 配置应用失败"
-                return 1
-            }
-        fi
-    elif command -v rc-service &>/dev/null; then
-        rc-update add nftables default 2>/dev/null || true
-        rc-service nftables restart &>/dev/null || nft -f "$NFT_CONFIG_FILE" &>/dev/null || {
-            error "nftables 配置应用失败"
-            return 1
-        }
-    else
-        nft -f "$NFT_CONFIG_FILE" &>/dev/null || {
-            error "nftables 配置应用失败"
-            return 1
-        }
+        systemctl enable nftables &>/dev/null || warn "nftables 开机自启设置失败"
+    elif command -v rc-update &>/dev/null; then
+        rc-update add nftables default 2>/dev/null || warn "nftables 开机自启设置失败"
     fi
     info "nftables 配置已应用 ✓"
 }
@@ -687,7 +725,6 @@ nft_edit_rule() {
         # 回滚
         sed -i "/^${OLD_ID}|/d" "$NFT_RULES_FILE"
         echo "$backup_line" >> "$NFT_RULES_FILE"
-        nft_write_and_apply
         error "应用失败，已回滚到原规则"
         return 1
     fi
@@ -714,8 +751,11 @@ nft_delete_rule() {
     [ -z "$c" ] && c="y"
     echo "$c" | grep -qiE '^y(es)?$' || { warn "已取消"; return; }
 
-    sed -i "/^${id}|/d" "$NFT_RULES_FILE"
-    nft_write_and_apply
+    local backup; backup=$(mktemp) || return 1
+    cp "$NFT_RULES_FILE" "$backup" || { rm -f "$backup"; return 1; }
+    sed -i "/^${id}|/d" "$NFT_RULES_FILE" || { rm -f "$backup"; return 1; }
+    nft_write_and_apply || { cp "$backup" "$NFT_RULES_FILE"; rm -f "$backup"; return 1; }
+    rm -f "$backup"
 }
 
 # ── 清空所有规则 ──────────────────────────────────────────
@@ -725,8 +765,11 @@ nft_clear_all_rules() {
     [ -z "$c" ] && c="n"
     echo "$c" | grep -qiE '^y(es)?$' || { warn "已取消"; return; }
 
+    local backup; backup=$(mktemp) || return 1
+    cp "$NFT_RULES_FILE" "$backup" || { rm -f "$backup"; return 1; }
     : > "$NFT_RULES_FILE"
-    nft_write_and_apply
+    nft_write_and_apply || { cp "$backup" "$NFT_RULES_FILE"; rm -f "$backup"; return 1; }
+    rm -f "$backup"
 }
 
 # ── DDNS 刷新 ─────────────────────────────────────────────
@@ -765,8 +808,11 @@ nft_refresh_ddns() {
         rm -f "$tmp"
         return 0
     fi
+    local backup; backup=$(mktemp) || { rm -f "$tmp"; return 1; }
+    cp "$NFT_RULES_FILE" "$backup" || { rm -f "$tmp" "$backup"; return 1; }
     mv "$tmp" "$NFT_RULES_FILE"
-    nft_write_and_apply
+    nft_write_and_apply || { cp "$backup" "$NFT_RULES_FILE"; rm -f "$backup"; return 1; }
+    rm -f "$backup"
 }
 
 # ── DDNS 自动刷新 timer ──────────────────────────────────
@@ -874,8 +920,15 @@ nft_set_access_mode() {
         return 1
     fi
 
+    local backup existed=no; backup=$(mktemp) || { rm -f "$tmp"; return 1; }
+    [ -f "$NFT_ACCESS_FILE" ] && { cp "$NFT_ACCESS_FILE" "$backup" || { rm -f "$tmp" "$backup"; return 1; }; existed=yes; }
     mv "$tmp" "$NFT_ACCESS_FILE"
-    nft_write_and_apply
+    if ! nft_write_and_apply; then
+        [ "$existed" = yes ] && cp "$backup" "$NFT_ACCESS_FILE" || rm -f "$NFT_ACCESS_FILE"
+        rm -f "$backup"
+        return 1
+    fi
+    rm -f "$backup"
 }
 
 nft_access_menu() {
@@ -957,7 +1010,7 @@ nft_access_menu() {
 IPTPF_RULES_FILE="${IPTPF_RULES_FILE:-/etc/iptables-local-fwd.conf}"
 
 iptpf_ensure_file() {
-    [ -f "$IPTPF_RULES_FILE" ] || touch "$IPTPF_RULES_FILE"
+    [ -f "$IPTPF_RULES_FILE" ] || touch "$IPTPF_RULES_FILE" || return 1
 }
 
 iptpf_check_iptables() {
@@ -976,30 +1029,42 @@ iptpf_check_iptables() {
 iptpf_persist() {
     # 持久化保存当前 iptables 规则
     if [ -d /etc/iptables ]; then
-        iptables-save > /etc/iptables/rules.v4 2>/dev/null
-        ip6tables-save > /etc/iptables/rules.v6 2>/dev/null
+        iptables-save > /etc/iptables/rules.v4 2>/dev/null || return 1
+        if command -v ip6tables-save &>/dev/null; then
+            ip6tables-save > /etc/iptables/rules.v6 2>/dev/null || return 1
+        fi
+        return 0
     elif [ -f /etc/sysconfig/iptables ]; then
-        iptables-save > /etc/sysconfig/iptables 2>/dev/null
+        iptables-save > /etc/sysconfig/iptables 2>/dev/null || return 1
+        return 0
     fi
-    # rc.local 兜底（无 systemd 时）
-    if [ -f /etc/rc.local ] && ! grep -q "iptables-local-fwd" /etc/rc.local; then
-        # 不重复写入
-        :
-    fi
+    return 1
 }
 
 iptpf_apply_rule() {
     local src_port="$1" dst_port="$2" proto="$3"
     # PREROUTING：来自外部的流量
-    iptables -t nat -A PREROUTING -p "$proto" --dport "$src_port" -j REDIRECT --to-port "$dst_port" 2>/dev/null
+    iptables -t nat -A PREROUTING -p "$proto" --dport "$src_port" -j REDIRECT --to-port "$dst_port" 2>/dev/null || return 1
     # OUTPUT：本机自己访问也走转发
-    iptables -t nat -A OUTPUT -p "$proto" -o lo --dport "$src_port" -j REDIRECT --to-port "$dst_port" 2>/dev/null
+    if ! iptables -t nat -A OUTPUT -p "$proto" -o lo --dport "$src_port" -j REDIRECT --to-port "$dst_port" 2>/dev/null; then
+        iptables -t nat -D PREROUTING -p "$proto" --dport "$src_port" -j REDIRECT --to-port "$dst_port" 2>/dev/null || true
+        return 1
+    fi
 }
 
 iptpf_remove_rule() {
     local src_port="$1" dst_port="$2" proto="$3"
-    iptables -t nat -D PREROUTING -p "$proto" --dport "$src_port" -j REDIRECT --to-port "$dst_port" 2>/dev/null
-    iptables -t nat -D OUTPUT -p "$proto" -o lo --dport "$src_port" -j REDIRECT --to-port "$dst_port" 2>/dev/null
+    local removed_pre=no
+    if iptables -t nat -C PREROUTING -p "$proto" --dport "$src_port" -j REDIRECT --to-port "$dst_port" 2>/dev/null; then
+        iptables -t nat -D PREROUTING -p "$proto" --dport "$src_port" -j REDIRECT --to-port "$dst_port" 2>/dev/null || return 1
+        removed_pre=yes
+    fi
+    if iptables -t nat -C OUTPUT -p "$proto" -o lo --dport "$src_port" -j REDIRECT --to-port "$dst_port" 2>/dev/null; then
+        if ! iptables -t nat -D OUTPUT -p "$proto" -o lo --dport "$src_port" -j REDIRECT --to-port "$dst_port" 2>/dev/null; then
+            [ "$removed_pre" = yes ] && iptables -t nat -A PREROUTING -p "$proto" --dport "$src_port" -j REDIRECT --to-port "$dst_port" 2>/dev/null || true
+            return 1
+        fi
+    fi
 }
 
 iptpf_list() {
@@ -1052,12 +1117,19 @@ iptpf_add() {
             warn "规则已存在: ${src} → ${dst} (${p})"
             continue
         fi
-        iptpf_apply_rule "$src" "$dst" "$p"
-        echo "${src}|${dst}|${p}" >> "$IPTPF_RULES_FILE"
+        if ! iptpf_apply_rule "$src" "$dst" "$p"; then
+            error "iptables 添加失败: ${src} → ${dst} (${p})"
+            continue
+        fi
+        if ! echo "${src}|${dst}|${p}" >> "$IPTPF_RULES_FILE"; then
+            iptpf_remove_rule "$src" "$dst" "$p" || true
+            error "规则状态保存失败"
+            continue
+        fi
         info "已添加: ${src} → ${dst} (${p}) ✓"
     done
 
-    iptpf_persist
+    iptpf_persist || warn "当前系统未提供 iptables 持久化后端，规则仅在本次启动有效"
 }
 
 iptpf_delete() {
@@ -1084,9 +1156,13 @@ iptpf_delete() {
     [ -z "$c" ] && c="y"
     echo "$c" | grep -qiE '^y(es)?$' || { warn "已取消"; return; }
 
-    iptpf_remove_rule "$src" "$dst" "$proto"
-    sed -i "${id}d" "$IPTPF_RULES_FILE"
-    iptpf_persist
+    iptpf_remove_rule "$src" "$dst" "$proto" || { error "iptables 规则删除失败"; return 1; }
+    if ! sed -i "${id}d" "$IPTPF_RULES_FILE"; then
+        iptpf_apply_rule "$src" "$dst" "$proto" || true
+        error "规则状态更新失败，已尝试恢复运行规则"
+        return 1
+    fi
+    iptpf_persist || warn "当前系统未提供 iptables 持久化后端，重启后状态可能与当前规则不同"
     info "已删除 ✓"
 }
 
@@ -1096,13 +1172,23 @@ iptpf_clear_all() {
     [ -z "$c" ] && c="n"
     echo "$c" | grep -qiE '^y(es)?$' || { warn "已取消"; return; }
 
-    iptpf_ensure_file
+    iptpf_ensure_file || return 1
+    local removed; removed=$(mktemp) || return 1
     while IFS='|' read -r src dst proto; do
         [ -z "$src" ] && continue
-        iptpf_remove_rule "$src" "$dst" "$proto"
+        if ! iptpf_remove_rule "$src" "$dst" "$proto"; then
+            while IFS='|' read -r old_src old_dst old_proto; do
+                [ -n "$old_src" ] && iptpf_apply_rule "$old_src" "$old_dst" "$old_proto" || true
+            done < "$removed"
+            rm -f "$removed"
+            error "清空失败，已尝试恢复之前删除的规则"
+            return 1
+        fi
+        echo "${src}|${dst}|${proto}" >> "$removed"
     done < "$IPTPF_RULES_FILE"
-    : > "$IPTPF_RULES_FILE"
-    iptpf_persist
+    : > "$IPTPF_RULES_FILE" || { rm -f "$removed"; return 1; }
+    rm -f "$removed"
+    iptpf_persist || warn "当前系统未提供 iptables 持久化后端"
     info "已清空所有本地端口转发规则 ✓"
 }
 

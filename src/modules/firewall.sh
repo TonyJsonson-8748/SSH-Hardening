@@ -31,15 +31,16 @@ fw_allow_common_ports() {
     info "放行常用端口：SSH ${SSH_PORT} / HTTP 80 / HTTPS 443 ..."
     case "$TYPE" in
         ufw)
-            ufw allow "${SSH_PORT}"/tcp 2>/dev/null && info "SSH ${SSH_PORT} ✓"
-            ufw allow 80/tcp  2>/dev/null && info "HTTP 80 ✓"
-            ufw allow 443/tcp 2>/dev/null && info "HTTPS 443 ✓"
+            ufw allow "${SSH_PORT}"/tcp 2>/dev/null || { error "无法放行 SSH ${SSH_PORT}/tcp"; return 1; }
+            ufw allow 80/tcp 2>/dev/null || { error "无法放行 HTTP 80/tcp"; return 1; }
+            ufw allow 443/tcp 2>/dev/null || { error "无法放行 HTTPS 443/tcp"; return 1; }
+            info "SSH ${SSH_PORT} / HTTP 80 / HTTPS 443 已放行 ✓"
             ;;
         firewalld)
-            firewall-cmd --permanent --add-port="${SSH_PORT}/tcp" 2>/dev/null
-            firewall-cmd --permanent --add-port="80/tcp"  2>/dev/null
-            firewall-cmd --permanent --add-port="443/tcp" 2>/dev/null
-            firewall-cmd --reload 2>/dev/null
+            firewall-cmd --permanent --add-port="${SSH_PORT}/tcp" 2>/dev/null || return 1
+            firewall-cmd --permanent --add-port="80/tcp" 2>/dev/null || return 1
+            firewall-cmd --permanent --add-port="443/tcp" 2>/dev/null || return 1
+            firewall-cmd --reload 2>/dev/null || return 1
             info "firewalld 已放行 SSH ${SSH_PORT} / 80 / 443 ✓"
             ;;
     esac
@@ -54,20 +55,32 @@ fw_install() {
         ufw)
             if pkg_install ufw; then
                 info "ufw 安装成功 ✓"
-                fw_allow_common_ports "ufw"
-                ufw --force enable && info "ufw 已启用 ✓"
+                safety_arm firewall_install || return 1
+                fw_allow_common_ports "ufw" || { error "基础端口放行失败，未启用 ufw"; return 1; }
+                if ufw --force enable >/dev/null 2>&1 && [ "$(fw_running ufw)" = active ]; then
+                    info "ufw 已启用 ✓"
+                else
+                    error "ufw 启用失败"
+                    return 1
+                fi
+                safety_confirm
             else
                 error "安装失败，请检查网络或手动安装：apt/apk install ufw"
+                return 1
             fi
             ;;
         firewalld)
             if pkg_install firewalld; then
+                safety_arm firewall_install || return 1
                 svc_enable firewalld
-                svc_start firewalld
+                svc_start firewalld || { error "firewalld 启动失败"; return 1; }
+                [ "$(fw_running firewalld)" = active ] || { error "firewalld 未进入运行状态"; return 1; }
                 info "firewalld 安装并启动成功 ✓"
-                fw_allow_common_ports "firewalld"
+                fw_allow_common_ports "firewalld" || { error "基础端口放行失败"; return 1; }
+                safety_confirm
             else
                 error "安装失败，请检查网络或手动安装"
+                return 1
             fi
             ;;
     esac
