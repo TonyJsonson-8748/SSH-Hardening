@@ -6,7 +6,8 @@ SCRIPT_URL="https://raw.githubusercontent.com/chnnic/SSH-Hardening/refs/heads/ma
 CHECKSUM_URL="https://raw.githubusercontent.com/chnnic/SSH-Hardening/refs/heads/main/SSH-Hardening.sh.sha256"
 MANIFEST_URL="https://raw.githubusercontent.com/chnnic/SSH-Hardening/refs/heads/main/SSH-Hardening.manifest.json"
 GITHUB_REF_URL="https://api.github.com/repos/chnnic/SSH-Hardening/git/ref/heads/main"
-LOCAL_SCRIPT="/usr/local/bin/vps-tools"
+LOCAL_BIN_DIR="${LOCAL_BIN_DIR:-/usr/local/bin}"
+LOCAL_SCRIPT="${LOCAL_SCRIPT:-${LOCAL_BIN_DIR}/vps-tools}"
 
 file_sha256() {
     if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | awk '{print $1}'
@@ -23,6 +24,99 @@ self_atomic_replace() {
     if ! install -m 755 "$SOURCE" "$INSTALL_TMP" || ! mv -f "$INSTALL_TMP" "$DEST"; then
         rm -f "$INSTALL_TMP"
         return 1
+    fi
+}
+
+self_script_valid() {
+    local FILE="$1"
+    [ -f "$FILE" ] && [ -r "$FILE" ] || return 1
+    bash -n "$FILE" >/dev/null 2>&1 || return 1
+    grep -qE '^APP_VERSION="V[0-9]+\.[0-9]+(\.[0-9]+)?"' "$FILE" 2>/dev/null
+}
+
+self_resolve_script_source() {
+    local CANDIDATE="${1:-$0}" RESOLVED
+    case "$CANDIDATE" in
+        -|/dev/fd/*|/dev/stdin|/proc/*/fd/*) return 1 ;;
+    esac
+    RESOLVED=$(readlink -f "$CANDIDATE" 2>/dev/null) || return 1
+    case "$RESOLVED" in
+        /dev/fd/*|/dev/stdin|/proc/*/fd/*) return 1 ;;
+    esac
+    self_script_valid "$RESOLVED" || return 1
+    printf '%s\n' "$RESOLVED"
+}
+
+self_fetch_script() {
+    local DEST="$1" REMOTE_SHA FETCH_URL
+    REMOTE_SHA=$(self_remote_main_sha || true)
+    if [ -n "$REMOTE_SHA" ]; then
+        FETCH_URL="https://raw.githubusercontent.com/chnnic/SSH-Hardening/${REMOTE_SHA}/SSH-Hardening.sh"
+    else
+        FETCH_URL="${SCRIPT_URL}?ts=$(date +%s)"
+    fi
+    curl -fsSL --retry 2 --retry-delay 1 \
+        -H 'Cache-Control: no-cache' -H 'Pragma: no-cache' \
+        "$FETCH_URL" -o "$DEST" 2>/dev/null || return 1
+    self_script_valid "$DEST"
+}
+
+self_shortcut_path() {
+    printf '%s/%s\n' "$LOCAL_BIN_DIR" "$1"
+}
+
+self_shortcut_owned() {
+    local TARGET LINK
+    TARGET=$(self_shortcut_path "$1")
+    [ -L "$TARGET" ] || return 1
+    LINK=$(readlink "$TARGET" 2>/dev/null || true)
+    [ "$LINK" = "$LOCAL_SCRIPT" ]
+}
+
+self_managed_script_file() {
+    [ -f "$1" ] || return 1
+    grep -qE 'VPS 开荒脚本|APP_UI_TITLE="VPS TOOLS"' "$1" 2>/dev/null
+}
+
+self_install_shortcut() {
+    local CMD="$1" TARGET LINK
+    TARGET=$(self_shortcut_path "$CMD")
+    mkdir -p "$LOCAL_BIN_DIR" 2>/dev/null || return 1
+
+    if self_shortcut_owned "$CMD"; then
+        ln -sfn "$LOCAL_SCRIPT" "$TARGET" 2>/dev/null || return 1
+        info "系统命令 ${CMD} 已创建 ✓"
+        return 0
+    fi
+
+    if [ -L "$TARGET" ]; then
+        LINK=$(readlink "$TARGET" 2>/dev/null || true)
+        if [ ! -e "$TARGET" ]; then
+            warn "快捷键 ${CMD} 指向失效路径（${LINK:-未知}），正在修复"
+        elif self_managed_script_file "$TARGET"; then
+            warn "快捷键 ${CMD} 指向旧版 VPS Tools，正在修复"
+        else
+            warn "快捷键 ${CMD} 已被其他脚本占用（${LINK:-未知}），跳过"
+            return 0
+        fi
+    elif [ -e "$TARGET" ]; then
+        if self_managed_script_file "$TARGET"; then
+            warn "快捷键 ${CMD} 是旧版 VPS Tools 文件，正在替换为软链接"
+        else
+            warn "快捷键 ${CMD} 是独立文件（非软链接），跳过以避免覆盖"
+            return 0
+        fi
+    fi
+
+    ln -sfn "$LOCAL_SCRIPT" "$TARGET" 2>/dev/null || return 1
+    info "系统命令 ${CMD} 已创建 ✓"
+}
+
+self_remove_shortcut() {
+    local CMD="$1" TARGET
+    TARGET=$(self_shortcut_path "$CMD")
+    if self_shortcut_owned "$CMD" || self_managed_script_file "$TARGET"; then
+        rm -f "$TARGET"
     fi
 }
 
@@ -48,34 +142,45 @@ self_install() {
     echo -e "  安装后输入 ${GREEN}v${NC} 或 ${GREEN}V${NC} 即可快速呼出"
     echo ""
 
-    # 优先复制当前运行的脚本
-    local SELF; SELF=$(readlink -f "${0}" 2>/dev/null || echo "${0}")
-
-    if [ -f "$SELF" ] && [ "$SELF" != "$LOCAL_SCRIPT" ]; then
-        cp "$SELF" "$LOCAL_SCRIPT"
-    elif [ -f /tmp/ssh_hardening.sh ]; then
-        cp /tmp/ssh_hardening.sh "$LOCAL_SCRIPT"
+    local SELF="" SOURCE="" DOWNLOAD_TMP=""
+    SELF=$(self_resolve_script_source "$0" 2>/dev/null || true)
+    if [ -n "$SELF" ]; then
+        SOURCE="$SELF"
     else
-        info "本地缓存不存在，从 GitHub 下载..."
-        if ! curl -fsSL "$SCRIPT_URL" -o "$LOCAL_SCRIPT" 2>/dev/null; then
-            error "下载失败，请检查网络"; return 1
+        info "当前通过管道运行，正在下载完整脚本..."
+        DOWNLOAD_TMP=$(mktemp "${TMPDIR:-/tmp}/vps-tools-install.XXXXXX") || {
+            error "无法创建安装临时文件"; return 1
+        }
+        if self_fetch_script "$DOWNLOAD_TMP"; then
+            SOURCE="$DOWNLOAD_TMP"
+        elif self_script_valid /tmp/ssh_hardening.sh; then
+            warn "下载失败，改用已校验的本地缓存"
+            SOURCE="/tmp/ssh_hardening.sh"
+        else
+            rm -f "$DOWNLOAD_TMP"
+            error "无法获取完整脚本，请检查网络"
+            return 1
         fi
     fi
 
-    chmod +x "$LOCAL_SCRIPT"
+    if [ "$SOURCE" != "$LOCAL_SCRIPT" ]; then
+        if ! self_atomic_replace "$SOURCE" "$LOCAL_SCRIPT"; then
+            rm -f "$DOWNLOAD_TMP"
+            error "脚本安装失败，原文件未被替换"
+            return 1
+        fi
+    fi
+    rm -f "$DOWNLOAD_TMP"
+    self_script_valid "$LOCAL_SCRIPT" || {
+        error "安装后的脚本完整性校验失败"
+        return 1
+    }
+    chmod 755 "$LOCAL_SCRIPT" || { error "无法设置脚本执行权限"; return 1; }
     info "脚本已安装到 ${LOCAL_SCRIPT} ✓"
 
-    # 创建系统级命令 v / V（最可靠，无需 source）
-    # 检测 v/V 是否已被其他脚本占用
+    # 创建系统级命令 v / V（最可靠，无需 source）。
     for _CMD in v V; do
-        local _TARGET="/usr/local/bin/${_CMD}"
-        if [ -L "$_TARGET" ] && [ "$(readlink "$_TARGET")" != "$LOCAL_SCRIPT" ]; then
-            warn "快捷键 ${_CMD} 已被其他脚本占用（$(readlink "$_TARGET")），跳过"
-        elif [ -f "$_TARGET" ] && [ ! -L "$_TARGET" ]; then
-            warn "快捷键 ${_CMD} 是独立文件（非软链接），跳过以避免覆盖"
-        else
-            ln -sf "$LOCAL_SCRIPT" "$_TARGET" 2>/dev/null && info "系统命令 ${_CMD} 已创建 ✓"
-        fi
+        self_install_shortcut "$_CMD" || warn "快捷键 ${_CMD} 创建失败"
     done
 
     echo ""
@@ -204,8 +309,8 @@ self_update() {
     rm -f "$TMP_FILE"
 
     # 确保 v 命令还在
-    ln -sf "$LOCAL_SCRIPT" /usr/local/bin/v 2>/dev/null
-    ln -sf "$LOCAL_SCRIPT" /usr/local/bin/V 2>/dev/null
+    self_install_shortcut v || warn "快捷键 v 修复失败"
+    self_install_shortcut V || warn "快捷键 V 修复失败"
 
     info "更新完成 ✓"
     audit_action "脚本更新 ${CUR_VER:-未知} 到 ${NEW_VER:-未知}" SUCCESS
@@ -263,7 +368,7 @@ self_offline_bundle_create() {
     print_header "离线安装包"
     local SRC TMPDIR BUNDLE ARCHIVE
     SRC="${LOCAL_SCRIPT:-}"
-    [ -f "$SRC" ] || SRC=$(resolve_self_path)
+    [ -f "$SRC" ] || SRC=$(self_resolve_script_source "$0" 2>/dev/null || true)
     [ -f "$SRC" ] || { error "找不到可打包的脚本"; return 1; }
     TMPDIR=$(mktemp -d "${TMPDIR:-/tmp}/vps-offline.XXXXXX") || return 1
     ARCHIVE="$TMPDIR/SSH-Hardening.sh"
@@ -317,8 +422,8 @@ self_offline_bundle_install() {
     mkdir -p "$(dirname "$DEST")" 2>/dev/null || { rm -rf "$TMPDIR"; error "无法创建安装目录"; return 1; }
     cp "$SRC_FILE" "$DEST" || { rm -rf "$TMPDIR"; error "安装失败"; return 1; }
     chmod 700 "$DEST" 2>/dev/null || true
-    ln -sf "$DEST" /usr/local/bin/v 2>/dev/null || true
-    ln -sf "$DEST" /usr/local/bin/V 2>/dev/null || true
+    self_install_shortcut v || warn "快捷键 v 创建失败"
+    self_install_shortcut V || warn "快捷键 V 创建失败"
     audit_action "离线安装脚本 $(basename "$PACKAGE")" SUCCESS
     info "离线安装完成：$DEST"
     rm -rf "$TMPDIR"
@@ -330,9 +435,8 @@ self_uninstall() {
     print_header "删除本地脚本和快捷键"
     warn "将删除以下内容："
     echo -e "  ${DIM}${LOCAL_SCRIPT}${NC}"
-    echo -e "  ${DIM}/usr/local/bin/v${NC}"
-    echo -e "  ${DIM}/usr/local/bin/V${NC}"
-    echo -e "  ${DIM}/usr/local/bin/V${NC}"
+    echo -e "  ${DIM}$(self_shortcut_path v)${NC}"
+    echo -e "  ${DIM}$(self_shortcut_path V)${NC}"
     echo -e "  ${DIM}各 shell 配置文件中的 alias v=...${NC}"
     echo ""
     read -rp "  确认删除？(Y/n，默认Y): " CONFIRM
@@ -343,7 +447,9 @@ self_uninstall() {
     rm -f "$LOCAL_SCRIPT" && info "已删除 ${LOCAL_SCRIPT} ✓"
 
     # 删除系统命令
-    rm -f /usr/local/bin/v /usr/local/bin/V && info "已删除系统命令 v/V ✓"
+    self_remove_shortcut v
+    self_remove_shortcut V
+    info "已删除 VPS Tools 管理的系统命令 v/V ✓"
 
     # 清理 shell 配置文件中可能残留的旧版 alias
     for RC in /root/.bashrc /root/.bash_profile ~/.bashrc ~/.bash_profile ~/.zshrc; do
@@ -365,7 +471,7 @@ self_uninstall() {
 # ── 首次运行检测是否已安装快捷键 ─────────────────────────
 self_check_first_run() {
     # 已安装则跳过
-    [ -f /usr/local/bin/v ] && return
+    self_shortcut_owned v && return
     [ -f "$LOCAL_SCRIPT" ] && return
 
     print_header "首次运行设置"
@@ -398,7 +504,7 @@ self_manage_menu() {
             CUR_VER=$(grep -oE 'V[0-9]+\.[0-9]+\.[0-9]+|V[0-9]+\.[0-9]+' "$LOCAL_SCRIPT" | head -1)
         fi
         local HAS_CMD=false
-        [ -f /usr/local/bin/v ] && HAS_CMD=true
+        self_shortcut_owned v && HAS_CMD=true
 
         echo -e "  本地路径：${BOLD}${LOCAL_SCRIPT}${NC}"
         if [ "$IS_INSTALLED" = true ]; then

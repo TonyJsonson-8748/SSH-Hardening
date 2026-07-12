@@ -217,8 +217,28 @@ fi
 OFFLINE_BUNDLE=$(find "$VPS_DATA_DIR/offline" -type f -name '*.tar.gz' | head -1)
 [ -f "$OFFLINE_BUNDLE" ] || { echo "Offline bundle was not created" >&2; exit 1; }
 LOCAL_SCRIPT="$TMP/installed-script.sh"
+LOCAL_BIN_DIR="$TMP/bin"
 self_offline_bundle_install "$OFFLINE_BUNDLE" >/dev/null || { echo "Offline install failed" >&2; exit 1; }
 [ -f "$LOCAL_SCRIPT" ] || { echo "Offline install did not place script" >&2; exit 1; }
+[ "$(readlink "$LOCAL_BIN_DIR/v")" = "$LOCAL_SCRIPT" ] || { echo "Offline install did not create an isolated shortcut" >&2; exit 1; }
+
+# Process-substitution descriptors are streams, not complete reusable script files.
+if self_resolve_script_source /dev/fd/0 >/dev/null 2>&1; then
+    echo "Installer accepted a process-substitution descriptor as a complete script" >&2
+    exit 1
+fi
+BROKEN_LINK_TARGET="$TMP/removed-script.sh"
+rm -f "$LOCAL_BIN_DIR/v"
+ln -s "$BROKEN_LINK_TARGET" "$LOCAL_BIN_DIR/v"
+self_install_shortcut v >/dev/null
+[ "$(readlink "$LOCAL_BIN_DIR/v")" = "$LOCAL_SCRIPT" ] || { echo "Installer did not repair a dangling shortcut" >&2; exit 1; }
+FOREIGN_SCRIPT="$TMP/foreign-command"
+printf '#!/bin/sh\nexit 0\n' > "$FOREIGN_SCRIPT"
+chmod +x "$FOREIGN_SCRIPT"
+rm -f "$LOCAL_BIN_DIR/V"
+ln -s "$FOREIGN_SCRIPT" "$LOCAL_BIN_DIR/V"
+self_install_shortcut V >/dev/null
+[ "$(readlink "$LOCAL_BIN_DIR/V")" = "$FOREIGN_SCRIPT" ] || { echo "Installer overwrote a foreign shortcut" >&2; exit 1; }
 
 # The real updater must reject a mismatched checksum without replacing the local script.
 LOCAL_SCRIPT="$TMP/local-script"
