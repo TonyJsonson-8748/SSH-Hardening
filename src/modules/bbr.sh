@@ -415,6 +415,16 @@ bbr_tc_qdisc_handle() {
     awk 'NR==1 { print $3 }' <<< "$1"
 }
 
+bbr_tc_root_line() {
+    awk '
+        $1 == "qdisc" {
+            for (i = 4; i <= NF; i++) {
+                if ($i == "root") { print; exit }
+            }
+        }
+    ' <<< "$1"
+}
+
 bbr_tc_qdisc_safe_to_replace() {
     case "$1" in
         ""|mq|fq|fq_codel|noqueue|pfifo_fast) return 0 ;;
@@ -428,22 +438,80 @@ bbr_state_value() {
     awk -F= -v key="$KEY" '$1 == key { sub(/^[^=]*=/, ""); print; exit }' "$FILE"
 }
 
+bbr_tc_topology_matches() {
+    local DEV="$1" TC_BIN="$2" QDISCS CLASSES
+    QDISCS=$("$TC_BIN" qdisc show dev "$DEV" 2>/dev/null) || return 1
+    CLASSES=$("$TC_BIN" class show dev "$DEV" 2>/dev/null) || return 1
+    printf '%s\n' "$QDISCS" | awk '
+        $1 == "qdisc" && $2 == "htb" && $3 == "1:" {
+            for (i = 4; i <= NF; i++) if ($i == "root") root = 1
+        }
+        $1 == "qdisc" && $2 == "fq" && $3 == "100:" {
+            for (i = 4; i < NF; i++) if ($i == "parent" && $(i + 1) == "1:10") leaf = 1
+        }
+        END { exit !(root && leaf) }
+    ' || return 1
+    printf '%s\n' "$CLASSES" | awk '
+        $1 == "class" && $2 == "htb" && $3 == "1:10" { found = 1 }
+        END { exit !found }
+    '
+}
+
+bbr_tc_managed_artifact() {
+    if [ -f "$SERVICE_TC" ] && grep -qE \
+        '^Description=(VPS TOOLS TC egress shaping|TC egress shaping .+htb shape \+ fq pacing for BBR)' \
+        "$SERVICE_TC" 2>/dev/null; then
+        return 0
+    fi
+    if [ -f "$TC_HELPER" ] && grep -qF 'STATE=/var/lib/vps-tools/tc-fq.state' "$TC_HELPER" 2>/dev/null; then
+        return 0
+    fi
+    [ -f "$SERVICE_TC_INIT" ] \
+        && grep -qE 'VPS TOOLS network tuning|vps-tools-tc-fq' "$SERVICE_TC_INIT" 2>/dev/null
+}
+
 bbr_tc_is_owned() {
-    local DEV="$1" TC_BIN="$2" STATE_DEV LINE TYPE HANDLE
+    local DEV="$1" TC_BIN="$2" STATE_DEV
     STATE_DEV=$(bbr_state_value "$TC_STATE_FILE" DEV 2>/dev/null || true)
     [ "$STATE_DEV" = "$DEV" ] || return 1
-    LINE=$("$TC_BIN" qdisc show dev "$DEV" 2>/dev/null | head -1)
-    TYPE=$(bbr_tc_qdisc_type "$LINE")
-    HANDLE=$(bbr_tc_qdisc_handle "$LINE")
-    [ "$TYPE" = htb ] && [ "$HANDLE" = "1:" ]
+    bbr_tc_topology_matches "$DEV" "$TC_BIN"
+}
+
+bbr_tc_is_legacy_owned() {
+    local DEV="$1" TC_BIN="$2"
+    bbr_tc_managed_artifact || return 1
+    bbr_tc_topology_matches "$DEV" "$TC_BIN"
+}
+
+bbr_tc_restore_owned() {
+    if [ -x "$TC_HELPER" ] && "$TC_HELPER" apply >/dev/null 2>&1; then
+        return 0
+    fi
+    if systemd_available && [ -f "$SERVICE_TC" ]; then
+        systemctl restart tc-fq >/dev/null 2>&1 && return 0
+    elif command -v rc-service >/dev/null 2>&1 && [ -f "$SERVICE_TC_INIT" ]; then
+        rc-service tc-fq restart >/dev/null 2>&1 && return 0
+    elif command -v service >/dev/null 2>&1 && [ -f "$SERVICE_TC_INIT" ]; then
+        service tc-fq restart >/dev/null 2>&1 && return 0
+    fi
+    return 1
 }
 
 bbr_tc_apply_runtime() {
     local DEV="$1" RATE="$2" BURST_KB="$3" TC_BIN="$4"
-    local LINE TYPE WAS_OWNED=0
-    LINE=$("$TC_BIN" qdisc show dev "$DEV" 2>/dev/null | head -1)
+    local QDISCS LINE TYPE WAS_OWNED=0
+    if ! QDISCS=$("$TC_BIN" qdisc show dev "$DEV" 2>/dev/null); then
+        error "无法读取 ${DEV} 的当前 tc 配置，已拒绝修改"
+        return 1
+    fi
+    LINE=$(bbr_tc_root_line "$QDISCS")
     TYPE=$(bbr_tc_qdisc_type "$LINE")
-    bbr_tc_is_owned "$DEV" "$TC_BIN" && WAS_OWNED=1
+    if bbr_tc_is_owned "$DEV" "$TC_BIN"; then
+        WAS_OWNED=1
+    elif bbr_tc_is_legacy_owned "$DEV" "$TC_BIN"; then
+        WAS_OWNED=1
+        info "识别到旧版 VPS Tools tc 限速规则，将自动迁移"
+    fi
     if [ "$WAS_OWNED" -eq 0 ] && ! bbr_tc_qdisc_safe_to_replace "$TYPE"; then
         error "检测到非本工具管理的 root qdisc：${TYPE:-未知}，已拒绝覆盖"
         echo -e "  ${DIM}请先用 tc qdisc show dev ${DEV} 确认现有 QoS 配置${NC}"
@@ -457,11 +525,12 @@ bbr_tc_apply_runtime() {
         || ! "$TC_BIN" qdisc add dev "$DEV" parent 1:10 handle 100: fq maxrate "${RATE}mbit" 2>/dev/null; then
         error "tc 规则应用失败（内核可能缺 sch_htb / sch_fq 模块）"
         "$TC_BIN" qdisc del dev "$DEV" root 2>/dev/null || true
-        if [ "$WAS_OWNED" -eq 1 ] && [ -x "$TC_HELPER" ]; then
-            "$TC_HELPER" apply >/dev/null 2>&1 || warn "旧 tc 限速规则自动恢复失败"
+        if [ "$WAS_OWNED" -eq 1 ]; then
+            bbr_tc_restore_owned || warn "旧 tc 限速规则自动恢复失败"
         fi
         return 1
     fi
+    return 0
 }
 
 bbr_tc_write_persistence() {
@@ -487,11 +556,18 @@ RATE=$(state_value RATE)
 BURST_KB=$(state_value BURST_KB)
 TC=$(command -v tc 2>/dev/null || echo /sbin/tc)
 [ -n "$DEV" ] && echo "$RATE" | grep -qE '^[0-9]+$' && echo "$BURST_KB" | grep -qE '^[0-9]+$' || exit 1
-LINE=$("$TC" qdisc show dev "$DEV" 2>/dev/null | head -1)
+QDISCS=$("$TC" qdisc show dev "$DEV" 2>/dev/null)
+CLASSES=$("$TC" class show dev "$DEV" 2>/dev/null)
+LINE=$(printf '%s\n' "$QDISCS" | awk '$1 == "qdisc" { for (i=4; i<=NF; i++) if ($i == "root") { print; exit } }')
 TYPE=$(printf '%s\n' "$LINE" | awk 'NR==1 { print $2 }')
-HANDLE=$(printf '%s\n' "$LINE" | awk 'NR==1 { print $3 }')
 OWNED=0
-[ "$TYPE" = htb ] && [ "$HANDLE" = "1:" ] && OWNED=1
+if printf '%s\n' "$QDISCS" | awk '
+    $1 == "qdisc" && $2 == "htb" && $3 == "1:" { for (i=4; i<=NF; i++) if ($i == "root") root=1 }
+    $1 == "qdisc" && $2 == "fq" && $3 == "100:" { for (i=4; i<NF; i++) if ($i == "parent" && $(i+1) == "1:10") leaf=1 }
+    END { exit !(root && leaf) }
+' && printf '%s\n' "$CLASSES" | awk '$1 == "class" && $2 == "htb" && $3 == "1:10" { found=1 } END { exit !found }'; then
+    OWNED=1
+fi
 if [ "${1:-apply}" = remove ]; then
     [ "$OWNED" -eq 0 ] || "$TC" qdisc del dev "$DEV" root
     exit $?

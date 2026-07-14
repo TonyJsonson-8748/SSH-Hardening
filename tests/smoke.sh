@@ -21,7 +21,8 @@ done
 
 for fn in bbr_preflight bbr_runtime_snapshot bbr_ensure_baseline bbr_restore_runtime_snapshot bbr_baseline_value bbr_config_has_key \
     bbr_apply_sysctl bbr_generate_config bbr_bdp_mb bbr_buffer_target_mb bbr_recommend_profile \
-    bbr_tc_qdisc_safe_to_replace bbr_tc_apply_runtime bbr_default_route_info bbr_route_token \
+    bbr_tc_qdisc_safe_to_replace bbr_tc_topology_matches bbr_tc_managed_artifact bbr_tc_is_legacy_owned \
+    bbr_tc_apply_runtime bbr_default_route_info bbr_route_token \
     bbr_route_strip_cwnd bbr_apply_initcwnd_route volcano_tcp_profile; do
     declare -F "$fn" >/dev/null || { echo "Missing BBR function: $fn" >&2; exit 1; }
 done
@@ -108,6 +109,42 @@ unset -f sysctl
 
 bbr_tc_qdisc_safe_to_replace fq || { echo "BBR rejected a safe default qdisc" >&2; exit 1; }
 ! bbr_tc_qdisc_safe_to_replace cake || { echo "BBR would overwrite a foreign CAKE qdisc" >&2; exit 1; }
+(
+    TC_STATE_FILE="$TMP/legacy-tc-no-state"
+    SERVICE_TC="$TMP/legacy-tc-fq.service"
+    # shellcheck disable=SC2034 # consumed indirectly by bbr_tc_managed_artifact
+    SERVICE_TC_INIT="$TMP/legacy-tc-fq.init"
+    # shellcheck disable=SC2034 # consumed indirectly by bbr_tc_managed_artifact/bbr_tc_restore_owned
+    TC_HELPER="$TMP/legacy-tc-helper"
+    TC_TEST_LOG="$TMP/legacy-tc.log"
+    export TC_TEST_LOG
+    cat > "$SERVICE_TC" <<'EOF'
+[Unit]
+Description=TC egress shaping 1024Mbps (htb shape + fq pacing for BBR)
+EOF
+    FAKE_TC="$TMP/fake-legacy-tc"
+    cat > "$FAKE_TC" <<'EOF'
+#!/bin/sh
+if [ "$1 $2" = "qdisc show" ]; then
+    cat <<'OUT'
+qdisc htb 1: root refcnt 3 r2q 10 default 0x10 direct_packets_stat 0 direct_qlen 1000
+qdisc fq 100: parent 1:10 limit 10000p flow_limit 100p buckets 1024 maxrate 1024Mbit
+OUT
+elif [ "$1 $2" = "class show" ]; then
+    echo 'class htb 1:10 root rate 1024Mbit ceil 1024Mbit burst 1024Kb cburst 1024Kb'
+else
+    printf '%s\n' "$*" >> "$TC_TEST_LOG"
+fi
+EOF
+    chmod +x "$FAKE_TC"
+    bbr_tc_is_legacy_owned eth0 "$FAKE_TC" || { echo "BBR did not recognize its legacy tc topology" >&2; exit 1; }
+    bbr_tc_apply_runtime eth0 780 780 "$FAKE_TC" >/dev/null || { echo "BBR refused to migrate its legacy tc topology" >&2; exit 1; }
+    grep -qx 'qdisc del dev eth0 root' "$TC_TEST_LOG" || { echo "BBR legacy tc migration did not replace the root qdisc" >&2; exit 1; }
+    grep -qx 'qdisc add dev eth0 parent 1:10 handle 100: fq maxrate 780mbit' "$TC_TEST_LOG" \
+        || { echo "BBR legacy tc migration did not apply the requested rate" >&2; exit 1; }
+    rm -f "$SERVICE_TC"
+    ! bbr_tc_is_legacy_owned eth0 "$FAKE_TC" || { echo "BBR claimed legacy tc topology without a managed artifact" >&2; exit 1; }
+)
 (
     # shellcheck disable=SC2034 # consumed by bbr_tc_is_owned
     TC_STATE_FILE="$TMP/no-tc-state"
