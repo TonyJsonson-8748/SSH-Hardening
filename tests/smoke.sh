@@ -144,6 +144,25 @@ EOF
         || { echo "BBR legacy tc migration did not apply the requested rate" >&2; exit 1; }
     rm -f "$SERVICE_TC"
     ! bbr_tc_is_legacy_owned eth0 "$FAKE_TC" || { echo "BBR claimed legacy tc topology without a managed artifact" >&2; exit 1; }
+    cat > "$SERVICE_TC" <<'EOF'
+[Unit]
+Description=TC egress shaping 1024Mbps (htb shape + fq pacing for BBR)
+EOF
+    TC_BIN_DIR="$TMP/legacy-tc-bin"
+    mkdir -p "$TC_BIN_DIR"
+    cp "$FAKE_TC" "$TC_BIN_DIR/tc"
+    PATH="$TC_BIN_DIR:$PATH"
+    # shellcheck disable=SC2329 # test stubs consumed indirectly by bbr_remove_tc
+    default_iface() { echo eth0; }
+    # shellcheck disable=SC2329 # keep the removal test away from the host service manager
+    systemd_available() { return 1; }
+    # shellcheck disable=SC2329 # test stubs consumed through command -v
+    rc-update() { return 0; }
+    # shellcheck disable=SC2329 # test stub consumed indirectly by bbr_remove_tc
+    rc-service() { return 0; }
+    : > "$TC_TEST_LOG"
+    bbr_remove_tc >/dev/null || { echo "BBR refused to remove its legacy tc topology" >&2; exit 1; }
+    grep -qx 'qdisc del dev eth0 root' "$TC_TEST_LOG" || { echo "BBR legacy tc removal left the root qdisc active" >&2; exit 1; }
 )
 (
     # shellcheck disable=SC2034 # consumed by bbr_tc_is_owned

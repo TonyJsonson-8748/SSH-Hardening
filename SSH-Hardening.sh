@@ -2437,9 +2437,9 @@ bbr_remove_tc() {
     DEV=$(bbr_state_value "$TC_STATE_FILE" DEV 2>/dev/null || true)
     [ -n "$DEV" ] || DEV=$(default_iface)
     if [ -x "$TC_BIN" ] && [ -n "$DEV" ]; then
-        if bbr_tc_is_owned "$DEV" "$TC_BIN"; then
+        if bbr_tc_is_owned "$DEV" "$TC_BIN" || bbr_tc_is_legacy_owned "$DEV" "$TC_BIN"; then
             "$TC_BIN" qdisc del dev "$DEV" root 2>/dev/null || FAILED=1
-        elif [ -f "$TC_STATE_FILE" ]; then
+        elif [ -f "$TC_STATE_FILE" ] || bbr_tc_managed_artifact; then
             warn "当前 root qdisc 已不是本工具规则，未执行删除"
         fi
     fi
