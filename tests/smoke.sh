@@ -226,6 +226,18 @@ for fn in config_export_archive config_import_archive config_transfer_menu rollb
     declare -F "$fn" >/dev/null || { echo "Missing toolbox function: $fn" >&2; exit 1; }
 done
 
+for fn in stun_ports_normalize stun_host_valid stun_probe_engine stun_render_results stun_probe_execute stun_nat_quick stun_nat_custom stun_nat_menu; do
+    declare -F "$fn" >/dev/null || { echo "Missing STUN function: $fn" >&2; exit 1; }
+done
+[[ "$(stun_ports_normalize '3478, 19302;3478 443')" = "3478,19302,443" ]] || { echo "STUN port normalization failed" >&2; exit 1; }
+! stun_ports_normalize '0,3478' >/dev/null 2>&1 || { echo "STUN accepted port zero" >&2; exit 1; }
+! stun_ports_normalize '3478,65536' >/dev/null 2>&1 || { echo "STUN accepted an out-of-range port" >&2; exit 1; }
+! stun_ports_normalize '1,2,3,4,5,6,7,8,9,10,11,12,13' >/dev/null 2>&1 || { echo "STUN accepted more than 12 ports" >&2; exit 1; }
+stun_host_valid stun.sipgate.net || { echo "STUN rejected a valid hostname" >&2; exit 1; }
+! stun_host_valid 'bad host;id' || { echo "STUN accepted an unsafe hostname" >&2; exit 1; }
+! stun_host_valid 'bad..example.com' || { echo "STUN accepted an empty hostname label" >&2; exit 1; }
+[[ "$(stun_probe_engine selftest - -)" = $'SELFTEST\tok' ]] || { echo "STUN protocol self-test failed" >&2; exit 1; }
+
 [[ "$(software_group_packages apt base)" = *curl* ]] || { echo "APT base package mapping is incomplete" >&2; exit 1; }
 [[ "$(software_group_packages apk network)" = *mtr* ]] || { echo "APK network package mapping is incomplete" >&2; exit 1; }
 CLI_HELP=$(show_cli_help)
@@ -233,6 +245,7 @@ CLI_HELP=$(show_cli_help)
 [[ "$CLI_HELP" = *"--docker-menu"* ]] || { echo "CLI help missing Docker entry" >&2; exit 1; }
 [[ "$CLI_HELP" = *"--monitor-home"* ]] || { echo "CLI help missing monitor entry" >&2; exit 1; }
 [[ "$CLI_HELP" = *"--hostname-menu"* ]] || { echo "CLI help missing hostname entry" >&2; exit 1; }
+[[ "$CLI_HELP" = *"--stun-test"* ]] || { echo "CLI help missing STUN entry" >&2; exit 1; }
 DDNS_ZONE_FILE="$TMP/cf_zone"
 cat > "$DDNS_ZONE_FILE" <<'EOF'
 DOMAIN=home.example.com

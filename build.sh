@@ -20,6 +20,7 @@ PARTS=(
     src/modules/caddy.sh
     src/modules/time.sh
     src/modules/swap.sh
+    src/modules/stun.sh
     src/modules/toolbox.sh
     src/modules/software-reinstall.sh
     src/modules/docker.sh

@@ -3177,11 +3177,12 @@ system_toolbox_menu() {
         menu_pair "9" "统一回滚中心" "10" "监控告警中心" "$CYAN" "$CYAN"
         menu_pair "11" "配置体检中心" "12" "生成诊断包" "$GREEN" "$YELLOW"
         menu_item "13" "修改系统 Hostname" "$CYAN"
+        menu_item "14" "STUN / NAT 检测" "$GREEN"
         menu_item "0" "返回主菜单" "$RED"
         menu_div
         ui_hint "Hostname 是系统名，会影响 root@主机名 提示符；推送显示名仍在监控通知设置中配置"
         echo ""
-        read -rp "$(ui_prompt '选择工具 [0-13]: ')" CH
+        read -rp "$(ui_prompt '选择工具 [0-14]: ')" CH
         case "$CH" in
             1) security_audit ;;
             2) login_security_logs; continue ;;
@@ -3196,6 +3197,7 @@ system_toolbox_menu() {
             11) config_health_check ;;
             12) diagnostic_bundle_create ;;
             13) system_hostname_apply ;;
+            14) stun_nat_menu; continue ;;
             0) return ;;
             *) warn "无效选项"; sleep 1; continue ;;
         esac

@@ -51,6 +51,7 @@ VPS 开荒脚本 CLI
   --time-menu            时间与时区
   --swap-menu            Swap 管理
   --system-toolbox-menu  安全与诊断
+  --stun-test            STUN / UDP / NAT 检测
   --hostname-menu        修改系统 hostname
   --docker-menu          Docker 管理
   --software-menu        软件与重装
@@ -276,6 +277,10 @@ case "${1:-}" in
         ;;
     --system-toolbox-menu)
         system_toolbox_menu
+        exit $?
+        ;;
+    --stun-test)
+        stun_nat_quick
         exit $?
         ;;
     --hostname-menu)

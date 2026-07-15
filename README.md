@@ -1,4 +1,4 @@
-# VPS 开荒脚本 V3.9.48
+# VPS 开荒脚本 V3.10.0
 
 > **银趴火山帮** 出品 · SSH · BBR · DDNS · Caddy · Firewall · NFT 转发
 
@@ -41,6 +41,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/chnnic/SSH-Hardening/refs/he
 | `--time-menu` | 时间与时区 |
 | `--swap-menu` | Swap 管理 |
 | `--system-toolbox-menu` | 安全与诊断 |
+| `--stun-test` | STUN、多端口 UDP 与 NAT 类型检测 |
 | `--hostname-menu` | 修改系统 hostname |
 | `--docker-menu` | Docker 管理 |
 | `--software-menu` | 软件与重装 |
@@ -71,7 +72,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/chnnic/SSH-Hardening/refs/he
 /___/_/  /_/_/   /_/  |_/_/ |_| /_/     \____/_/    /____/
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  VPS TOOLS  ·  V3.9.48
+  VPS TOOLS  ·  V3.10.0
   VPS 开荒脚本 · 银趴火山帮
 ────────────────────────────────────────────────────────────────
   SSH · BBR · DDNS · Caddy · Firewall · NFT · Monitor
@@ -424,6 +425,7 @@ LXC / OpenVZ 容器自动提示可能不支持。
 | 系统安全体检 | 检查 SSH 登录策略、配置语法、防火墙、Fail2ban、UID 0 账户、监听端口及待更新软件包 |
 | 登录安全日志 | 查看成功/失败登录、当前会话、SSH 日志和 Fail2ban 状态 |
 | 网络诊断 | 地址、路由、DNS、Ping、公网出口和路径 MTU 检测 |
+| STUN / NAT 检测 | 多 STUN 端点与 UDP 443 / 3478 / 3479 / 19302 探测，输出公网 IPv4 映射、Mapping / Filtering Behavior 和传统 NAT 类型；支持自定义主机与多端口 |
 | 配置备份恢复 | 统一备份 SSH、防火墙、DNS、sysctl、Caddy、DDNS 和 NFT 配置 |
 | 操作记录 | 将关键操作、来源 IP 和结果写入 `/var/log/vps-tools-audit.log` |
 | 系统资源健康 | CPU、负载、内存、磁盘、inode、连接、进程及失败服务 |
@@ -599,6 +601,7 @@ tests/smoke.sh
 
 | 版本 | 主要变更 |
 |------|---------|
+| **V3.10.0** | 新增 STUN 检测、多端口 UDP 探测和 NAT 类型判定；同一 UDP socket 探测多个端点，支持 RFC 5389 / RFC 5780 地址与过滤行为分析、自定义 STUN 主机和最多 12 个端口，并在证据不足时降低置信度而不强行判型 |
 | **V3.9.48** | 修复升级到 V3.9.45 后，旧版生成的 `htb 1:` + `fq 100:` 限速因缺少状态文件被误判为外部 QoS；通过完整 tc 拓扑与持久化文件标记安全迁移，仍拒绝覆盖真正的第三方规则 |
 | **V3.9.47** | 修复通过 `bash <(curl ...)` 运行时安装函数复制 `/dev/fd` 流导致本地脚本被截断；安装前后增加语法与版本标记校验，失效快捷键自动修复，测试改用隔离目录且不再污染宿主机 `/usr/local/bin/v` |
 | **V3.9.46** | 修复 UFW 放行失败仍启用导致断联、配置导入可覆盖任意路径、NFT 覆盖用户规则及失败无回滚、Swap 关闭失败仍删除、DDNS 占位记录与 cron 假成功、Caddy/Fail2ban/DNS/IPv6/NTP 错误传播；换源支持 deb822 并为 RPM 仓库增加验证回滚 |
