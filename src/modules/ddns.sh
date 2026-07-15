@@ -536,8 +536,7 @@ ddns_install_cloudflare() {
         return
     fi
 
-    read -rsp "  Cloudflare API Token: " DDNS_TOKEN
-    echo ""
+    read -rp "  Cloudflare API Token（输入可见）: " DDNS_TOKEN
     [ -z "$DDNS_TOKEN" ] && { warn "已取消"; return; }
 
     local DDNS_MODE="ipv4"
