@@ -266,11 +266,11 @@ def self_test():
 def endpoint_list(mode, host, ports):
     if mode == "quick":
         return [
-            ("stun.sipgate.net", 3478),
-            ("stun.sipgate.net", 3479),
             ("stun.nextcloud.com", 443),
+            ("stun.nextcloud.com", 3478),
             ("stun.cloudflare.com", 3478),
             ("stun.l.google.com", 19302),
+            ("stun.miwifi.com", 3478),
         ]
     return [(host, int(port)) for port in ports.split(",")]
 
@@ -469,11 +469,11 @@ stun_nat_quick() {
 stun_nat_custom() {
     print_header "自定义 STUN 多端口"
     local HOST PORT_INPUT PORTS
-    read -rp "  STUN 主机（默认 stun.sipgate.net）: " HOST
-    HOST=${HOST:-stun.sipgate.net}
+    read -rp "  STUN 主机（默认 stun.nextcloud.com）: " HOST
+    HOST=${HOST:-stun.nextcloud.com}
     stun_host_valid "$HOST" || { error "STUN 主机格式无效"; return 1; }
-    read -rp "  UDP 端口（逗号分隔，默认 3478,3479）: " PORT_INPUT
-    PORT_INPUT=${PORT_INPUT:-3478,3479}
+    read -rp "  UDP 端口（逗号分隔，默认 443,3478）: " PORT_INPUT
+    PORT_INPUT=${PORT_INPUT:-443,3478}
     PORTS=$(stun_ports_normalize "$PORT_INPUT") || {
         error "端口格式无效，仅支持 1-65535，最多 12 个"
         return 1

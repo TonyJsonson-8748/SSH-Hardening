@@ -1,4 +1,4 @@
-# VPS 开荒脚本 V3.10.1
+# VPS 开荒脚本 V3.10.2
 
 > **银趴火山帮** 出品 · SSH · BBR · DDNS · Caddy · Firewall · NFT 转发
 
@@ -72,7 +72,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/chnnic/SSH-Hardening/refs/he
 /___/_/  /_/_/   /_/  |_/_/ |_| /_/     \____/_/    /____/
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  VPS TOOLS  ·  V3.10.1
+  VPS TOOLS  ·  V3.10.2
   VPS 开荒脚本 · 银趴火山帮
 ────────────────────────────────────────────────────────────────
   SSH · BBR · DDNS · Caddy · Firewall · NFT · Monitor
@@ -425,7 +425,7 @@ LXC / OpenVZ 容器自动提示可能不支持。
 | 系统安全体检 | 检查 SSH 登录策略、配置语法、防火墙、Fail2ban、UID 0 账户、监听端口及待更新软件包 |
 | 登录安全日志 | 查看成功/失败登录、当前会话、SSH 日志和 Fail2ban 状态 |
 | 网络诊断 | 地址、路由、DNS、Ping、公网出口和路径 MTU 检测 |
-| STUN / NAT 检测 | 多 STUN 端点与 UDP 443 / 3478 / 3479 / 19302 探测，输出公网 IPv4 映射、Mapping / Filtering Behavior 和传统 NAT 类型；支持自定义主机与多端口 |
+| STUN / NAT 检测 | 多 STUN 端点与 UDP 443 / 3478 / 19302 探测，输出公网 IPv4 映射、Mapping / Filtering Behavior 和传统 NAT 类型；支持自定义主机与多端口 |
 | 配置备份恢复 | 统一备份 SSH、防火墙、DNS、sysctl、Caddy、DDNS 和 NFT 配置 |
 | 操作记录 | 将关键操作、来源 IP 和结果写入 `/var/log/vps-tools-audit.log` |
 | 系统资源健康 | CPU、负载、内存、磁盘、inode、连接、进程及失败服务 |
@@ -601,6 +601,7 @@ tests/smoke.sh
 
 | 版本 | 主要变更 |
 |------|---------|
+| **V3.10.2** | STUN 快速检测移除频繁超时的 Sipgate 3478/3479，改用 Nextcloud 443/3478、Cloudflare 3478、Google 19302 和 MiWiFi 3478；保留同地址跨端口映射判定，并同步更新自定义检测默认值 |
 | **V3.10.1** | Cloudflare DDNS 配置时 API Token 改为明文回显，便于确认是否输入及检查粘贴内容；确认页仍只显示前 8 位，凭据文件继续使用 600 权限 |
 | **V3.10.0** | 新增 STUN 检测、多端口 UDP 探测和 NAT 类型判定；同一 UDP socket 探测多个端点，支持 RFC 5389 / RFC 5780 地址与过滤行为分析、自定义 STUN 主机和最多 12 个端口，并在证据不足时降低置信度而不强行判型 |
 | **V3.9.48** | 修复升级到 V3.9.45 后，旧版生成的 `htb 1:` + `fq 100:` 限速因缺少状态文件被误判为外部 QoS；通过完整 tc 拓扑与持久化文件标记安全迁移，仍拒绝覆盖真正的第三方规则 |

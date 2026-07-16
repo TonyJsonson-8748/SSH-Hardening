@@ -233,10 +233,13 @@ done
 ! stun_ports_normalize '0,3478' >/dev/null 2>&1 || { echo "STUN accepted port zero" >&2; exit 1; }
 ! stun_ports_normalize '3478,65536' >/dev/null 2>&1 || { echo "STUN accepted an out-of-range port" >&2; exit 1; }
 ! stun_ports_normalize '1,2,3,4,5,6,7,8,9,10,11,12,13' >/dev/null 2>&1 || { echo "STUN accepted more than 12 ports" >&2; exit 1; }
-stun_host_valid stun.sipgate.net || { echo "STUN rejected a valid hostname" >&2; exit 1; }
+stun_host_valid stun.nextcloud.com || { echo "STUN rejected a valid hostname" >&2; exit 1; }
 ! stun_host_valid 'bad host;id' || { echo "STUN accepted an unsafe hostname" >&2; exit 1; }
 ! stun_host_valid 'bad..example.com' || { echo "STUN accepted an empty hostname label" >&2; exit 1; }
 [[ "$(stun_probe_engine selftest - -)" = $'SELFTEST\tok' ]] || { echo "STUN protocol self-test failed" >&2; exit 1; }
+! grep -Fq 'stun.sipgate.net' "$ROOT/src/modules/stun.sh" || { echo "STUN still uses the retired Sipgate endpoint" >&2; exit 1; }
+grep -Fq '("stun.nextcloud.com", 443)' "$ROOT/src/modules/stun.sh" || { echo "STUN quick endpoints missing Nextcloud UDP/443" >&2; exit 1; }
+grep -Fq '("stun.nextcloud.com", 3478)' "$ROOT/src/modules/stun.sh" || { echo "STUN quick endpoints missing Nextcloud UDP/3478" >&2; exit 1; }
 
 [[ "$(software_group_packages apt base)" = *curl* ]] || { echo "APT base package mapping is incomplete" >&2; exit 1; }
 [[ "$(software_group_packages apk network)" = *mtr* ]] || { echo "APK network package mapping is incomplete" >&2; exit 1; }
