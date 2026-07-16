@@ -226,7 +226,7 @@ for fn in config_export_archive config_import_archive config_transfer_menu rollb
     declare -F "$fn" >/dev/null || { echo "Missing toolbox function: $fn" >&2; exit 1; }
 done
 
-for fn in stun_ports_normalize stun_host_valid stun_probe_engine stun_render_results stun_probe_execute stun_nat_quick stun_nat_custom stun_nat_menu; do
+for fn in stun_ports_normalize stun_host_valid stun_udp_explanation stun_nat_explanation stun_mapping_explanation stun_filtering_explanation stun_confidence_explanation stun_recommendation stun_probe_engine stun_render_results stun_probe_execute stun_nat_quick stun_nat_custom stun_nat_menu; do
     declare -F "$fn" >/dev/null || { echo "Missing STUN function: $fn" >&2; exit 1; }
 done
 [[ "$(stun_ports_normalize '3478, 19302;3478 443')" = "3478,19302,443" ]] || { echo "STUN port normalization failed" >&2; exit 1; }
@@ -240,6 +240,24 @@ stun_host_valid stun.nextcloud.com || { echo "STUN rejected a valid hostname" >&
 ! grep -Fq 'stun.sipgate.net' "$ROOT/src/modules/stun.sh" || { echo "STUN still uses the retired Sipgate endpoint" >&2; exit 1; }
 grep -Fq '("stun.nextcloud.com", 443)' "$ROOT/src/modules/stun.sh" || { echo "STUN quick endpoints missing Nextcloud UDP/443" >&2; exit 1; }
 grep -Fq '("stun.nextcloud.com", 3478)' "$ROOT/src/modules/stun.sh" || { echo "STUN quick endpoints missing Nextcloud UDP/3478" >&2; exit 1; }
+[[ "$(stun_udp_explanation 5 5)" = *"全部节点响应"* ]] || { echo "STUN complete UDP explanation failed" >&2; exit 1; }
+[[ "$(stun_udp_explanation 3 5)" = *"3/5 节点响应"* ]] || { echo "STUN partial UDP explanation failed" >&2; exit 1; }
+[[ "$(stun_udp_explanation 0 5)" = *"无节点响应"* ]] || { echo "STUN unavailable UDP explanation failed" >&2; exit 1; }
+for NAT_RESULT in open_internet public_udp_firewall full_cone restricted_cone port_restricted symmetric nat_unknown udp_unavailable unknown; do
+    [ -n "$(stun_nat_explanation "$NAT_RESULT")" ] || { echo "STUN NAT explanation missing for $NAT_RESULT" >&2; exit 1; }
+    [ -n "$(stun_recommendation "$NAT_RESULT")" ] || { echo "STUN recommendation missing for $NAT_RESULT" >&2; exit 1; }
+done
+for MAPPING_RESULT in eim adm apdm endpoint_dependent unknown; do
+    [ -n "$(stun_mapping_explanation "$MAPPING_RESULT")" ] || { echo "STUN mapping explanation missing for $MAPPING_RESULT" >&2; exit 1; }
+done
+for FILTERING_RESULT in eif adf apdf unknown; do
+    [ -n "$(stun_filtering_explanation "$FILTERING_RESULT")" ] || { echo "STUN filtering explanation missing for $FILTERING_RESULT" >&2; exit 1; }
+done
+for CONFIDENCE_RESULT in high medium low; do
+    [ -n "$(stun_confidence_explanation "$CONFIDENCE_RESULT")" ] || { echo "STUN confidence explanation missing for $CONFIDENCE_RESULT" >&2; exit 1; }
+done
+STUN_RENDERED=$(stun_render_results $'SUMMARY\t10.0.0.2\t12345\t198.51.100.2:54321\tapdm\tapdf\tsymmetric\thigh\t5\t5')
+[[ "$STUN_RENDERED" = *"结果解释"* && "$STUN_RENDERED" = *"UDP 打洞和 P2P 直连较困难"* ]] || { echo "STUN rendered result explanations are missing" >&2; exit 1; }
 
 [[ "$(software_group_packages apt base)" = *curl* ]] || { echo "APT base package mapping is incomplete" >&2; exit 1; }
 [[ "$(software_group_packages apk network)" = *mtr* ]] || { echo "APK network package mapping is incomplete" >&2; exit 1; }
