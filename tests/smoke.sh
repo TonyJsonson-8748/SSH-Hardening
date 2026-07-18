@@ -19,6 +19,12 @@ for fn in systemd_available show_cli_help main_menu ssh_tools_menu fail2ban_menu
     declare -F "$fn" >/dev/null || { echo "Missing function: $fn" >&2; exit 1; }
 done
 
+BANNER_WIDE=$(COLUMNS=80 NO_COLOR=1 volcano_art_banner)
+[[ "$BANNER_WIDE" = *'██╗███╗'* && "$BANNER_WIDE" = *'███████╗'* ]] || { echo "Wide IMPART OPS banner is missing" >&2; exit 1; }
+BANNER_COMPACT=$(COLUMNS=60 NO_COLOR=1 volcano_art_banner)
+[[ "$BANNER_COMPACT" = *'██╗███╗'* && "$BANNER_COMPACT" = *'██████╗ ██████╗ ███████╗'* ]] || { echo "Compact IMPART OPS banner is missing" >&2; exit 1; }
+[[ "$(COLUMNS=40 NO_COLOR=1 volcano_art_banner)" = *'IMPART OPS'* ]] || { echo "Narrow IMPART OPS banner fallback is missing" >&2; exit 1; }
+
 for fn in bbr_preflight bbr_runtime_snapshot bbr_ensure_baseline bbr_restore_runtime_snapshot bbr_baseline_value bbr_config_has_key \
     bbr_apply_sysctl bbr_generate_config bbr_bdp_mb bbr_buffer_target_mb bbr_recommend_profile \
     bbr_tc_qdisc_safe_to_replace bbr_tc_topology_matches bbr_tc_managed_artifact bbr_tc_is_legacy_owned \
