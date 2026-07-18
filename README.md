@@ -1,4 +1,4 @@
-# VPS 开荒脚本 V3.10.4
+# VPS 开荒脚本 V3.10.5
 
 > **银趴火山帮** 出品 · SSH · BBR · DDNS · Caddy · Firewall · NFT 转发
 
@@ -73,7 +73,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/chnnic/SSH-Hardening/refs/he
 ╚═╝╚═╝     ╚═╝╚═╝     ╚═╝  ╚═╝╚═╝  ╚═╝   ╚═╝        ╚═════╝ ╚═╝     ╚══════╝
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  VPS TOOLS  ·  V3.10.4
+  VPS TOOLS  ·  V3.10.5
   VPS 开荒脚本 · 银趴火山帮
 ────────────────────────────────────────────────────────────────
   SSH · BBR · DDNS · Caddy · Firewall · NFT · Monitor
@@ -235,7 +235,9 @@ bash <(curl -fsSL https://raw.githubusercontent.com/chnnic/SSH-Hardening/refs/he
 3. 准备 IPv4 / IPv6 使用的子域名
 
 **支持配置：**
-- IPv4 A 与 IPv6 AAAA 可分别启用、分别设置域名，也可以同域名双栈同时更新
+- IPv4 A 与 IPv6 AAAA 可分别启用、分别设置域名，也可以明确选择同域名双栈更新
+- 双栈默认使用独立域名；例如 IPv4 子域名 `hktv4` 会自动建议 IPv6 子域名 `hktv6`
+- Cloudflare 会严格按域名和类型匹配记录；检测到交叉残留记录时列出内容，确认后才会删除
 - 支持仅 IPv4、仅 IPv6、IPv4+IPv6 双栈
 - Cloudflare 支持代理（橙云）开关
 - 华为云使用 AK/SK 签名调用 DNS API
@@ -602,6 +604,7 @@ tests/smoke.sh
 
 | 版本 | 主要变更 |
 |------|---------|
+| **V3.10.5** | 修复 DDNS 双栈配置容易把 AAAA 默认放到 IPv4 子域名的问题：新增共用/独立域名明确选择，默认独立并将 `hktv4` 建议为 `hktv6`；Cloudflare 严格复核记录域名与类型，拒绝同类型重复记录，并可在用户确认后清理 IPv4 域名上的旧 AAAA 或 IPv6 域名上的旧 A |
 | **V3.10.4** | 首页 `IMPART OPS` 品牌标题改为 ANSI Shadow 块状字幅；76 列终端同行完整展示，47-75 列终端上下分行，更窄终端自动回退为居中纯文字，避免手机终端折行错位 |
 | **V3.10.3** | STUN 检测结果下方新增动态解释区，分别说明 UDP 连通性、NAT 类型、映射行为、过滤行为、判定置信度和使用建议；覆盖公网直连、UDP 过滤、各类锥型、对称型、细分未知及无响应结果 |
 | **V3.10.2** | STUN 快速检测移除频繁超时的 Sipgate 3478/3479，改用 Nextcloud 443/3478、Cloudflare 3478、Google 19302 和 MiWiFi 3478；保留同地址跨端口映射判定，并同步更新自定义检测默认值 |

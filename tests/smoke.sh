@@ -10,7 +10,7 @@ source "$ROOT/SSH-Hardening.sh"
 
 for fn in systemd_available show_cli_help main_menu ssh_tools_menu fail2ban_menu bbr_menu firewall_menu dns_menu \
     ip_config_menu caddy_menu nft_menu ddns_menu ddns_install ddns_install_cloudflare ddns_install_huawei ddns_run_now ddns_view_logs ddns_status \
-    ddns_provider ddns_provider_label ddns_sed_escape ddns_domain_dot \
+    ddns_provider ddns_provider_label ddns_sed_escape ddns_domain_dot ddns_ipv6_subdomain_default ddns_cf_exact_records ddns_cf_record_ensure ddns_cf_cleanup_cross_record \
     ddns_interval_normalize ddns_interval_min ddns_cron_expr ddns_cron_without_managed ddns_prompt_interval \
     ddns_cfg_enable_a ddns_cfg_enable_aaaa ddns_cfg_domain4 ddns_cfg_domain6 ddns_primary_domain ddns_mode_label ddns_build_domain \
     ddns_latest_log_line ddns_latest_change_log_line ddns_line_time ddns_line_result_ip ddns_newer_line ddns_change_matches_status ddns_record_status_line ddns_record_change_line ddns_print_record_summary \
@@ -314,6 +314,60 @@ EOF
 [[ "$(ddns_build_domain @ example.com)" = "example.com" ]] || { echo "DDNS root domain build failed" >&2; exit 1; }
 [[ "$(ddns_build_domain v6.example.com example.com)" = "v6.example.com" ]] || { echo "DDNS full domain build failed" >&2; exit 1; }
 [[ "$(ddns_domain_dot example.com)" = "example.com." ]] || { echo "DDNS trailing-dot helper failed" >&2; exit 1; }
+[[ "$(ddns_ipv6_subdomain_default hktv4)" = "hktv6" ]] || { echo "DDNS IPv6 v4-to-v6 default failed" >&2; exit 1; }
+[[ "$(ddns_ipv6_subdomain_default home)" = "home-v6" ]] || { echo "DDNS IPv6 independent default failed" >&2; exit 1; }
+[[ "$(ddns_ipv6_subdomain_default @)" = "v6" ]] || { echo "DDNS IPv6 root-domain default failed" >&2; exit 1; }
+CF_MIXED_RECORDS='{"success":true,"result":[{"id":"a-id","type":"A","name":"dual.example.com","content":"192.0.2.10"},{"id":"aaaa-id","type":"AAAA","name":"dual.example.com.","content":"2001:db8::10"},{"id":"other-id","type":"AAAA","name":"other.example.com","content":"2001:db8::20"}]}'
+CF_DUPLICATE_RECORDS='{"success":true,"result":[{"id":"a-1","type":"A","name":"dual.example.com","content":"192.0.2.10"},{"id":"a-2","type":"A","name":"dual.example.com","content":"192.0.2.11"}]}'
+[[ "$(printf '%s' "$CF_MIXED_RECORDS" | ddns_cf_exact_records AAAA dual.example.com)" = $'aaaa-id\t2001:db8::10' ]] || { echo "Cloudflare exact AAAA record selection failed" >&2; exit 1; }
+[[ "$(printf '%s' "$CF_MIXED_RECORDS" | ddns_cf_exact_records A dual.example.com)" = $'a-id\t192.0.2.10' ]] || { echo "Cloudflare exact A record selection failed" >&2; exit 1; }
+! printf 'not-json' | ddns_cf_exact_records A dual.example.com >/dev/null 2>&1 || { echo "Cloudflare record parser accepted invalid JSON" >&2; exit 1; }
+(
+    curl() { printf '%s\n' "$CF_DUPLICATE_RECORDS"; }
+    ! ddns_cf_record_ensure zone token A dual.example.com 192.0.2.10 60 false >/dev/null 2>&1 \
+        || { echo "Cloudflare installer accepted duplicate A records" >&2; exit 1; }
+)
+(
+    DDNS_TEST="$TMP/ddns-dual-install"
+    mkdir -p "$DDNS_TEST/state"
+    DDNS_SCRIPT="$DDNS_TEST/ddns.sh"
+    DDNS_TOKEN_FILE="$DDNS_TEST/cf_token"
+    DDNS_LOG="$DDNS_TEST/ddns.log"
+    DDNS_ZONE_FILE="$DDNS_TEST/cf_zone"
+    DDNS_STATE_DIR="$DDNS_TEST/state"
+    CF_POST_LOG="$DDNS_TEST/posts"
+    ddns_ensure_cron() { return 0; }
+    ddns_start_cron_service() { return 0; }
+    ddns_install_cron_job() { return 0; }
+    ddns_fetch_public_ip() { [ "$1" = 4 ] && echo 198.51.100.10 || echo 2001:db8::10; }
+    bash() { return 0; }
+    curl() {
+        case "$*" in
+            *"/zones?name=example.com"*) printf '%s\n' '{"success":true,"result":[{"id":"zone-id"}]}' ;;
+            *" -X POST "*) printf '%s\n' "$*" >> "$CF_POST_LOG"; printf '%s\n' '{"success":true,"result":{"id":"new-id"}}' ;;
+            *"/dns_records?"*) printf '%s\n' '{"success":true,"result":[]}' ;;
+            *) return 1 ;;
+        esac
+    }
+    ddns_install_cloudflare <<'EOF' >/dev/null
+example.com
+
+hktv4
+y
+
+
+cf-token
+
+
+
+
+EOF
+    grep -qx 'DOMAIN4=hktv4.example.com' "$DDNS_ZONE_FILE" || { echo "DDNS dual install wrote the wrong IPv4 domain" >&2; exit 1; }
+    grep -qx 'DOMAIN6=hktv6.example.com' "$DDNS_ZONE_FILE" || { echo "DDNS dual install reused the IPv4 domain for AAAA" >&2; exit 1; }
+    [ "$(wc -l < "$CF_POST_LOG")" -eq 2 ] || { echo "DDNS dual install did not create exactly two records" >&2; exit 1; }
+    grep -Fq '"type":"A","name":"hktv4.example.com"' "$CF_POST_LOG" || { echo "DDNS dual install missed the IPv4 A record" >&2; exit 1; }
+    grep -Fq '"type":"AAAA","name":"hktv6.example.com"' "$CF_POST_LOG" || { echo "DDNS dual install missed the IPv6 AAAA record" >&2; exit 1; }
+)
 cat > "$DDNS_ZONE_FILE" <<'EOF'
 PROVIDER=huawei
 DOMAIN=home.example.com
@@ -336,6 +390,12 @@ awk "BEGIN{p=0} /cat > \"\\\$DDNS_SCRIPT\" << 'DDNS_INNER'/{p=1; next} /^DDNS_IN
 bash -n "$CLOUDFLARE_DDNS_TEMPLATE" || { echo "Cloudflare DDNS generated template has syntax errors" >&2; exit 1; }
 grep -Fq 'LOCK_DIR="/run/vps-tools-ddns.lock"' "$CLOUDFLARE_DDNS_TEMPLATE" || { echo "Cloudflare DDNS concurrency lock missing" >&2; exit 1; }
 grep -Fq 'record_ip_file()' "$CLOUDFLARE_DDNS_TEMPLATE" || { echo "Cloudflare DDNS successful IP state missing" >&2; exit 1; }
+CF_RECORD_INFO_HELPER="$TMP/cloudflare-record-info.sh"
+awk 'p && /^ZONE_ID=/{exit} /^cf_record_info\(\)/{p=1} p{print}' "$CLOUDFLARE_DDNS_TEMPLATE" > "$CF_RECORD_INFO_HELPER"
+# shellcheck source=/dev/null
+source "$CF_RECORD_INFO_HELPER"
+[[ "$(printf '%s' "$CF_MIXED_RECORDS" | cf_record_info AAAA dual.example.com)" = 'aaaa-id|2001:db8::10' ]] || { echo "Generated Cloudflare updater selected the wrong record type" >&2; exit 1; }
+[[ "$(printf '%s' "$CF_DUPLICATE_RECORDS" | cf_record_info A dual.example.com)" = 'DUPLICATE|2' ]] || { echo "Generated Cloudflare updater did not reject duplicate records" >&2; exit 1; }
 CF_SYNC_LINE=$(grep -nF 'if [ "$NEW_IP" = "$VERIFY_IP" ]; then' "$CLOUDFLARE_DDNS_TEMPLATE" | head -1 | cut -d: -f1)
 CF_SKIP_LINE=$(grep -nF 'if [ -z "$VERIFY_IP" ] || [ "$VERIFY_IP" != "$OLD_IP" ]; then' "$CLOUDFLARE_DDNS_TEMPLATE" | head -1 | cut -d: -f1)
 [[ -n "$CF_SYNC_LINE" && -n "$CF_SKIP_LINE" && "$CF_SYNC_LINE" -lt "$CF_SKIP_LINE" ]] || { echo "Cloudflare DDNS synchronized second-check branch is unreachable" >&2; exit 1; }

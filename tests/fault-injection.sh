@@ -170,6 +170,21 @@ EOF
         || { echo "DDNS cron helper hid a write failure" >&2; exit 1; }
 )
 
+# Cross-type Cloudflare records must never be deleted without explicit confirmation.
+(
+    CF_DELETE_LOG="$TMP/cloudflare-delete.log"
+    curl() {
+        case "$*" in
+            *" -X DELETE "*) printf '%s\n' "$*" >> "$CF_DELETE_LOG"; printf '%s\n' '{"success":true}' ;;
+            *) printf '%s\n' '{"success":true,"result":[{"id":"stale-aaaa","type":"AAAA","name":"v4.example.com","content":"2001:db8::4"}]}' ;;
+        esac
+    }
+    ddns_cf_cleanup_cross_record zone token AAAA v4.example.com "测试交叉记录" <<< "" >/dev/null
+    [ ! -s "$CF_DELETE_LOG" ] || { echo "DDNS deleted a cross-type record without confirmation" >&2; exit 1; }
+    ddns_cf_cleanup_cross_record zone token AAAA v4.example.com "测试交叉记录" <<< "y" >/dev/null
+    grep -Fq '/dns_records/stale-aaaa' "$CF_DELETE_LOG" || { echo "DDNS confirmed cross-type cleanup did not delete the selected record" >&2; exit 1; }
+)
+
 # Swap deletion must stop before touching fstab/files when swapoff fails.
 (
     print_header() { :; }
