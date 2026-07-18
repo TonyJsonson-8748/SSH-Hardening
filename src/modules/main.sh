@@ -44,6 +44,7 @@ VPS 开荒脚本 CLI
   --ddns-run             立即更新 DDNS
   --ddns-status          查看 DDNS 状态
   --ddns-log             查看 DDNS 日志
+  --ddns-link            用 DDNS 域名替换分享链接地址
   --mirror-menu          系统换源
   --ip-menu              IPv4 / IPv6 配置
   --caddy-menu           Caddy 管理
@@ -249,6 +250,10 @@ case "${1:-}" in
         ;;
     --ddns-log)
         ddns_view_logs
+        exit $?
+        ;;
+    --ddns-link)
+        ddns_share_link_tool
         exit $?
         ;;
     --mirror-menu)

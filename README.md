@@ -1,4 +1,4 @@
-# VPS 开荒脚本 V3.10.5
+# VPS 开荒脚本 V3.10.6
 
 > **银趴火山帮** 出品 · SSH · BBR · DDNS · Caddy · Firewall · NFT 转发
 
@@ -34,6 +34,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/chnnic/SSH-Hardening/refs/he
 | `--ddns-run` | 立即更新 DDNS |
 | `--ddns-status` | 查看 DDNS 状态 |
 | `--ddns-log` | 查看 DDNS 日志 |
+| `--ddns-link` | 用当前 IPv4 / IPv6 DDNS 域名替换代理分享链接地址 |
 | `--mirror-menu` | 系统换源 |
 | `--ip-menu` | IPv4 / IPv6 配置 |
 | `--caddy-menu` | Caddy 管理 |
@@ -73,7 +74,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/chnnic/SSH-Hardening/refs/he
 ╚═╝╚═╝     ╚═╝╚═╝     ╚═╝  ╚═╝╚═╝  ╚═╝   ╚═╝        ╚═════╝ ╚═╝     ╚══════╝
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  VPS TOOLS  ·  V3.10.5
+  VPS TOOLS  ·  V3.10.6
   VPS 开荒脚本 · 银趴火山帮
 ────────────────────────────────────────────────────────────────
   SSH · BBR · DDNS · Caddy · Firewall · NFT · Monitor
@@ -243,6 +244,8 @@ bash <(curl -fsSL https://raw.githubusercontent.com/chnnic/SSH-Hardening/refs/he
 - 华为云使用 AK/SK 签名调用 DNS API
 - 自定义 TTL（Cloudflare 默认 60 秒，华为云默认 300 秒）
 - 自定义检测间隔（1-59 分钟，默认 5 分钟，常用 1/2/5）
+- 分享链接地址替换：保留协议、凭据、端口、参数和备注，按当前配置生成 IPv4 / IPv6 DDNS 链接
+- 支持 SIP002/旧式 Shadowsocks、VMess，以及 VLESS、Trojan、Hysteria2、TUIC 等标准 URI
 
 **运行机制：**
 - crontab 按配置间隔执行，默认每 5 分钟
@@ -279,6 +282,7 @@ IP 真实变化时推送通知，实时读取 `/root/.cf_tg`，兼容 crontab �
 | 暂停 / 恢复 | 临时停用不删除配置 |
 | 卸载 | 完整清理 |
 | Telegram 通知 | 配置 Bot + Chat ID，发测试消息 |
+| 替换分享链接地址 | 将已有节点中的 IP/主机替换为当前 IPv4、IPv6 或同域名双栈 DDNS 地址 |
 
 **状态显示：**
 - `运行中` — crontab 正常
@@ -604,6 +608,7 @@ tests/smoke.sh
 
 | 版本 | 主要变更 |
 |------|---------|
+| **V3.10.6** | DDNS 新增分享链接地址替换工具：粘贴已有 SS、VMess、VLESS、Trojan、Hysteria2、TUIC 等节点 URI，保留凭据、端口、参数和备注，自动生成当前 IPv4 / IPv6 或同域名双栈 DDNS 链接 |
 | **V3.10.5** | 修复 DDNS 双栈配置容易把 AAAA 默认放到 IPv4 子域名的问题：新增共用/独立域名明确选择，默认独立并将 `hktv4` 建议为 `hktv6`；Cloudflare 严格复核记录域名与类型，拒绝同类型重复记录，并可在用户确认后清理 IPv4 域名上的旧 AAAA 或 IPv6 域名上的旧 A |
 | **V3.10.4** | 首页 `IMPART OPS` 品牌标题改为 ANSI Shadow 块状字幅；76 列终端同行完整展示，47-75 列终端上下分行，更窄终端自动回退为居中纯文字，避免手机终端折行错位 |
 | **V3.10.3** | STUN 检测结果下方新增动态解释区，分别说明 UDP 连通性、NAT 类型、映射行为、过滤行为、判定置信度和使用建议；覆盖公网直连、UDP 过滤、各类锥型、对称型、细分未知及无响应结果 |

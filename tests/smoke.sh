@@ -9,10 +9,10 @@ export VPS_TOOLS_TEST_MODE=1
 source "$ROOT/SSH-Hardening.sh"
 
 for fn in systemd_available show_cli_help main_menu ssh_tools_menu fail2ban_menu bbr_menu firewall_menu dns_menu \
-    ip_config_menu caddy_menu nft_menu ddns_menu ddns_install ddns_install_cloudflare ddns_install_huawei ddns_run_now ddns_view_logs ddns_status \
+    ip_config_menu caddy_menu nft_menu ddns_menu ddns_install ddns_install_cloudflare ddns_install_huawei ddns_run_now ddns_view_logs ddns_status ddns_share_link_tool \
     ddns_provider ddns_provider_label ddns_sed_escape ddns_domain_dot ddns_ipv6_subdomain_default ddns_cf_exact_records ddns_cf_record_ensure ddns_cf_cleanup_cross_record \
     ddns_interval_normalize ddns_interval_min ddns_cron_expr ddns_cron_without_managed ddns_prompt_interval \
-    ddns_cfg_enable_a ddns_cfg_enable_aaaa ddns_cfg_domain4 ddns_cfg_domain6 ddns_primary_domain ddns_mode_label ddns_build_domain \
+    ddns_cfg_enable_a ddns_cfg_enable_aaaa ddns_cfg_domain4 ddns_cfg_domain6 ddns_primary_domain ddns_mode_label ddns_build_domain ddns_replace_link_host \
     ddns_latest_log_line ddns_latest_change_log_line ddns_line_time ddns_line_result_ip ddns_newer_line ddns_change_matches_status ddns_record_status_line ddns_record_change_line ddns_print_record_summary \
     system_toolbox_menu \
     resource_health_check system_update_manager system_hostname_apply config_backup_create self_update docker_menu change_port; do
@@ -273,6 +273,7 @@ CLI_HELP=$(show_cli_help)
 [[ "$CLI_HELP" = *"--monitor-home"* ]] || { echo "CLI help missing monitor entry" >&2; exit 1; }
 [[ "$CLI_HELP" = *"--hostname-menu"* ]] || { echo "CLI help missing hostname entry" >&2; exit 1; }
 [[ "$CLI_HELP" = *"--stun-test"* ]] || { echo "CLI help missing STUN entry" >&2; exit 1; }
+[[ "$CLI_HELP" = *"--ddns-link"* ]] || { echo "CLI help missing DDNS link replacement entry" >&2; exit 1; }
 DDNS_ZONE_FILE="$TMP/cf_zone"
 cat > "$DDNS_ZONE_FILE" <<'EOF'
 DOMAIN=home.example.com
@@ -317,6 +318,20 @@ EOF
 [[ "$(ddns_ipv6_subdomain_default hktv4)" = "hktv6" ]] || { echo "DDNS IPv6 v4-to-v6 default failed" >&2; exit 1; }
 [[ "$(ddns_ipv6_subdomain_default home)" = "home-v6" ]] || { echo "DDNS IPv6 independent default failed" >&2; exit 1; }
 [[ "$(ddns_ipv6_subdomain_default @)" = "v6" ]] || { echo "DDNS IPv6 root-domain default failed" >&2; exit 1; }
+SS_SIP002='ss://dGVzdDpwYXNz@[2001:db8::1]:12928#node'
+[[ "$(ddns_replace_link_host "$SS_SIP002" v6.example.com)" = 'ss://dGVzdDpwYXNz@v6.example.com:12928#node' ]] \
+    || { echo "DDNS SIP002 Shadowsocks link replacement failed" >&2; exit 1; }
+SS_LEGACY='ss://YWVzLTEyOC1nY206dGVzdC1wYXNzQFsyMDAxOmRiODo6MV06ODM4OA#legacy'
+[[ "$(ddns_replace_link_host "$SS_LEGACY" v4.example.com)" = 'ss://YWVzLTEyOC1nY206dGVzdC1wYXNzQHY0LmV4YW1wbGUuY29tOjgzODg#legacy' ]] \
+    || { echo "DDNS legacy Shadowsocks link replacement failed" >&2; exit 1; }
+VLESS_LINK='vless://test-id@[2001:db8::1]:443?security=tls&sni=edge.example.com#node'
+[[ "$(ddns_replace_link_host "$VLESS_LINK" v6.example.com)" = 'vless://test-id@v6.example.com:443?security=tls&sni=edge.example.com#node' ]] \
+    || { echo "DDNS VLESS link replacement failed" >&2; exit 1; }
+VMESS_LINK='vmess://eyJ2IjoiMiIsInBzIjoibm9kZSIsImFkZCI6IjIwMDE6ZGI4OjoxIiwicG9ydCI6IjQ0MyIsImlkIjoidGVzdC1pZCIsIm5ldCI6IndzIn0='
+[[ "$(ddns_replace_link_host "$VMESS_LINK" v6.example.com)" = 'vmess://eyJ2IjoiMiIsInBzIjoibm9kZSIsImFkZCI6InY2LmV4YW1wbGUuY29tIiwicG9ydCI6IjQ0MyIsImlkIjoidGVzdC1pZCIsIm5ldCI6IndzIn0=' ]] \
+    || { echo "DDNS VMess link replacement failed" >&2; exit 1; }
+! ddns_replace_link_host 'not-a-link' v4.example.com >/dev/null 2>&1 \
+    || { echo "DDNS link replacement accepted malformed input" >&2; exit 1; }
 CF_MIXED_RECORDS='{"success":true,"result":[{"id":"a-id","type":"A","name":"dual.example.com","content":"192.0.2.10"},{"id":"aaaa-id","type":"AAAA","name":"dual.example.com.","content":"2001:db8::10"},{"id":"other-id","type":"AAAA","name":"other.example.com","content":"2001:db8::20"}]}'
 CF_DUPLICATE_RECORDS='{"success":true,"result":[{"id":"a-1","type":"A","name":"dual.example.com","content":"192.0.2.10"},{"id":"a-2","type":"A","name":"dual.example.com","content":"192.0.2.11"}]}'
 [[ "$(printf '%s' "$CF_MIXED_RECORDS" | ddns_cf_exact_records AAAA dual.example.com)" = $'aaaa-id\t2001:db8::10' ]] || { echo "Cloudflare exact AAAA record selection failed" >&2; exit 1; }
