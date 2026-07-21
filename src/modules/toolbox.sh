@@ -371,6 +371,7 @@ monitor_alert_load_cfg() {
     MON_RENEW_INTERVAL_DAYS=$(monitor_alert_cfg_get RENEW_INTERVAL_DAYS); MON_RENEW_INTERVAL_DAYS=${MON_RENEW_INTERVAL_DAYS:-365}
     MON_RENEW_MONTH_DAY=$(monitor_alert_cfg_get RENEW_MONTH_DAY); MON_RENEW_MONTH_DAY=${MON_RENEW_MONTH_DAY:-1}
     MON_RENEW_NOTICE_DAYS=$(monitor_alert_cfg_get RENEW_NOTICE_DAYS); MON_RENEW_NOTICE_DAYS=${MON_RENEW_NOTICE_DAYS:-30,7,3,1}
+    MON_RENEW_AUTO_ADVANCE=$(monitor_alert_cfg_get RENEW_AUTO_ADVANCE); MON_RENEW_AUTO_ADVANCE=${MON_RENEW_AUTO_ADVANCE:-no}
     MON_RENEW_LAST_ALERT=$(monitor_alert_cfg_get RENEW_LAST_ALERT)
     MON_DAILY_REPORT_ENABLED=$(monitor_alert_cfg_get DAILY_REPORT_ENABLED); MON_DAILY_REPORT_ENABLED=${MON_DAILY_REPORT_ENABLED:-no}
     MON_DAILY_REPORT_TIME=$(monitor_time_normalize "$(monitor_alert_cfg_get DAILY_REPORT_TIME)" 2>/dev/null || true); MON_DAILY_REPORT_TIME=${MON_DAILY_REPORT_TIME:-08:00}
@@ -391,6 +392,8 @@ monitor_alert_load_cfg() {
     monitor_positive_int_valid "$MON_RENEW_INTERVAL_DAYS" || MON_RENEW_INTERVAL_DAYS=365
     monitor_traffic_reset_day_valid "$MON_RENEW_MONTH_DAY" || MON_RENEW_MONTH_DAY=1
     monitor_renew_notice_days_valid "$MON_RENEW_NOTICE_DAYS" || MON_RENEW_NOTICE_DAYS=30,7,3,1
+    [ "$MON_RENEW_AUTO_ADVANCE" = yes ] || MON_RENEW_AUTO_ADVANCE=no
+    case "$MON_RENEW_MODE" in interval|monthly) : ;; *) MON_RENEW_AUTO_ADVANCE=no ;; esac
     monitor_positive_int_valid "$MON_ALERT_COOLDOWN_MIN" || MON_ALERT_COOLDOWN_MIN=30
 }
 
@@ -434,6 +437,7 @@ RENEW_NEXT_DATE=${MON_RENEW_NEXT_DATE:-}
 RENEW_INTERVAL_DAYS=${MON_RENEW_INTERVAL_DAYS:-365}
 RENEW_MONTH_DAY=${MON_RENEW_MONTH_DAY:-1}
 RENEW_NOTICE_DAYS=${MON_RENEW_NOTICE_DAYS:-30,7,3,1}
+RENEW_AUTO_ADVANCE=${MON_RENEW_AUTO_ADVANCE:-no}
 RENEW_LAST_ALERT=${MON_RENEW_LAST_ALERT:-}
 DAILY_REPORT_ENABLED=${MON_DAILY_REPORT_ENABLED:-no}
 DAILY_REPORT_TIME=${MON_DAILY_REPORT_TIME:-08:00}
@@ -1214,6 +1218,43 @@ else:
 PY
 }
 
+monitor_renew_future_date() {
+    local MODE="$1" BASE="$2" DAYS="$3" MONTH_DAY="$4" TODAY="$5"
+    python3 - "$MODE" "$BASE" "$DAYS" "$MONTH_DAY" "$TODAY" <<'PY'
+from calendar import monthrange
+from datetime import date, datetime, timedelta
+import sys
+
+mode, base, days, month_day, today = sys.argv[1:]
+base_date = datetime.strptime(base, "%Y-%m-%d").date()
+today_date = datetime.strptime(today, "%Y-%m-%d").date()
+if today_date <= base_date:
+    raise SystemExit(1)
+
+if mode == "interval":
+    period = int(days)
+    if period < 1:
+        raise SystemExit(1)
+    elapsed = (today_date - base_date).days
+    periods = (elapsed + period - 1) // period
+    print((base_date + timedelta(days=periods * period)).isoformat())
+elif mode == "monthly":
+    target_day = max(1, min(31, int(month_day or 1)))
+    year, month = today_date.year, today_date.month
+    for _ in range(24):
+        candidate = date(year, month, min(target_day, monthrange(year, month)[1]))
+        if candidate >= today_date:
+            print(candidate.isoformat())
+            break
+        month += 1
+        if month > 12:
+            year += 1
+            month = 1
+else:
+    raise SystemExit(1)
+PY
+}
+
 monitor_renew_days_left() {
     local NEXT="$1"
     python3 - "$NEXT" <<'PY'
@@ -1606,11 +1647,12 @@ EOF
 }
 
 monitor_alert_renew_snapshot() {
-    local HOST NEXT DAYS_LEFT MODE NOTICE EXTRA
+    local HOST NEXT DAYS_LEFT MODE NOTICE EXTRA AUTO_ADVANCE
     HOST=$(monitor_alert_host_label_html)
     MODE="${MON_RENEW_MODE:-interval}"
     NEXT="${MON_RENEW_NEXT_DATE:-}"
     NOTICE="${MON_RENEW_NOTICE_DAYS:-30,7,3,1}"
+    AUTO_ADVANCE=$([ "${MON_RENEW_AUTO_ADVANCE:-no}" = yes ] && echo "已启用（到期次日存活）" || echo "未启用")
     [ -n "$NEXT" ] && DAYS_LEFT=$(monitor_renew_days_left "$NEXT" 2>/dev/null || echo "未设置") || DAYS_LEFT="未设置"
     case "$MODE" in
         interval) EXTRA="周期：<code>${MON_RENEW_INTERVAL_DAYS:-365} 天</code>" ;;
@@ -1626,6 +1668,7 @@ monitor_alert_renew_snapshot() {
 下次续费：<code>${NEXT:-未设置}</code>
 剩余天数：<code>${DAYS_LEFT}</code>
 提醒天数：<code>${NOTICE}</code>
+自动顺延：<code>${AUTO_ADVANCE}</code>
 ${EXTRA}
 EOF
 )"
@@ -1669,6 +1712,81 @@ monitor_alert_renew_mark_paid() {
     monitor_alert_history_add RECOVER "已确认续费：$OLD_NEXT → $NEW_NEXT"
     audit_action "确认已续费：$OLD_NEXT → $NEW_NEXT" SUCCESS
     info "已跳到下一个续费周期：$NEW_NEXT"
+}
+
+monitor_alert_renew_auto_advance_toggle() {
+    local CONFIRM OLD_VALUE="${MON_RENEW_AUTO_ADVANCE:-no}"
+    if [ "${MON_RENEW_AUTO_ADVANCE:-no}" = yes ]; then
+        MON_RENEW_AUTO_ADVANCE=no
+        if ! monitor_alert_save_cfg; then
+            MON_RENEW_AUTO_ADVANCE="$OLD_VALUE"
+            error "自动顺延配置保存失败"
+            return 1
+        fi
+        info "到期存活自动顺延已关闭"
+        return 0
+    fi
+    case "${MON_RENEW_MODE:-interval}" in
+        interval|monthly) ;;
+        *)
+            warn "固定日期提醒没有可顺延周期，请先选择每月固定日或按周期循环。"
+            return 1
+            ;;
+    esac
+    warn "服务商可能存在停机宽限期；仅凭到期次日机器仍运行可能误判为已续费。"
+    [ "${MON_ENABLED:-no}" = yes ] || warn "后台监控尚未启用；启用后自动顺延规则才会定时执行。"
+    read -rp "  确认启用到期次日存活自动顺延？(y/N): " CONFIRM
+    echo "$CONFIRM" | grep -qiE '^y(es)?$' || { warn "已取消"; return 1; }
+    MON_RENEW_AUTO_ADVANCE=yes
+    if ! monitor_alert_save_cfg; then
+        MON_RENEW_AUTO_ADVANCE="$OLD_VALUE"
+        error "自动顺延配置保存失败"
+        return 1
+    fi
+    monitor_alert_renew_reset_state || true
+    info "到期存活自动顺延已启用"
+}
+
+monitor_alert_renew_auto_advance() {
+    local TODAY="$1" OLD_NEXT="${MON_RENEW_NEXT_DATE:-}" NEW_NEXT OLD_LAST_ALERT
+    [ -n "$OLD_NEXT" ] || return 1
+    case "${MON_RENEW_MODE:-interval}" in
+        interval|monthly) ;;
+        *) return 1 ;;
+    esac
+    NEW_NEXT=$(monitor_renew_future_date "${MON_RENEW_MODE:-interval}" "$OLD_NEXT" \
+        "${MON_RENEW_INTERVAL_DAYS:-365}" "${MON_RENEW_MONTH_DAY:-1}" "$TODAY") || return 1
+    [ -n "$NEW_NEXT" ] && [ "$NEW_NEXT" != "$OLD_NEXT" ] || return 1
+
+    OLD_LAST_ALERT="${MON_RENEW_LAST_ALERT:-}"
+    MON_RENEW_NEXT_DATE="$NEW_NEXT"
+    MON_RENEW_LAST_ALERT=
+    if ! monitor_alert_save_cfg; then
+        MON_RENEW_NEXT_DATE="$OLD_NEXT"
+        MON_RENEW_LAST_ALERT="$OLD_LAST_ALERT"
+        monitor_alert_history_add ERROR "续费自动顺延保存失败：$OLD_NEXT → $NEW_NEXT"
+        audit_action "续费自动顺延保存失败：$OLD_NEXT → $NEW_NEXT" FAILURE
+        return 1
+    fi
+    monitor_alert_renew_reset_state || true
+    monitor_alert_history_add RECOVER "到期后机器仍在运行，自动顺延续费周期：$OLD_NEXT → $NEW_NEXT"
+    audit_action "续费到期存活自动顺延：$OLD_NEXT → $NEW_NEXT" SUCCESS
+
+    if [ -n "${MON_BOT_TOKEN:-}" ] && [ -n "${MON_CHAT_ID:-}" ]; then
+        if ! monitor_alert_notify "✅ <b>续费周期已自动顺延</b>" "$(cat <<EOF
+主机：<code>$(monitor_alert_host_label_html)</code>
+检测日期：<code>${TODAY}</code>
+原续费日期：<code>${OLD_NEXT}</code>
+下次续费日期：<code>${NEW_NEXT}</code>
+依据：<code>到期后监控任务仍正常运行</code>
+EOF
+)"; then
+            monitor_alert_history_add ERROR "续费自动顺延通知发送失败：$OLD_NEXT → $NEW_NEXT"
+            audit_action "发送续费自动顺延通知失败：$OLD_NEXT → $NEW_NEXT" FAILURE
+            return 1
+        fi
+    fi
+    return 0
 }
 
 monitor_alert_traffic_check() {
@@ -1741,11 +1859,21 @@ monitor_alert_renew_check() {
     [ "${MON_RENEW_ENABLED:-no}" = "yes" ] || return 0
     local NEXT="${MON_RENEW_NEXT_DATE:-}" TODAY DAYS_LEFT LEVEL LEVEL_LABEL LEVEL_ICON
     TODAY=$(date +%F)
-    [ "${MON_RENEW_LAST_ALERT:-}" = "$TODAY" ] && return 0
     if [ -z "$NEXT" ]; then
         NEXT="$TODAY"
     fi
     DAYS_LEFT=$(monitor_renew_days_left "$NEXT" 2>/dev/null || echo 0)
+    if [ "${MON_RENEW_AUTO_ADVANCE:-no}" = yes ] && [ "$DAYS_LEFT" -le -1 ]; then
+        case "${MON_RENEW_MODE:-interval}" in
+            interval|monthly)
+                if monitor_alert_renew_auto_advance "$TODAY"; then
+                    return 0
+                fi
+                return 1
+                ;;
+        esac
+    fi
+    [ "${MON_RENEW_LAST_ALERT:-}" = "$TODAY" ] && return 0
     if ! monitor_renew_notice_match "$DAYS_LEFT" "${MON_RENEW_NOTICE_DAYS:-30,7,3,1}"; then
         return 0
     fi
@@ -2123,6 +2251,7 @@ monitor_alert_renew_menu() {
         echo -e "  模式：${BOLD}${MON_RENEW_MODE}${NC}"
         echo -e "  下次续费：${BOLD}${MON_RENEW_NEXT_DATE:-未设置}${NC}"
         echo -e "  提醒天数：${BOLD}${MON_RENEW_NOTICE_DAYS}${NC}"
+        echo -e "  自动顺延：${BOLD}$([ "${MON_RENEW_AUTO_ADVANCE:-no}" = yes ] && echo '已启用（到期次日存活）' || echo '未启用')${NC}"
         case "${MON_RENEW_MODE:-interval}" in
             interval) echo -e "  周期：${BOLD}${MON_RENEW_INTERVAL_DAYS} 天${NC}" ;;
             monthly) echo -e "  每月固定日：${BOLD}${MON_RENEW_MONTH_DAY}${NC}" ;;
@@ -2137,9 +2266,10 @@ monitor_alert_renew_menu() {
         menu_item "5" "关闭续费提醒" "$RED"
         menu_item "6" "我已续费" "$YELLOW"
         menu_item "7" "立即发送一次" "$GREEN"
+        menu_item "8" "$([ "${MON_RENEW_AUTO_ADVANCE:-no}" = yes ] && echo '关闭到期存活自动顺延' || echo '启用到期存活自动顺延')" "$CYAN"
         menu_item "0" "返回上级" "$RED"
         menu_div; echo ""
-        read -rp "$(ui_prompt '选择操作 [0-7]: ')" CH
+        read -rp "$(ui_prompt '选择操作 [0-8]: ')" CH
         case "$CH" in
             1)
                 local NORMAL_DATE
@@ -2149,6 +2279,7 @@ monitor_alert_renew_menu() {
                 MON_RENEW_ENABLED=yes
                 MON_RENEW_MODE=manual
                 MON_RENEW_NEXT_DATE="$NORMAL_DATE"
+                MON_RENEW_AUTO_ADVANCE=no
                 monitor_alert_renew_reset_state
                 monitor_alert_save_cfg
                 info "续费日期已设置"
@@ -2195,6 +2326,7 @@ monitor_alert_renew_menu() {
                 ;;
             5)
                 MON_RENEW_ENABLED=no
+                MON_RENEW_AUTO_ADVANCE=no
                 monitor_alert_save_cfg
                 info "续费提醒已关闭"
                 ;;
@@ -2203,6 +2335,9 @@ monitor_alert_renew_menu() {
                 ;;
             7)
                 if monitor_alert_renew_snapshot; then info "续费快照已发送"; else error "续费快照发送失败"; fi
+                ;;
+            8)
+                monitor_alert_renew_auto_advance_toggle || true
                 ;;
             0) return ;;
             *) warn "无效选项"; sleep 1 ;;

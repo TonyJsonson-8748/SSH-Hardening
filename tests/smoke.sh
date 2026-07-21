@@ -220,7 +220,7 @@ for fn in docker_install docker_status docker_select_container docker_upgrade_co
     declare -F "$fn" >/dev/null || { echo "Missing Docker function: $fn" >&2; exit 1; }
 done
 
-for fn in self_install self_script_valid self_resolve_script_source self_fetch_script self_shortcut_owned self_install_shortcut self_remove_shortcut self_offline_bundle_create self_offline_bundle_install self_update self_manifest_value self_remote_main_sha monitor_alert_check monitor_alert_config_menu monitor_alert_home_menu monitor_alert_daily_report monitor_alert_host_label monitor_alert_host_label_html monitor_alert_html_escape monitor_alert_set_host_label monitor_time_normalize monitor_date_normalize monitor_int_normalize monitor_positive_number_valid monitor_positive_int_valid monitor_percent_valid monitor_renew_notice_days_valid monitor_traffic_interfaces monitor_traffic_reset_day_valid monitor_traffic_totals monitor_traffic_delta_bytes monitor_traffic_reconcile_counters monitor_traffic_usage_triplet monitor_traffic_usage_text monitor_traffic_set_cycle_usage_split_gb monitor_alert_service_state monitor_alert_any_service_state monitor_alert_ssh_state monitor_alert_test_snapshot monitor_alert_resource_snapshot monitor_alert_traffic_snapshot monitor_alert_renew_snapshot monitor_alert_renew_mark_paid monitor_alert_renew_reset_state monitor_alert_notify monitor_alert_telegram_send monitor_alert_history_add monitor_alert_history_view monitor_alert_cooldown_seconds monitor_alert_time_to_minutes monitor_alert_in_silence monitor_alert_metrics monitor_alert_metrics_sample monitor_alert_trend_line monitor_alert_trend_summary monitor_alert_level_label monitor_alert_level_icon monitor_alert_level_rank monitor_alert_worst_level monitor_alert_daily_cron_expr monitor_alert_cron_command monitor_alert_cron_without_managed monitor_alert_acquire_lock monitor_alert_install_cron monitor_alert_remove_cron monitor_alert_cron_status monitor_alert_next_daily_time monitor_alert_configured_without_cron monitor_alert_service_menu monitor_alert_notify_menu monitor_alert_resource_menu monitor_alert_traffic_menu monitor_alert_daily_menu monitor_alert_renew_menu monitor_alert_advanced_menu monitor_alert_quick_setup_menu config_health_check diagnostic_bundle_create; do
+for fn in self_install self_script_valid self_resolve_script_source self_fetch_script self_shortcut_owned self_install_shortcut self_remove_shortcut self_offline_bundle_create self_offline_bundle_install self_update self_manifest_value self_remote_main_sha monitor_alert_check monitor_alert_config_menu monitor_alert_home_menu monitor_alert_daily_report monitor_alert_host_label monitor_alert_host_label_html monitor_alert_html_escape monitor_alert_set_host_label monitor_time_normalize monitor_date_normalize monitor_int_normalize monitor_positive_number_valid monitor_positive_int_valid monitor_percent_valid monitor_renew_notice_days_valid monitor_renew_future_date monitor_traffic_interfaces monitor_traffic_reset_day_valid monitor_traffic_totals monitor_traffic_delta_bytes monitor_traffic_reconcile_counters monitor_traffic_usage_triplet monitor_traffic_usage_text monitor_traffic_set_cycle_usage_split_gb monitor_alert_service_state monitor_alert_any_service_state monitor_alert_ssh_state monitor_alert_test_snapshot monitor_alert_resource_snapshot monitor_alert_traffic_snapshot monitor_alert_renew_snapshot monitor_alert_renew_mark_paid monitor_alert_renew_auto_advance_toggle monitor_alert_renew_auto_advance monitor_alert_renew_reset_state monitor_alert_notify monitor_alert_telegram_send monitor_alert_history_add monitor_alert_history_view monitor_alert_cooldown_seconds monitor_alert_time_to_minutes monitor_alert_in_silence monitor_alert_metrics monitor_alert_metrics_sample monitor_alert_trend_line monitor_alert_trend_summary monitor_alert_level_label monitor_alert_level_icon monitor_alert_level_rank monitor_alert_worst_level monitor_alert_daily_cron_expr monitor_alert_cron_command monitor_alert_cron_without_managed monitor_alert_acquire_lock monitor_alert_install_cron monitor_alert_remove_cron monitor_alert_cron_status monitor_alert_next_daily_time monitor_alert_configured_without_cron monitor_alert_service_menu monitor_alert_notify_menu monitor_alert_resource_menu monitor_alert_traffic_menu monitor_alert_daily_menu monitor_alert_renew_menu monitor_alert_advanced_menu monitor_alert_quick_setup_menu config_health_check diagnostic_bundle_create; do
     declare -F "$fn" >/dev/null || { echo "Missing new function: $fn" >&2; exit 1; }
 done
 
@@ -607,6 +607,21 @@ monitor_positive_int_valid 30 || { echo "Valid positive monitor integer rejected
 ! monitor_positive_int_valid 0 || { echo "Zero monitor integer accepted" >&2; exit 1; }
 monitor_renew_notice_days_valid '30,7,3,1,0' || { echo "Valid renewal notice list rejected" >&2; exit 1; }
 ! monitor_renew_notice_days_valid '30,bad,1' || { echo "Invalid renewal notice list accepted" >&2; exit 1; }
+[[ "$(monitor_renew_future_date interval 2026-01-10 30 1 2026-01-11)" = "2026-02-09" ]] || { echo "Interval renewal future date failed" >&2; exit 1; }
+[[ "$(monitor_renew_future_date interval 2026-01-10 30 1 2026-03-20)" = "2026-04-10" ]] || { echo "Missed interval renewal catch-up failed" >&2; exit 1; }
+[[ "$(monitor_renew_future_date monthly 2026-01-10 365 10 2026-01-11)" = "2026-02-10" ]] || { echo "Monthly renewal future date failed" >&2; exit 1; }
+[[ "$(monitor_renew_future_date monthly 2026-01-31 365 31 2026-02-01)" = "2026-02-28" ]] || { echo "Short-month renewal future date failed" >&2; exit 1; }
+(
+    MONITOR_CFG_FILE="$TMP/monitor-auto-renew.cfg"
+    monitor_alert_cfg() { echo "$MONITOR_CFG_FILE"; }
+    MON_RENEW_MODE=monthly
+    MON_RENEW_AUTO_ADVANCE=yes
+    monitor_alert_save_cfg
+    MON_RENEW_MODE=
+    MON_RENEW_AUTO_ADVANCE=
+    monitor_alert_load_cfg
+    [[ "$MON_RENEW_AUTO_ADVANCE" = yes ]] || { echo "Renewal auto-advance config was not persisted" >&2; exit 1; }
+)
 (
     MON_TRAFFIC_INTERFACES=
     ip() {
@@ -819,9 +834,46 @@ monitor_alert_renew_check
     export MON_RENEW_INTERVAL_DAYS=365
     export MON_RENEW_MONTH_DAY=1
     export MON_RENEW_NOTICE_DAYS=0
+    export MON_RENEW_AUTO_ADVANCE=no
     export MON_RENEW_LAST_ALERT=
     monitor_alert_renew_check
     [[ "$MON_RENEW_NEXT_DATE" = "$ORIGINAL_RENEW_DATE" ]] || { echo "Due renewal date advanced without payment confirmation" >&2; exit 1; }
+)
+
+(
+    monitor_alert_notify() { return 0; }
+    monitor_alert_history_add() { :; }
+    monitor_alert_state_set() { :; }
+    monitor_alert_save_cfg() { SAVE_CALLS=$((SAVE_CALLS + 1)); }
+    audit_action() { :; }
+    export MON_RENEW_ENABLED=yes
+    export MON_RENEW_MODE=interval
+    MON_RENEW_NEXT_DATE=$(python3 -c 'from datetime import date,timedelta; print(date.today()-timedelta(days=1))')
+    ORIGINAL_RENEW_DATE="$MON_RENEW_NEXT_DATE"
+    export MON_RENEW_INTERVAL_DAYS=30
+    export MON_RENEW_MONTH_DAY=1
+    export MON_RENEW_NOTICE_DAYS=0
+    export MON_RENEW_AUTO_ADVANCE=yes
+    export MON_RENEW_LAST_ALERT=
+    MON_BOT_TOKEN=
+    MON_CHAT_ID=
+    SAVE_CALLS=0
+    EXPECTED_RENEW_DATE=$(monitor_renew_future_date interval "$ORIGINAL_RENEW_DATE" 30 1 "$(date +%F)")
+    monitor_alert_renew_check
+    [[ "$MON_RENEW_NEXT_DATE" = "$EXPECTED_RENEW_DATE" ]] || { echo "Enabled renewal auto-advance did not move to the next cycle" >&2; exit 1; }
+    [[ "$SAVE_CALLS" -eq 1 ]] || { echo "Renewal auto-advance did not persist exactly once" >&2; exit 1; }
+)
+
+(
+    monitor_alert_save_cfg() { return 1; }
+    monitor_alert_history_add() { :; }
+    audit_action() { :; }
+    export MON_RENEW_MODE=monthly
+    export MON_RENEW_NEXT_DATE=2026-01-10
+    export MON_RENEW_MONTH_DAY=10
+    export MON_RENEW_AUTO_ADVANCE=yes
+    ! monitor_alert_renew_auto_advance 2026-01-11 || { echo "Renewal auto-advance ignored a config save failure" >&2; exit 1; }
+    [[ "$MON_RENEW_NEXT_DATE" = 2026-01-10 ]] || { echo "Failed renewal auto-advance did not roll back the date" >&2; exit 1; }
 )
 
 OS=$(detect_os)
