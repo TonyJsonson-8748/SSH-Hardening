@@ -9,7 +9,7 @@ export VPS_TOOLS_TEST_MODE=1
 source "$ROOT/SSH-Hardening.sh"
 
 for fn in systemd_available show_cli_help main_menu ssh_tools_menu fail2ban_menu bbr_menu firewall_menu dns_menu \
-    ip_config_menu caddy_menu nft_menu ddns_menu ddns_install ddns_install_cloudflare ddns_install_huawei ddns_run_now ddns_view_logs ddns_status ddns_share_link_tool \
+    ip_config_menu caddy_menu caddy_site_records caddy_site_count nft_menu ddns_menu ddns_install ddns_install_cloudflare ddns_install_huawei ddns_run_now ddns_view_logs ddns_status ddns_share_link_tool \
     ddns_provider ddns_provider_label ddns_sed_escape ddns_domain_dot ddns_ipv6_subdomain_default ddns_cf_exact_records ddns_cf_record_ensure ddns_cf_cleanup_cross_record \
     ddns_interval_normalize ddns_interval_min ddns_cron_expr ddns_cron_without_managed ddns_prompt_interval \
     ddns_cfg_enable_a ddns_cfg_enable_aaaa ddns_cfg_domain4 ddns_cfg_domain6 ddns_primary_domain ddns_mode_label ddns_build_domain ddns_replace_link_host \
@@ -18,6 +18,74 @@ for fn in systemd_available show_cli_help main_menu ssh_tools_menu fail2ban_menu
     resource_health_check system_update_manager system_hostname_apply config_backup_create self_update docker_menu change_port; do
     declare -F "$fn" >/dev/null || { echo "Missing function: $fn" >&2; exit 1; }
 done
+
+CADDYFILE="$TMP/Caddyfile"
+cat > "$CADDYFILE" <<'EOF'
+{
+    email admin@example.com
+}
+
+(common_headers) {
+    header X-Test enabled
+}
+
+cdr.289599.top {
+	reverse_proxy 127.0.0.1:8081 {
+		header_up Host {host}
+		transport http {
+			tls
+		}
+	}
+}
+
+dockge.289599.top {
+    reverse_proxy 127.0.0.1:5001
+}
+
+fwx.289599.top {
+    handle {
+        reverse_proxy 127.0.0.1:18080
+    }
+}
+
+example.com, www.example.com {
+    redir https://www.example.com{uri}
+}
+EOF
+CADDY_RECORDS=$(caddy_site_records)
+EXPECTED_CADDY_SITES=$(printf '%s\n' 'cdr.289599.top' 'dockge.289599.top' 'fwx.289599.top' 'example.com, www.example.com')
+ACTUAL_CADDY_SITES=$(printf '%s\n' "$CADDY_RECORDS" | awk -F '\t' '$1 == "site" { print $2 }')
+[[ "$ACTUAL_CADDY_SITES" = "$EXPECTED_CADDY_SITES" ]] || { echo "Caddy nested blocks were parsed as sites" >&2; exit 1; }
+[[ "$(caddy_site_count)" = 4 ]] || { echo "Caddy site count included nested or option blocks" >&2; exit 1; }
+[[ "$CADDY_RECORDS" == *$'directive\treverse_proxy\t127.0.0.1:8081'* ]] || { echo "Caddy nested reverse proxy target was not listed" >&2; exit 1; }
+[[ "$CADDY_RECORDS" != *$'site\treverse_proxy'* && "$CADDY_RECORDS" != *$'site\theader_up'* && "$CADDY_RECORDS" != *$'site\ttransport'* ]] || {
+    echo "Caddy nested directive was exposed as a site" >&2
+    exit 1
+}
+CADDY_LIST_OUTPUT=$(caddy_list_sites)
+[[ "$CADDY_LIST_OUTPUT" == *'[1] cdr.289599.top'* && "$CADDY_LIST_OUTPUT" == *'[2] dockge.289599.top'* && "$CADDY_LIST_OUTPUT" == *'[4] example.com, www.example.com'* ]] || {
+    echo "Caddy site list numbering is incomplete" >&2
+    exit 1
+}
+[[ "$CADDY_LIST_OUTPUT" == *'reverse_proxy → 127.0.0.1:8081'* && "$CADDY_LIST_OUTPUT" != *'[2] reverse_proxy'* ]] || {
+    echo "Caddy site list did not render a nested proxy correctly" >&2
+    exit 1
+}
+(
+    CADDYFILE="$TMP/Caddy-delete"
+    cp "$TMP/Caddyfile" "$CADDYFILE"
+    # shellcheck disable=SC2329 # test stub used indirectly by caddy_del_site
+    caddy() { [ "${1:-}" = validate ]; }
+    # shellcheck disable=SC2329 # test stub used indirectly by caddy_del_site
+    caddy_reload_config() { return 0; }
+    caddy_del_site >/dev/null <<'EOF'
+4
+y
+EOF
+    ! grep -qF 'example.com, www.example.com {' "$CADDYFILE" || { echo "Caddy multi-address site was not deleted" >&2; exit 1; }
+    grep -qF 'cdr.289599.top {' "$CADDYFILE" || { echo "Caddy deletion removed the wrong top-level block" >&2; exit 1; }
+    grep -qF 'header_up Host {host}' "$CADDYFILE" || { echo "Caddy deletion damaged a nested proxy block" >&2; exit 1; }
+)
 
 BANNER_WIDE=$(COLUMNS=80 NO_COLOR=1 volcano_art_banner)
 [[ "$BANNER_WIDE" = *'██╗███╗'* && "$BANNER_WIDE" = *'███████╗'* ]] || { echo "Wide IMPART OPS banner is missing" >&2; exit 1; }

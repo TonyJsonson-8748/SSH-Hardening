@@ -191,27 +191,81 @@ caddy_reload_config() {
     fi
 }
 
+# 输出 Caddyfile 中的站点与关键指令。只把顶层块识别为站点，避免把使用
+# Tab 缩进的 reverse_proxy/header_up/transport 子块误列为独立站点。
+caddy_site_records() {
+    [ -f "$CADDYFILE" ] || return 0
+    awk '
+        function trim(value) {
+            sub(/^[[:space:]]+/, "", value)
+            sub(/[[:space:]]+$/, "", value)
+            return value
+        }
+        function without_comment(value) {
+            sub(/[[:space:]]+#.*$/, "", value)
+            return value
+        }
+        {
+            line = trim(without_comment($0))
+            if (line == "" || line ~ /^#/) next
+
+            opens = (line ~ /\{[[:space:]]*$/) ? 1 : 0
+            closes = (line ~ /^\}/) ? 1 : 0
+
+            if (depth == 0 && opens) {
+                header = line
+                sub(/[[:space:]]*\{[[:space:]]*$/, "", header)
+                header = trim(header)
+                active_site = (header != "" && header !~ /^\([^)]*\)$/)
+                if (active_site) print "site\t" header
+            } else if (depth > 0 && active_site) {
+                directive = line
+                sub(/[[:space:]].*$/, "", directive)
+                if (directive ~ /^(reverse_proxy|root|file_server|redir)$/) {
+                    target = line
+                    sub(/^[^[:space:]]+[[:space:]]*/, "", target)
+                    sub(/[[:space:]]*\{[[:space:]]*$/, "", target)
+                    print "directive\t" directive "\t" trim(target)
+                }
+            }
+
+            depth += opens - closes
+            if (depth <= 0) {
+                depth = 0
+                active_site = 0
+            }
+        }
+    ' "$CADDYFILE"
+}
+
+caddy_site_count() {
+    caddy_site_records | awk -F '\t' '$1 == "site" { count++ } END { print count + 0 }'
+}
+
 # ── 查看所有站点 ──────────────────────────────────────────
 caddy_list_sites() {
     print_header "当前 Caddy 站点"
     if [ ! -f "$CADDYFILE" ]; then warn "Caddyfile 不存在"; return; fi
 
     menu_div
-    local i=0
-    while IFS= read -r line; do
-        echo "$line" | grep -qE '^\s*#|^\s*$' && continue
-        if echo "$line" | grep -qE '^[^ ].*\{'; then
-            local bname; bname=$(echo "$line" | awk '{print $1}')
-            i=$((i+1))
-            echo -e "  ${GREEN}[$i]${NC} ${BOLD}${bname}${NC}"
-        elif echo "$line" | grep -qE '^\s+(reverse_proxy|root|file_server|redir)'; then
-            local dir; dir=$(echo "$line" | awk '{print $1}')
-            local tgt; tgt=$(echo "$line" | awk '{$1=""; print $0}' | sed 's/^ //')
-            echo -e "      ${DIM}${dir}${NC} → ${CYAN}${tgt}${NC}"
-        elif echo "$line" | grep -qE '^\}'; then
-            echo ""
-        fi
-    done < "$CADDYFILE"
+    local i=0 kind value target
+    while IFS=$'\t' read -r kind value target; do
+        case "$kind" in
+            site)
+                [ "$i" -gt 0 ] && echo ""
+                i=$((i+1))
+                echo -e "  ${GREEN}[$i]${NC} ${BOLD}${value}${NC}"
+                ;;
+            directive)
+                if [ -n "$target" ]; then
+                    echo -e "      ${DIM}${value}${NC} → ${CYAN}${target}${NC}"
+                else
+                    echo -e "      ${DIM}${value}${NC}"
+                fi
+                ;;
+        esac
+    done < <(caddy_site_records)
+    [ "$i" -gt 0 ] && echo ""
     [ "$i" -eq 0 ] && echo -e "  ${YELLOW}暂无站点配置${NC}\n"
     menu_div
 }
@@ -361,13 +415,10 @@ caddy_del_site() {
 
     # 收集所有站点
     local SITES=()
-    while IFS= read -r line; do
-        echo "$line" | grep -qE '^\s*#|^\s*$' && continue
-        if echo "$line" | grep -qE '^[^ ].*\{'; then
-            local bname; bname=$(echo "$line" | awk '{print $1}')
-            SITES+=("$bname")
-        fi
-    done < "$CADDYFILE"
+    local kind value
+    while IFS=$'\t' read -r kind value; do
+        [ "$kind" = "site" ] && SITES+=("$value")
+    done < <(caddy_site_records)
 
     if [ ${#SITES[@]} -eq 0 ]; then warn "暂无站点配置"; return; fi
 
@@ -396,30 +447,43 @@ caddy_del_site() {
     BAK="${CADDYFILE}.bak.$(date +%Y%m%d_%H%M%S)"
     if ! python3 - "$CADDYFILE" "$TMP" "$DOMAIN" << 'PYEOF'
 import sys
-path, output, domain = sys.argv[1], sys.argv[2], sys.argv[3]
+path, output, site_header = sys.argv[1], sys.argv[2], sys.argv[3]
 with open(path) as f:
     lines = f.readlines()
+
+def syntax_line(line):
+    line = line.strip()
+    if " #" in line:
+        line = line.split(" #", 1)[0].rstrip()
+    return line
+
+def block_delta(line):
+    return int(line.endswith("{")) - int(line.startswith("}"))
+
 result = []
 skip = False
 depth = 0
 found = False
 for line in lines:
-    s = line.strip()
-    header = s.split('{', 1)[0].strip() if '{' in s else ''
-    addresses = [item.strip() for item in header.split(',')]
-    if not skip and domain in addresses and '{' in s:
+    s = syntax_line(line)
+    opening_header = s[:-1].strip() if s.endswith("{") else ""
+    if not skip and depth == 0 and opening_header == site_header:
         skip = True
         found = True
-        depth = s.count('{') - s.count('}')
+        depth = 1
         while result and result[-1].strip() == '':
             result.pop()
         continue
     if skip:
-        depth += s.count('{') - s.count('}')
+        depth += block_delta(s)
         if depth <= 0:
             skip = False
+            depth = 0
         continue
     result.append(line)
+    depth += block_delta(s)
+    if depth < 0:
+        depth = 0
 if not found:
     raise SystemExit(2)
 with open(output, 'w') as f:
@@ -616,7 +680,7 @@ caddy_menu() {
         fi
 
         local C_VER; C_VER=$(caddy version 2>/dev/null | awk '{print $1}')
-        local SITE_COUNT; SITE_COUNT=$(grep -cE '^[^ ].*\{' "$CADDYFILE" 2>/dev/null || echo 0)
+        local SITE_COUNT; SITE_COUNT=$(caddy_site_count)
 
         echo -e "  服务: ${C_COLOR}${BOLD}${C_ST}${NC}  版本: ${BOLD}${C_VER:-未知}${NC}  站点数: ${BOLD}${SITE_COUNT}${NC}"
         echo ""
