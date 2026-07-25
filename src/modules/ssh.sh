@@ -42,7 +42,7 @@ add_key() {
     chmod 600 "$AUTH_KEYS"
 
     local TOTAL
-    TOTAL=$(grep -cE '^(ssh-rsa|ssh-ed25519|ecdsa-sha2|sk-ssh|sk-ecdsa|ssh-dss) ' "$AUTH_KEYS")
+    TOTAL=$(ssh_key_count)
     info "公钥已添加！当前共 $TOTAL 个公钥 ✓"
 }
 
@@ -161,7 +161,7 @@ generate_key() {
         else
             echo "$PUBKEY" >> "$AUTH_KEYS"; chmod 600 "$AUTH_KEYS"
             local TOTAL
-            TOTAL=$(grep -cE '^(ssh-rsa|ssh-ed25519|ecdsa-sha2|sk-ssh|sk-ecdsa|ssh-dss) ' "$AUTH_KEYS")
+            TOTAL=$(ssh_key_count)
             echo ""
             info "公钥已添加到服务器！当前共 $TOTAL 个公钥 ✓"
         fi
@@ -198,7 +198,7 @@ set_login_mode() {
     case "$MODE" in
         1)
             local KEYCOUNT
-            KEYCOUNT=$(grep -cE '^(ssh-rsa|ssh-ed25519|ecdsa-sha2|sk-ssh|sk-ecdsa|ssh-dss) ' "$AUTH_KEYS" 2>/dev/null || echo 0)
+            KEYCOUNT=$(ssh_key_count)
             if [ "$KEYCOUNT" -eq 0 ]; then
                 warn "当前没有公钥！启用仅密钥登录后将无法通过密码登录！"
                 read -rp "  仍要继续？(Y/n，默认Y): " FORCE

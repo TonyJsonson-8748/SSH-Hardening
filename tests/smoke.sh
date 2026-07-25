@@ -8,7 +8,7 @@ export VPS_TOOLS_TEST_MODE=1
 # shellcheck source=/dev/null
 source "$ROOT/SSH-Hardening.sh"
 
-for fn in systemd_available show_cli_help main_menu ssh_tools_menu fail2ban_menu bbr_menu firewall_menu dns_menu \
+for fn in systemd_available show_cli_help main_menu ssh_tools_menu ssh_key_count fail2ban_menu bbr_menu firewall_menu dns_menu \
     ip_config_menu caddy_menu caddy_site_records caddy_site_count nft_menu ddns_menu ddns_install ddns_install_cloudflare ddns_install_huawei ddns_run_now ddns_view_logs ddns_status ddns_share_link_tool \
     ddns_provider ddns_provider_label ddns_sed_escape ddns_domain_dot ddns_ipv6_subdomain_default ddns_cf_exact_records ddns_cf_record_ensure ddns_cf_cleanup_cross_record \
     ddns_interval_normalize ddns_interval_min ddns_cron_expr ddns_cron_without_managed ddns_prompt_interval \
@@ -18,6 +18,16 @@ for fn in systemd_available show_cli_help main_menu ssh_tools_menu fail2ban_menu
     resource_health_check system_update_manager system_hostname_apply config_backup_create self_update docker_menu change_port; do
     declare -F "$fn" >/dev/null || { echo "Missing function: $fn" >&2; exit 1; }
 done
+
+(
+    AUTH_KEYS="$TMP/authorized_keys"
+    : > "$AUTH_KEYS"
+    [[ "$(ssh_key_count)" = 0 ]] || { echo "Empty authorized_keys did not return a single zero" >&2; exit 1; }
+    printf '%s\n' 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITest1 test-one' 'ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQCTest2 test-two' > "$AUTH_KEYS"
+    [[ "$(ssh_key_count)" = 2 ]] || { echo "SSH key counter did not count valid keys" >&2; exit 1; }
+    rm -f "$AUTH_KEYS"
+    [[ "$(ssh_key_count)" = 0 ]] || { echo "Missing authorized_keys did not return zero" >&2; exit 1; }
+)
 
 CADDYFILE="$TMP/Caddyfile"
 cat > "$CADDYFILE" <<'EOF'

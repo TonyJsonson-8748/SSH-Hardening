@@ -73,7 +73,7 @@ main_menu() {
         CUR_PORT=$(get_config "Port")
         CUR_PWD=$(get_config "PasswordAuthentication")
         CUR_PUBKEY=$(get_config "PubkeyAuthentication")
-        KEYCOUNT=$(grep -cE '^(ssh-rsa|ssh-ed25519|ecdsa-sha2|sk-ssh|sk-ecdsa|ssh-dss) ' "$AUTH_KEYS" 2>/dev/null || echo 0)
+        KEYCOUNT=$(ssh_key_count)
         local F2B_STAT; F2B_STAT=$(f2b_status)
 
         safe_clear

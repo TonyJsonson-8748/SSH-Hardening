@@ -5,7 +5,7 @@ ssh_tools_menu() {
         CUR_PORT=$(get_config "Port")
         CUR_PWD=$(get_config "PasswordAuthentication")
         CUR_PUBKEY=$(get_config "PubkeyAuthentication")
-        KEYCOUNT=$(grep -cE '^(ssh-rsa|ssh-ed25519|ecdsa-sha2|sk-ssh|sk-ecdsa|ssh-dss) ' "$AUTH_KEYS" 2>/dev/null || echo 0)
+        KEYCOUNT=$(ssh_key_count)
 
         print_header "SSH 工具集"
         box_line "  端口 ${CUR_PORT:-22}  |  公钥数 ${KEYCOUNT}" \
