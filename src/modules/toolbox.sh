@@ -3024,16 +3024,106 @@ safety_confirm() {
     fi
 }
 
+security_password_auth_effective() {
+    local PASSWORD_AUTH AUTH_METHODS METHOD
+    PASSWORD_AUTH=$(printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]')
+    AUTH_METHODS=$(printf '%s' "${2:-any}" | tr '[:upper:]' '[:lower:]')
+    [ "$PASSWORD_AUTH" = yes ] || return 1
+    case "$AUTH_METHODS" in
+        ""|any) return 0 ;;
+    esac
+    while IFS= read -r METHOD; do
+        [ "$METHOD" != password ] || return 0
+    done < <(printf '%s\n' "$AUTH_METHODS" | tr ' ,' '\n')
+    return 1
+}
+
+security_password_methods_disabled() {
+    local PASSWORD_AUTH KBD_AUTH AUTH_METHODS METHOD
+    PASSWORD_AUTH=$(printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]')
+    KBD_AUTH=$(printf '%s' "${2:-}" | tr '[:upper:]' '[:lower:]')
+    AUTH_METHODS=$(printf '%s' "${3:-any}" | tr '[:upper:]' '[:lower:]')
+    [ "$PASSWORD_AUTH" = no ] && [ "$KBD_AUTH" = no ] && return 0
+    case "$AUTH_METHODS" in
+        ""|any) return 1 ;;
+    esac
+    while IFS= read -r METHOD; do
+        case "$METHOD" in
+            password)
+                [ "$PASSWORD_AUTH" != yes ] || return 1
+                ;;
+            keyboard-interactive|keyboard-interactive:*)
+                [ "$KBD_AUTH" != yes ] || return 1
+                ;;
+        esac
+    done < <(printf '%s\n' "$AUTH_METHODS" | tr ' ,' '\n')
+    return 0
+}
+
+security_root_password_restricted() {
+    local ROOT_LOGIN PASSWORD_AUTH KBD_AUTH AUTH_METHODS
+    ROOT_LOGIN=$(printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]')
+    PASSWORD_AUTH="${2:-}"
+    KBD_AUTH="${3:-}"
+    AUTH_METHODS="${4:-any}"
+    case "$ROOT_LOGIN" in
+        no|prohibit-password|without-password|forced-commands-only)
+            return 0
+            ;;
+        yes)
+            security_password_methods_disabled "$PASSWORD_AUTH" "$KBD_AUTH" "$AUTH_METHODS"
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
 security_audit() {
     print_header "系统安全体检"
-    local WARNINGS=0 VALUE PORT
+    local WARNINGS=0 PORT PASSWORD_AUTH KBD_AUTH ROOT_LOGIN EMPTY_PASSWORDS AUTH_METHODS USE_PAM
     echo -e "  ${BOLD}SSH${NC}"
-    VALUE=$(get_config PasswordAuthentication)
-    if [ "$VALUE" = no ]; then info "密码登录已关闭"; else warn "密码登录未关闭"; WARNINGS=$((WARNINGS+1)); fi
-    VALUE=$(get_config PermitRootLogin)
-    if [ "$VALUE" = no ] || [ "$VALUE" = prohibit-password ]; then info "root 密码登录已限制"; else warn "root 密码登录允许"; WARNINGS=$((WARNINGS+1)); fi
-    VALUE=$(get_config PermitEmptyPasswords)
-    if [ "$VALUE" = yes ]; then warn "允许空密码登录"; WARNINGS=$((WARNINGS+1)); else info "未允许空密码登录"; fi
+    PASSWORD_AUTH=$(get_config PasswordAuthentication)
+    KBD_AUTH=$(get_config KbdInteractiveAuthentication)
+    [ -n "$KBD_AUTH" ] || KBD_AUTH=$(get_config ChallengeResponseAuthentication)
+    ROOT_LOGIN=$(get_config PermitRootLogin)
+    EMPTY_PASSWORDS=$(get_config PermitEmptyPasswords)
+    AUTH_METHODS=$(get_config AuthenticationMethods)
+    USE_PAM=$(get_config UsePAM)
+    PASSWORD_AUTH=$(printf '%s' "$PASSWORD_AUTH" | tr '[:upper:]' '[:lower:]')
+    KBD_AUTH=$(printf '%s' "$KBD_AUTH" | tr '[:upper:]' '[:lower:]')
+    ROOT_LOGIN=$(printf '%s' "$ROOT_LOGIN" | tr '[:upper:]' '[:lower:]')
+    EMPTY_PASSWORDS=$(printf '%s' "$EMPTY_PASSWORDS" | tr '[:upper:]' '[:lower:]')
+
+    if security_password_methods_disabled "$PASSWORD_AUTH" "$KBD_AUTH" "$AUTH_METHODS"; then
+        info "有效密码及键盘交互登录已关闭"
+    else
+        warn "密码或键盘交互登录仍启用"
+        WARNINGS=$((WARNINGS+1))
+    fi
+
+    if security_root_password_restricted "$ROOT_LOGIN" "$PASSWORD_AUTH" "$KBD_AUTH" "$AUTH_METHODS"; then
+        case "$ROOT_LOGIN" in
+            no) info "root SSH 登录已关闭" ;;
+            forced-commands-only) info "root 仅允许强制命令密钥登录" ;;
+            prohibit-password|without-password) info "root 密码登录已限制（$ROOT_LOGIN）" ;;
+            yes) info "root 有效密码登录已关闭（受全局认证策略限制）" ;;
+        esac
+    else
+        warn "root 密码或键盘交互登录可能允许（PermitRootLogin=${ROOT_LOGIN:-未知}）"
+        WARNINGS=$((WARNINGS+1))
+    fi
+
+    if ! security_password_auth_effective "$PASSWORD_AUTH" "$AUTH_METHODS"; then
+        info "空密码认证未生效（有效密码认证已关闭）"
+    elif [ "$EMPTY_PASSWORDS" = yes ]; then
+        warn "允许空密码登录"
+        WARNINGS=$((WARNINGS+1))
+    else
+        info "未允许空密码登录"
+    fi
+    ui_hint "有效配置：PasswordAuthentication=${PASSWORD_AUTH:-未知} · KbdInteractiveAuthentication=${KBD_AUTH:-未知}"
+    ui_hint "root=${ROOT_LOGIN:-未知} · AuthenticationMethods=${AUTH_METHODS:-未知} · UsePAM=${USE_PAM:-未知}"
     if command -v sshd >/dev/null 2>&1 && sshd -t 2>/dev/null; then info "sshd 配置语法正常"; else warn "无法通过 sshd 配置检查"; WARNINGS=$((WARNINGS+1)); fi
     echo ""; echo -e "  ${BOLD}网络与服务${NC}"
     PORT=$(get_config Port); PORT=${PORT:-22}

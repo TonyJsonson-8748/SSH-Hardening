@@ -1,4 +1,4 @@
-# VPS 开荒脚本 V3.11.6
+# VPS 开荒脚本 V3.11.8
 
 > **银趴火山帮** 出品 · SSH · BBR · DDNS · Caddy · Firewall · NFT 转发
 
@@ -37,7 +37,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/TonyJsonson-8748/SSH-Hardeni
 | 命令 | 功能 |
 |------|------|
 | `--ssh-menu` | SSH 工具集 |
-| `--user-menu` | 用户管理（创建、查看、修改密码、删除用户） |
+| `--user-menu` | 用户管理（账号、密码与管理员权限） |
 | `--fail2ban-menu` | Fail2ban 管理 |
 | `--bbr-menu` | BBR TCP 调优 |
 | `--firewall-menu` | 防火墙管理 |
@@ -87,7 +87,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/TonyJsonson-8748/SSH-Hardeni
 ╚═╝╚═╝     ╚═╝╚═╝     ╚═╝  ╚═╝╚═╝  ╚═╝   ╚═╝        ╚═════╝ ╚═╝     ╚══════╝
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  VPS TOOLS  ·  V3.11.6
+  VPS TOOLS  ·  V3.11.8
   VPS 开荒脚本 · 银趴火山帮
 ────────────────────────────────────────────────────────────────
   SSH · BBR · DDNS · Caddy · Firewall · NFT · Monitor
@@ -144,12 +144,17 @@ bash <(curl -fsSL https://raw.githubusercontent.com/TonyJsonson-8748/SSH-Hardeni
 | 创建管理员用户 | 自动检测或安装 sudo，加入系统原生 `sudo` / `wheel` 组，并写入独立 sudoers 规则 |
 | 查看用户列表 | 展示 root 和普通 UID 范围内的账号、UID、主目录、Shell 及管理员类型 |
 | 修改用户密码 | 修改 root、普通用户或 sudo 管理员密码，隐藏输入、至少 8 位并要求二次确认 |
+| 增加管理员 | 将现有普通用户加入系统原生 `sudo` / `wheel` 组，并创建经过校验的独立 sudoers 规则 |
+| 撤销管理员权限 | 将用户移出 `sudo` / `wheel` 组并删除本脚本创建的 sudoers 规则，保留账号和工作空间 |
 | 删除用户 | 进入删除子菜单，可选择只删除账号并保留主目录，或将账号、主目录及邮件目录一起删除 |
 
 - 用户名采用保守 Linux 规则：小写字母或下划线开头，最长 32 位，可包含数字、`_`、`-`。
 - 密码至少 8 位、输入不回显并要求二次确认；不在命令行参数中传递。
 - 修改密码前会展示目标账号的 UID、主目录和登录 Shell，并拒绝修改 `daemon`、`nobody` 等系统服务账号。
 - 管理员规则保存到 `/etc/sudoers.d/vps-tools-<用户名>`，权限为 `440`，写入前必须通过 `visudo` 校验。
+- 增加管理员采用事务式授权；用户组或 sudoers 校验失败时会回滚本次权限变更。
+- 撤销管理员时禁止操作 root、系统服务账号和当前 sudo/doas 提权账号，并要求再次输入完整用户名确认。
+- 如果用户还通过其他手写 sudoers 规则拥有权限，脚本只撤销可安全识别的常规授权并提示人工核对，不会擅自改写 `/etc/sudoers`。
 - 密码设置或管理员授权失败时，会删除本次未完成的新用户，避免留下半配置账号。
 - 管理员仍需输入自己的密码使用 sudo，不会配置免密 `NOPASSWD`。
 - 删除用户必须再次输入完整用户名确认；脚本拒绝删除 root、系统账号、当前 sudo/doas 提权账号及仍有会话或进程的账号。
@@ -485,6 +490,8 @@ SSH、防火墙、DNS、IP 优先级及 IPv6 修改会启动 180 秒防断联保
 
 高风险配置修改会先显示变更计划或逐行差异；配置备份默认保留最近 20 份，可通过环境变量 `VPS_BACKUP_KEEP` 调整。
 
+SSH 登录策略使用 `sshd -T` 的有效配置组合判断，同时检查 `PasswordAuthentication`、`KbdInteractiveAuthentication`、`PermitRootLogin` 和 `AuthenticationMethods`，并显示 `UsePAM` 状态。`PermitRootLogin without-password` 会按 `prohibit-password` 的兼容别名正确识别，不再误报为允许 root 密码登录。
+
 DNS 设置会自动识别 `systemd-resolved`、NetworkManager、resolvconf 或静态 `/etc/resolv.conf`，使用对应后端持久化配置。
 
 ### g. 监控告警中心
@@ -556,7 +563,7 @@ DNS 设置会自动识别 `systemd-resolved`、NetworkManager、resolvconf 或�
 | 项 | 说明 |
 |----|------|
 | root 权限检查 | 非 root 本地运行时可选择 sudo/doas 重新启动；网络运行和无提权权限时显示可复制的安全命令 |
-| 用户管理安全 | 创建和改密时校验账号、密码及 sudoers；创建失败自动回滚，删除时保护关键账号、活动账号和危险/共享主目录 |
+| 用户管理安全 | 创建、改密和管理员授权均校验目标；授权失败自动回滚，撤权保护当前提权账号，删除保护活动账号和危险/共享主目录 |
 | DDNS 脚本权限 | `chmod 700`，仅 root 可执行；API 凭据文件 `chmod 600` |
 | 防火墙卸载警告 | 清空规则会暴露主机，2 秒延迟 + 警告 |
 | pf_flush 警告 | 清空所有 NAT 规则会影响其他应用 |
@@ -658,6 +665,8 @@ tests/smoke.sh
 
 | 版本 | 主要变更 |
 |------|---------|
+| **V3.11.8** | 修复系统安全体检将 `PermitRootLogin without-password` 误报为允许 root 密码登录；改为组合判断密码、键盘交互、root 策略、PAM 与 AuthenticationMethods，并显示实际有效值 |
+| **V3.11.7** | 用户管理新增“增加管理员”和“撤销管理员权限”：支持现有用户事务式授权，撤权时移除 sudo/wheel 组及托管 sudoers，并检测其他残留授权来源 |
 | **V3.11.6** | 用户管理新增密码修改：支持 root、普通用户和 sudo 管理员，复用隐藏输入、长度及二次确认校验，并拒绝系统服务账号 |
 | **V3.11.5** | 修复用户列表页面调用不存在的暂停函数，导致列表一闪而过并立即返回用户管理菜单 |
 | **V3.11.4** | 用户管理新增安全删除子菜单：可保留工作空间或连同主目录删除；增加完整用户名确认，并保护 root、系统账号、当前提权账号、活动账号及危险/共享主目录 |

@@ -88,6 +88,66 @@ docker_download_installer "$TMP/broken-docker.sh" >/dev/null 2>&1 && {
     grep -qx '修改用户密码 testuser:FAILED' "$AUDIT_LOG" || { echo "Failed password change was not audited" >&2; exit 1; }
 )
 
+# Existing users can be promoted, and failed grants must roll back group changes.
+(
+    VPS_TOOLS_UID_OVERRIDE=0
+    GRANT_LOG="$TMP/promote-grant.log"
+    AUDIT_LOG="$TMP/promote-audit.log"
+    user_account_record() { printf 'testuser:x:1000:1000::/home/testuser:/bin/bash\n'; }
+    user_is_admin_account() { return 1; }
+    confirm_change_preview() { return 0; }
+    user_grant_admin() { printf '%s\n' "$1" > "$GRANT_LOG"; }
+    audit_action() { printf '%s:%s\n' "$1" "$2" > "$AUDIT_LOG"; }
+    user_promote_admin <<< "testuser" >/dev/null
+    grep -qx testuser "$GRANT_LOG" || { echo "Admin promotion targeted the wrong account" >&2; exit 1; }
+    grep -qx '增加管理员 testuser:SUCCESS' "$AUDIT_LOG" || { echo "Admin promotion was not audited" >&2; exit 1; }
+)
+(
+    VPS_TOOLS_UID_OVERRIDE=0
+    GROUP_LOG="$TMP/grant-group.log"
+    ROLLBACK_LOG="$TMP/grant-rollback.log"
+    user_ensure_sudo() { return 0; }
+    user_group_exists() { [ "$1" = sudo ]; }
+    user_in_group() { return 1; }
+    user_add_to_group() { printf '%s:%s\n' "$1" "$2" > "$GROUP_LOG"; }
+    user_write_sudoers() { return 1; }
+    user_remove_from_group() { printf '%s:%s\n' "$1" "$2" > "$ROLLBACK_LOG"; }
+    ! user_grant_admin testuser >/dev/null \
+        || { echo "Broken sudoers grant was reported as successful" >&2; exit 1; }
+    grep -qx 'testuser:sudo' "$GROUP_LOG" || { echo "Admin grant did not add the native group" >&2; exit 1; }
+    grep -qx 'testuser:sudo' "$ROLLBACK_LOG" || { echo "Failed admin grant did not roll back the native group" >&2; exit 1; }
+)
+
+# Revocation removes managed groups and sudoers, then records the result.
+(
+    VPS_TOOLS_UID_OVERRIDE=0
+    USER_SUDOERS_DIR="$TMP/revoke-sudoers"
+    GROUP_LOG="$TMP/revoke-group.log"
+    mkdir -p "$USER_SUDOERS_DIR"
+    : > "$USER_SUDOERS_DIR/vps-tools-testuser"
+    user_group_exists() { [ "$1" = sudo ]; }
+    user_in_group() { [ "$2" = sudo ]; }
+    user_remove_from_group() { printf '%s:%s\n' "$1" "$2" > "$GROUP_LOG"; }
+    user_has_sudo_access() { return 1; }
+    user_revoke_admin_rights testuser >/dev/null
+    grep -qx 'testuser:sudo' "$GROUP_LOG" || { echo "Admin revocation did not remove the native group" >&2; exit 1; }
+    [ ! -e "$USER_SUDOERS_DIR/vps-tools-testuser" ] || { echo "Admin revocation left the managed sudoers rule" >&2; exit 1; }
+)
+(
+    VPS_TOOLS_UID_OVERRIDE=0
+    REVOKE_LOG="$TMP/revoke-account.log"
+    AUDIT_LOG="$TMP/revoke-audit.log"
+    user_account_record() { printf 'testuser:x:1000:1000::/home/testuser:/bin/bash\n'; }
+    user_is_elevation_account() { return 1; }
+    user_is_admin_account() { return 0; }
+    confirm_change_preview() { return 0; }
+    user_revoke_admin_rights() { printf '%s\n' "$1" > "$REVOKE_LOG"; }
+    audit_action() { printf '%s:%s\n' "$1" "$2" > "$AUDIT_LOG"; }
+    user_revoke_admin <<< $'testuser\ntestuser' >/dev/null
+    grep -qx testuser "$REVOKE_LOG" || { echo "Admin revocation targeted the wrong account" >&2; exit 1; }
+    grep -qx '撤销管理员权限 testuser:SUCCESS' "$AUDIT_LOG" || { echo "Admin revocation was not audited" >&2; exit 1; }
+)
+
 # User deletion must preserve or remove the workspace exactly as selected and
 # clean up the managed sudoers rule only after successful account deletion.
 (

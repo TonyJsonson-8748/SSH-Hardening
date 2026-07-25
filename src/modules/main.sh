@@ -37,7 +37,7 @@ VPS 开荒脚本 CLI
 常用命令:
   --help                 显示此帮助
   --ssh-menu             SSH 工具集
-  --user-menu            用户管理（创建、查看、修改密码、删除用户）
+  --user-menu            用户管理（账号、密码与管理员权限）
   --fail2ban-menu        Fail2ban 管理
   --bbr-menu             BBR TCP 调优
   --firewall-menu        防火墙管理

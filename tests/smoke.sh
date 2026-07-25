@@ -8,14 +8,14 @@ export VPS_TOOLS_TEST_MODE=1
 # shellcheck source=/dev/null
 source "$ROOT/SSH-Hardening.sh"
 
-for fn in systemd_available show_cli_help main_menu ssh_tools_menu ssh_key_count user_management_menu user_require_root user_name_valid user_create_account user_grant_admin user_change_password user_password_target_allowed user_delete_account user_delete_system_account user_home_safe_to_remove user_home_is_shared fail2ban_menu f2b_effective_ssh_port f2b_sync_ssh_port bbr_menu firewall_menu dns_menu timesync_menu \
+for fn in systemd_available show_cli_help main_menu ssh_tools_menu ssh_key_count user_management_menu user_require_root user_name_valid user_create_account user_grant_admin user_promote_admin user_revoke_admin user_revoke_admin_rights user_is_admin_account user_change_password user_password_target_allowed user_delete_account user_delete_system_account user_home_safe_to_remove user_home_is_shared fail2ban_menu f2b_effective_ssh_port f2b_sync_ssh_port bbr_menu firewall_menu dns_menu timesync_menu \
     ts_https_date_epoch ts_epoch_utc ts_https_fetch_epoch ts_https_consensus ts_sync_https \
     ip_config_menu caddy_menu caddy_site_records caddy_site_count nft_menu ddns_menu ddns_install ddns_install_cloudflare ddns_install_huawei ddns_run_now ddns_view_logs ddns_status ddns_share_link_tool \
     ddns_provider ddns_provider_label ddns_sed_escape ddns_install_transaction_begin ddns_install_transaction_restore ddns_install_transaction_commit ddns_domain_dot ddns_ipv6_subdomain_default ddns_cf_exact_records ddns_cf_record_ensure ddns_cf_cleanup_cross_record \
     ddns_interval_normalize ddns_interval_min ddns_cron_expr ddns_cron_without_managed ddns_prompt_interval \
     ddns_cfg_enable_a ddns_cfg_enable_aaaa ddns_cfg_domain4 ddns_cfg_domain6 ddns_primary_domain ddns_mode_label ddns_build_domain ddns_replace_link_host \
     ddns_latest_log_line ddns_latest_change_log_line ddns_line_time ddns_line_result_ip ddns_newer_line ddns_change_matches_status ddns_record_status_line ddns_record_change_line ddns_print_record_summary \
-    system_toolbox_menu \
+    system_toolbox_menu security_password_auth_effective security_password_methods_disabled security_root_password_restricted \
     resource_health_check system_update_manager system_hostname_apply config_backup_create safety_load_pending safety_lock_acquire safety_lock_release self_update docker_menu change_port; do
     declare -F "$fn" >/dev/null || { echo "Missing function: $fn" >&2; exit 1; }
 done
@@ -29,6 +29,54 @@ user_password_target_allowed root 0 || { echo "Root password change was rejected
 user_password_target_allowed alice 1000 || { echo "Regular user password change was rejected" >&2; exit 1; }
 ! user_password_target_allowed daemon 1 >/dev/null 2>&1 || { echo "System account password change was accepted" >&2; exit 1; }
 ! user_password_target_allowed nobody 65534 >/dev/null 2>&1 || { echo "Nobody password change was accepted" >&2; exit 1; }
+user_admin_target_allowed alice 1000 || { echo "Regular user was rejected as an admin target" >&2; exit 1; }
+! user_admin_target_allowed root 0 >/dev/null 2>&1 || { echo "Root was accepted as an admin target" >&2; exit 1; }
+security_password_methods_disabled no no || { echo "Disabled SSH password methods were not recognized" >&2; exit 1; }
+! security_password_methods_disabled no yes >/dev/null 2>&1 || { echo "Enabled keyboard-interactive authentication was ignored" >&2; exit 1; }
+security_password_methods_disabled yes yes publickey || { echo "Publickey-only AuthenticationMethods was treated as password-enabled" >&2; exit 1; }
+! security_password_methods_disabled no yes 'publickey,keyboard-interactive' >/dev/null 2>&1 || { echo "AuthenticationMethods keyboard-interactive factor was ignored" >&2; exit 1; }
+security_password_auth_effective yes any || { echo "Enabled password authentication was not recognized" >&2; exit 1; }
+! security_password_auth_effective yes publickey >/dev/null 2>&1 || { echo "Publickey-only AuthenticationMethods enabled empty-password checks" >&2; exit 1; }
+security_root_password_restricted without-password yes yes || { echo "PermitRootLogin without-password was treated as unsafe" >&2; exit 1; }
+security_root_password_restricted prohibit-password yes yes || { echo "PermitRootLogin prohibit-password was treated as unsafe" >&2; exit 1; }
+security_root_password_restricted forced-commands-only yes yes || { echo "PermitRootLogin forced-commands-only was treated as unsafe" >&2; exit 1; }
+security_root_password_restricted yes no no || { echo "Globally disabled password methods did not protect root" >&2; exit 1; }
+! security_root_password_restricted yes no yes >/dev/null 2>&1 || { echo "Root keyboard-interactive login was treated as restricted" >&2; exit 1; }
+(
+    get_config() {
+        case "$1" in
+            PasswordAuthentication) echo no ;;
+            KbdInteractiveAuthentication) echo no ;;
+            PermitRootLogin) echo without-password ;;
+            PermitEmptyPasswords) echo no ;;
+            AuthenticationMethods) echo any ;;
+            UsePAM) echo yes ;;
+            Port) echo 22 ;;
+        esac
+    }
+    sshd() { [ "$1" = "-t" ]; }
+    awk() {
+        case "$*" in
+            *"/etc/passwd"*) printf 'root\n' ;;
+            *) command awk "$@" ;;
+        esac
+    }
+    fw_detect() { echo none; }
+    f2b_status() { echo stopped; }
+    audit_action() { :; }
+    SECURITY_OUTPUT=$(security_audit)
+    [[ "$SECURITY_OUTPUT" = *"有效密码及键盘交互登录已关闭"* ]] \
+        || { echo "Security audit missed globally disabled password methods" >&2; exit 1; }
+    [[ "$SECURITY_OUTPUT" = *"root 密码登录已限制（without-password）"* ]] \
+        || { echo "Security audit still misreports PermitRootLogin without-password" >&2; exit 1; }
+    [[ "$SECURITY_OUTPUT" != *"root 密码或键盘交互登录可能允许"* ]] \
+        || { echo "Security audit emitted a false root password warning" >&2; exit 1; }
+)
+(
+    SUDO_USER=alice
+    user_is_elevation_account alice || { echo "Current sudo account was not protected from demotion" >&2; exit 1; }
+    ! user_is_elevation_account bob >/dev/null 2>&1 || { echo "Unrelated user was treated as the current elevation account" >&2; exit 1; }
+)
 user_home_safe_to_remove /home/alice || { echo "Normal user home was rejected for deletion" >&2; exit 1; }
 ! user_home_safe_to_remove / >/dev/null 2>&1 || { echo "Filesystem root was accepted as user workspace" >&2; exit 1; }
 ! user_home_safe_to_remove /home >/dev/null 2>&1 || { echo "Shared home root was accepted as user workspace" >&2; exit 1; }
