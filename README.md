@@ -1,4 +1,4 @@
-# VPS 开荒脚本 V3.11.2
+# VPS 开荒脚本 V3.11.3
 
 > **银趴火山帮** 出品 · SSH · BBR · DDNS · Caddy · Firewall · NFT 转发
 
@@ -12,9 +12,19 @@
 
 ## 快速开始
 
+root 用户：
+
 ```bash
 bash <(curl -fsSL https://raw.githubusercontent.com/TonyJsonson-8748/SSH-Hardening/refs/heads/main/SSH-Hardening.sh)
 ```
+
+普通用户且具有 sudo 权限：
+
+```bash
+sudo bash -c 'bash <(curl -fsSL https://raw.githubusercontent.com/TonyJsonson-8748/SSH-Hardening/refs/heads/main/SSH-Hardening.sh)'
+```
+
+脚本涉及系统账号、SSH、防火墙和服务配置，除 `--help` 外必须使用 root 权限。本地脚本由普通用户启动时会询问是否通过 sudo/doas 重新运行；如果当前账号没有提权权限，会给出切换 root 的明确提示。
 
 ## 命令行合集
 
@@ -27,6 +37,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/TonyJsonson-8748/SSH-Hardeni
 | 命令 | 功能 |
 |------|------|
 | `--ssh-menu` | SSH 工具集 |
+| `--user-menu` | 用户管理（创建普通用户 / sudo 管理员） |
 | `--fail2ban-menu` | Fail2ban 管理 |
 | `--bbr-menu` | BBR TCP 调优 |
 | `--firewall-menu` | 防火墙管理 |
@@ -76,7 +87,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/TonyJsonson-8748/SSH-Hardeni
 ╚═╝╚═╝     ╚═╝╚═╝     ╚═╝  ╚═╝╚═╝  ╚═╝   ╚═╝        ╚═════╝ ╚═╝     ╚══════╝
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  VPS TOOLS  ·  V3.11.2
+  VPS TOOLS  ·  V3.11.3
   VPS 开荒脚本 · 银趴火山帮
 ────────────────────────────────────────────────────────────────
   SSH · BBR · DDNS · Caddy · Firewall · NFT · Monitor
@@ -98,8 +109,8 @@ bash <(curl -fsSL https://raw.githubusercontent.com/TonyJsonson-8748/SSH-Hardeni
     9  Caddy 管理              n  NFT 转发
     t  时间与时区              s  Swap 管理
     h  安全与诊断              a  软件与重装
-    d  Docker 管理             m  脚本管理
-    g  监控告警中心
+    d  Docker 管理             u  用户管理
+    m  脚本管理                g  监控告警中心
     0  退出脚本
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ```
@@ -123,7 +134,25 @@ bash <(curl -fsSL https://raw.githubusercontent.com/TonyJsonson-8748/SSH-Hardeni
 
 ---
 
-### 2. Fail2ban 管理
+### 2. 用户管理
+
+该模块只允许 root 执行，支持：
+
+| 功能 | 说明 |
+|------|------|
+| 创建普通用户 | 创建主目录、选择可用登录 Shell、设置隐藏输入的登录密码，不授予管理权限 |
+| 创建管理员用户 | 自动检测或安装 sudo，加入系统原生 `sudo` / `wheel` 组，并写入独立 sudoers 规则 |
+| 查看用户列表 | 展示 root 和普通 UID 范围内的账号、UID、主目录、Shell 及管理员类型 |
+
+- 用户名采用保守 Linux 规则：小写字母或下划线开头，最长 32 位，可包含数字、`_`、`-`。
+- 密码至少 8 位、输入不回显并要求二次确认；不在命令行参数中传递。
+- 管理员规则保存到 `/etc/sudoers.d/vps-tools-<用户名>`，权限为 `440`，写入前必须通过 `visudo` 校验。
+- 密码设置或管理员授权失败时，会删除本次未完成的新用户，避免留下半配置账号。
+- 管理员仍需输入自己的密码使用 sudo，不会配置免密 `NOPASSWD`。
+
+---
+
+### 3. Fail2ban 管理
 
 自动封禁 SSH 暴力破解 IP。安装时自动检测 backend，支持 `python3-systemd` / `rsyslog` / `auto` 多种方式。
 
@@ -149,7 +178,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/TonyJsonson-8748/SSH-Hardeni
 
 ---
 
-### 3. BBR TCP 调优
+### 4. BBR TCP 调优
 
 **智能向导（推荐）** — 自动检测内存推荐预设：
 
@@ -197,7 +226,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/TonyJsonson-8748/SSH-Hardeni
 
 ---
 
-### 4. 防火墙管理
+### 5. 防火墙管理
 
 自动检测 **ufw**（Debian/Ubuntu）和 **firewalld**（CentOS/Rocky）。
 
@@ -214,7 +243,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/TonyJsonson-8748/SSH-Hardeni
 
 ---
 
-### 5. DNS 优化
+### 6. DNS 优化
 
 启动时自动检测 IPv4/IPv6，无 IPv6 的机器只显示 IPv4 选项。
 
@@ -230,7 +259,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/TonyJsonson-8748/SSH-Hardeni
 
 ---
 
-### 6. DDNS（Cloudflare / 华为云 DNS）
+### 7. DDNS（Cloudflare / 华为云 DNS）
 
 将动态公网 IP 自动同步到 DNS 服务商。当前支持 Cloudflare 和华为云 DNS。
 
@@ -296,7 +325,7 @@ IP 真实变化时推送通知，实时读取 `/root/.cf_tg`，兼容 crontab �
 
 ---
 
-### 7. 系统换源
+### 8. 系统换源
 
 | 系统 | 支持的源 |
 |------|---------|
@@ -308,7 +337,7 @@ IP 真实变化时推送通知，实时读取 `/root/.cf_tg`，兼容 crontab �
 
 ---
 
-### 8. IPv4/IPv6 配置
+### 9. IPv4/IPv6 配置
 
 | 功能 | 说明 |
 |------|------|
@@ -320,7 +349,7 @@ IP 真实变化时推送通知，实时读取 `/root/.cf_tg`，兼容 crontab �
 
 ---
 
-### 9. Caddy 管理
+### 10. Caddy 管理
 
 自动 HTTPS 的现代 Web 服务器。
 
@@ -521,6 +550,8 @@ DNS 设置会自动识别 `systemd-resolved`、NetworkManager、resolvconf 或�
 
 | 项 | 说明 |
 |----|------|
+| root 权限检查 | 非 root 本地运行时可选择 sudo/doas 重新启动；网络运行和无提权权限时显示可复制的安全命令 |
+| 用户创建事务 | 用户名、密码、sudoers 均校验；中途失败自动删除未完成账号，管理员不启用免密 sudo |
 | DDNS 脚本权限 | `chmod 700`，仅 root 可执行；API 凭据文件 `chmod 600` |
 | 防火墙卸载警告 | 清空规则会暴露主机，2 秒延迟 + 警告 |
 | pf_flush 警告 | 清空所有 NAT 规则会影响其他应用 |
@@ -557,6 +588,7 @@ DNS 设置会自动识别 `systemd-resolved`、NetworkManager、resolvconf 或�
 | `/var/lib/vps-tools/rollback.active` | 当前防断联回滚任务状态（600） |
 | `/var/lib/vps-tools/update_available` | 后台版本检测结果 |
 | `/var/log/vps-tools-audit.log` | 脚本操作审计日志（600） |
+| `/etc/sudoers.d/vps-tools-<用户名>` | 本脚本创建的管理员 sudo 规则（440，经过 visudo 校验） |
 | `SSH-Hardening.sh.sha256` | 自更新完整性校验值 |
 | `/etc/sysctl.d/99-vps-bbr.conf` | BBR TCP 配置 |
 | `/var/lib/vps-tools/bbr-sysctl-baseline.conf` | BBR 首次调优前运行参数基线（600） |
@@ -621,6 +653,7 @@ tests/smoke.sh
 
 | 版本 | 主要变更 |
 |------|---------|
+| **V3.11.3** | 新增用户管理模块：创建普通用户或 sudo 管理员、隐藏密码二次确认、原生管理组与独立 sudoers 校验、失败自动删除半配置账号；改进非 root 启动提示，本地脚本支持 sudo/doas 重新运行 |
 | **V3.11.2** | 将快速开始、命令行调用、安装清单和脚本自更新源切换到长期维护 Fork `TonyJsonson-8748/SSH-Hardening`，同时保留上游原仓库说明 |
 | **V3.11.1** | Fail2ban 安装及 SSH 改端口时同步实际监听端口；自更新改用安全临时文件并移除共享 `/tmp` 脚本缓存；防断联回滚任务增加持久单实例保护；Cloudflare/华为云 DDNS 重配置失败自动恢复旧配置；新增 `.gitattributes` 固定 Linux 发布文件为 LF |
 | **V3.11.0** | 时间菜单新增 HTTPS 时间同步，使用 TCP/443 适配 UDP/123 被封锁的 VPS；从 Cloudflare、阿里云、Microsoft、GitHub、Google 获取经 TLS 验证的 `Date` 响应，至少两个来源在 10 秒内达成共识才设置系统时间，并作为普通强制同步的最终兜底 |

@@ -37,6 +37,7 @@ VPS 开荒脚本 CLI
 常用命令:
   --help                 显示此帮助
   --ssh-menu             SSH 工具集
+  --user-menu            用户管理（普通用户 / sudo 管理员）
   --fail2ban-menu        Fail2ban 管理
   --bbr-menu             BBR TCP 调优
   --firewall-menu        防火墙管理
@@ -160,13 +161,13 @@ main_menu() {
         menu_pair "9" "Caddy 管理" "n" "NFT 转发"
         menu_pair "t" "时间与时区" "s" "Swap 管理"
         menu_pair "h" "安全与诊断" "a" "软件与重装"
-        menu_pair "d" "Docker 管理" "m" "脚本管理"
-        menu_pair "g" "监控告警中心" "" "" "$CYAN" "$CYAN"
+        menu_pair "d" "Docker 管理" "u" "用户管理"
+        menu_pair "m" "脚本管理" "g" "监控告警中心"
         echo ""
         menu_item "0" "退出脚本" "$RED"
         box_bot
         echo ""
-        read -rp "$(ui_prompt '选择功能 [0-9 / n / t / s / h / a / d / m / g]: ')" CHOICE
+        read -rp "$(ui_prompt '选择功能 [0-9 / n / t / s / h / a / d / u / m / g]: ')" CHOICE
         audit_action "主菜单选择 $CHOICE" INFO
 
         case "$CHOICE" in
@@ -185,6 +186,7 @@ main_menu() {
             h|H) system_toolbox_menu ;;
             a|A) software_reinstall_menu ;;
             d|D) docker_menu ;;
+            u|U) user_management_menu ;;
             m|M) self_manage_menu ;;
             g|G) monitor_alert_home_menu ;;
             0) safe_clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;
@@ -208,6 +210,10 @@ case "${1:-}" in
         ;;
     --ssh-menu)
         ssh_tools_menu
+        exit $?
+        ;;
+    --user-menu)
+        user_management_menu
         exit $?
         ;;
     --fail2ban-menu)

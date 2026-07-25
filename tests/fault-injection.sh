@@ -30,6 +30,42 @@ docker_download_installer "$TMP/broken-docker.sh" >/dev/null 2>&1 && {
     echo "Malformed Docker installer passed validation" >&2
     exit 1
 }
+
+# Failed password/admin setup must remove the newly created account.
+(
+    VPS_TOOLS_UID_OVERRIDE=0
+    CREATED_LOG="$TMP/user-created.log"
+    REMOVED_LOG="$TMP/user-removed.log"
+    user_account_exists() { return 1; }
+    user_login_shell() { echo /bin/bash; }
+    confirm_change_preview() { return 0; }
+    user_create_system_account() { printf '%s\n' "$1" > "$CREATED_LOG"; }
+    user_prompt_password() { return 1; }
+    user_remove_created_account() { printf '%s\n' "$1" > "$REMOVED_LOG"; }
+    ! user_create_account regular <<< "testuser" >/dev/null 2>&1 \
+        || { echo "User creation ignored password setup failure" >&2; exit 1; }
+    grep -qx testuser "$CREATED_LOG" || { echo "User creation test did not reach account creation" >&2; exit 1; }
+    grep -qx testuser "$REMOVED_LOG" || { echo "Failed user creation left the account behind" >&2; exit 1; }
+)
+(
+    VPS_TOOLS_UID_OVERRIDE=0
+    REMOVED_LOG="$TMP/admin-removed.log"
+    USER_SUDOERS_DIR="$TMP/admin-sudoers"
+    user_account_exists() { return 1; }
+    user_login_shell() { echo /bin/bash; }
+    confirm_change_preview() { return 0; }
+    user_create_system_account() { return 0; }
+    user_prompt_password() { return 0; }
+    user_grant_admin() { return 1; }
+    user_remove_created_account() { printf '%s\n' "$1" > "$REMOVED_LOG"; }
+    ! user_create_account admin <<< "adminuser" >/dev/null 2>&1 \
+        || { echo "Admin creation ignored sudo setup failure" >&2; exit 1; }
+    grep -qx adminuser "$REMOVED_LOG" || { echo "Failed admin creation left the account behind" >&2; exit 1; }
+)
+ELEVATION_HELP=$(vps_tools_elevation_help sudo)
+[[ "$ELEVATION_HELP" = *"sudo bash -c"* && "$ELEVATION_HELP" = *"sudo v"* ]] \
+    || { echo "Non-root elevation guidance is incomplete" >&2; exit 1; }
+
 docker() { [ "$1" = "inspect" ] && printf '<no value>\n'; }
 [ -z "$(docker_inspect_label fake-id com.docker.compose.project)" ] || {
     echo "Missing Compose label was treated as a real value" >&2

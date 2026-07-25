@@ -8,7 +8,7 @@ export VPS_TOOLS_TEST_MODE=1
 # shellcheck source=/dev/null
 source "$ROOT/SSH-Hardening.sh"
 
-for fn in systemd_available show_cli_help main_menu ssh_tools_menu ssh_key_count fail2ban_menu f2b_effective_ssh_port f2b_sync_ssh_port bbr_menu firewall_menu dns_menu timesync_menu \
+for fn in systemd_available show_cli_help main_menu ssh_tools_menu ssh_key_count user_management_menu user_require_root user_name_valid user_create_account user_grant_admin fail2ban_menu f2b_effective_ssh_port f2b_sync_ssh_port bbr_menu firewall_menu dns_menu timesync_menu \
     ts_https_date_epoch ts_epoch_utc ts_https_fetch_epoch ts_https_consensus ts_sync_https \
     ip_config_menu caddy_menu caddy_site_records caddy_site_count nft_menu ddns_menu ddns_install ddns_install_cloudflare ddns_install_huawei ddns_run_now ddns_view_logs ddns_status ddns_share_link_tool \
     ddns_provider ddns_provider_label ddns_sed_escape ddns_install_transaction_begin ddns_install_transaction_restore ddns_install_transaction_commit ddns_domain_dot ddns_ipv6_subdomain_default ddns_cf_exact_records ddns_cf_record_ensure ddns_cf_cleanup_cross_record \
@@ -19,6 +19,29 @@ for fn in systemd_available show_cli_help main_menu ssh_tools_menu ssh_key_count
     resource_health_check system_update_manager system_hostname_apply config_backup_create safety_load_pending safety_lock_acquire safety_lock_release self_update docker_menu change_port; do
     declare -F "$fn" >/dev/null || { echo "Missing function: $fn" >&2; exit 1; }
 done
+
+user_name_valid alice || { echo "Valid username was rejected" >&2; exit 1; }
+user_name_valid ops_admin-2 || { echo "Valid service-style username was rejected" >&2; exit 1; }
+! user_name_valid Root >/dev/null 2>&1 || { echo "Uppercase username was accepted" >&2; exit 1; }
+! user_name_valid 'bad name' >/dev/null 2>&1 || { echo "Username containing spaces was accepted" >&2; exit 1; }
+! user_name_valid root >/dev/null 2>&1 || { echo "Reserved root username was accepted" >&2; exit 1; }
+(
+    VPS_TOOLS_UID_OVERRIDE=1000
+    ! user_require_root >/dev/null 2>&1 || { echo "User manager accepted a non-root caller" >&2; exit 1; }
+)
+(
+    USER_SUDOERS_DIR="$TMP/sudoers.d"
+    USER_GROUP_FILE="$TMP/group"
+    mkdir -p "$USER_SUDOERS_DIR"
+    printf 'wheel:x:10:\n' > "$USER_GROUP_FILE"
+    USERMOD_LOG="$TMP/usermod.log"
+    sudo() { :; }
+    visudo() { [ "$1" = "-cf" ] && [ -s "$2" ]; }
+    usermod() { printf '%s\n' "$*" > "$USERMOD_LOG"; }
+    user_grant_admin alice >/dev/null
+    grep -qx -- '-aG wheel alice' "$USERMOD_LOG" || { echo "Admin user was not added to the native wheel group" >&2; exit 1; }
+    grep -qx 'alice ALL=(ALL) ALL' "$USER_SUDOERS_DIR/vps-tools-alice" || { echo "Validated sudoers rule was not created" >&2; exit 1; }
+)
 
 (
     AUTH_KEYS="$TMP/authorized_keys"
@@ -359,6 +382,7 @@ STUN_RENDERED=$(stun_render_results $'SUMMARY\t10.0.0.2\t12345\t198.51.100.2:543
 [[ "$(software_group_packages apk network)" = *mtr* ]] || { echo "APK network package mapping is incomplete" >&2; exit 1; }
 CLI_HELP=$(show_cli_help)
 [[ "$CLI_HELP" = *"--ssh-menu"* ]] || { echo "CLI help missing SSH entry" >&2; exit 1; }
+[[ "$CLI_HELP" = *"--user-menu"* ]] || { echo "CLI help missing user management entry" >&2; exit 1; }
 [[ "$CLI_HELP" = *"--docker-menu"* ]] || { echo "CLI help missing Docker entry" >&2; exit 1; }
 [[ "$CLI_HELP" = *"--monitor-home"* ]] || { echo "CLI help missing monitor entry" >&2; exit 1; }
 [[ "$CLI_HELP" = *"--hostname-menu"* ]] || { echo "CLI help missing hostname entry" >&2; exit 1; }

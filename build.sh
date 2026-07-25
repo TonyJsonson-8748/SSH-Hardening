@@ -10,6 +10,7 @@ MODE="${1:-build}"
 PARTS=(
     src/lib/core.sh
     src/modules/ssh.sh
+    src/modules/users.sh
     src/modules/fail2ban.sh
     src/modules/bbr.sh
     src/modules/firewall.sh
