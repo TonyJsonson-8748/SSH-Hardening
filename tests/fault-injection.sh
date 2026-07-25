@@ -62,6 +62,56 @@ docker_download_installer "$TMP/broken-docker.sh" >/dev/null 2>&1 && {
         || { echo "Admin creation ignored sudo setup failure" >&2; exit 1; }
     grep -qx adminuser "$REMOVED_LOG" || { echo "Failed admin creation left the account behind" >&2; exit 1; }
 )
+
+# User deletion must preserve or remove the workspace exactly as selected and
+# clean up the managed sudoers rule only after successful account deletion.
+(
+    VPS_TOOLS_UID_OVERRIDE=0
+    USER_SUDOERS_DIR="$TMP/delete-preserve-sudoers"
+    DELETE_LOG="$TMP/delete-preserve.log"
+    mkdir -p "$USER_SUDOERS_DIR"
+    : > "$USER_SUDOERS_DIR/vps-tools-testuser"
+    user_account_record() { printf 'testuser:x:1000:1000::/home/testuser:/bin/bash\n'; }
+    user_is_protected_account() { return 1; }
+    user_has_active_session() { return 1; }
+    user_has_processes() { return 1; }
+    user_delete_system_account() { printf '%s:%s\n' "$1" "$2" > "$DELETE_LOG"; }
+    audit_action() { :; }
+    user_delete_account <<< $'testuser\n1\ntestuser' >/dev/null
+    grep -qx 'testuser:no' "$DELETE_LOG" || { echo "User deletion did not preserve the selected workspace" >&2; exit 1; }
+    [ ! -e "$USER_SUDOERS_DIR/vps-tools-testuser" ] || { echo "Deleted admin left a managed sudoers rule" >&2; exit 1; }
+)
+(
+    VPS_TOOLS_UID_OVERRIDE=0
+    USER_SUDOERS_DIR="$TMP/delete-all-sudoers"
+    DELETE_LOG="$TMP/delete-all.log"
+    mkdir -p "$USER_SUDOERS_DIR"
+    user_account_record() { printf 'testuser:x:1000:1000::/home/testuser:/bin/bash\n'; }
+    user_is_protected_account() { return 1; }
+    user_has_active_session() { return 1; }
+    user_has_processes() { return 1; }
+    user_home_is_shared() { return 1; }
+    user_delete_system_account() { printf '%s:%s\n' "$1" "$2" > "$DELETE_LOG"; }
+    audit_action() { :; }
+    user_delete_account <<< $'testuser\n2\ntestuser' >/dev/null
+    grep -qx 'testuser:yes' "$DELETE_LOG" || { echo "User deletion did not remove the selected workspace" >&2; exit 1; }
+)
+(
+    VPS_TOOLS_UID_OVERRIDE=0
+    USER_SUDOERS_DIR="$TMP/delete-failed-sudoers"
+    mkdir -p "$USER_SUDOERS_DIR"
+    : > "$USER_SUDOERS_DIR/vps-tools-testuser"
+    user_account_record() { printf 'testuser:x:1000:1000::/home/testuser:/bin/bash\n'; }
+    user_is_protected_account() { return 1; }
+    user_has_active_session() { return 1; }
+    user_has_processes() { return 1; }
+    user_delete_system_account() { return 1; }
+    user_account_exists() { return 0; }
+    audit_action() { :; }
+    ! user_delete_account <<< $'testuser\n1\ntestuser' >/dev/null \
+        || { echo "Failed account deletion was reported as successful" >&2; exit 1; }
+    [ -e "$USER_SUDOERS_DIR/vps-tools-testuser" ] || { echo "Failed account deletion removed the active sudoers rule" >&2; exit 1; }
+)
 ELEVATION_HELP=$(vps_tools_elevation_help sudo)
 [[ "$ELEVATION_HELP" = *"sudo bash -c"* && "$ELEVATION_HELP" = *"sudo v"* ]] \
     || { echo "Non-root elevation guidance is incomplete" >&2; exit 1; }
