@@ -303,6 +303,17 @@ EOF
     ! ts_enable_ntp >/dev/null 2>&1 || { echo "NTP enablement hid timedatectl failure" >&2; exit 1; }
 )
 
+# HTTPS synchronization must not set the clock without enough trusted responses.
+(
+    print_header() { :; }
+    info() { :; }
+    warn() { :; }
+    error() { :; }
+    # shellcheck disable=SC2329 # test stub used indirectly by ts_sync_https
+    ts_https_fetch_epoch() { return 1; }
+    ! ts_sync_https fallback >/dev/null 2>&1 || { echo "HTTPS time sync accepted zero valid sources" >&2; exit 1; }
+)
+
 # Offline bundle creation must package a local script and offline install must place it at the target path.
 LOCAL_SCRIPT="$TMP/local-script"
 cat > "$LOCAL_SCRIPT" <<'EOF'

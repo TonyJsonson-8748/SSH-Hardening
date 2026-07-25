@@ -8,7 +8,8 @@ export VPS_TOOLS_TEST_MODE=1
 # shellcheck source=/dev/null
 source "$ROOT/SSH-Hardening.sh"
 
-for fn in systemd_available show_cli_help main_menu ssh_tools_menu ssh_key_count fail2ban_menu f2b_effective_ssh_port f2b_sync_ssh_port bbr_menu firewall_menu dns_menu \
+for fn in systemd_available show_cli_help main_menu ssh_tools_menu ssh_key_count fail2ban_menu f2b_effective_ssh_port f2b_sync_ssh_port bbr_menu firewall_menu dns_menu timesync_menu \
+    ts_https_date_epoch ts_epoch_utc ts_https_fetch_epoch ts_https_consensus ts_sync_https \
     ip_config_menu caddy_menu caddy_site_records caddy_site_count nft_menu ddns_menu ddns_install ddns_install_cloudflare ddns_install_huawei ddns_run_now ddns_view_logs ddns_status ddns_share_link_tool \
     ddns_provider ddns_provider_label ddns_sed_escape ddns_install_transaction_begin ddns_install_transaction_restore ddns_install_transaction_commit ddns_domain_dot ddns_ipv6_subdomain_default ddns_cf_exact_records ddns_cf_record_ensure ddns_cf_cleanup_cross_record \
     ddns_interval_normalize ddns_interval_min ddns_cron_expr ddns_cron_without_managed ddns_prompt_interval \
@@ -27,6 +28,17 @@ done
     [[ "$(ssh_key_count)" = 2 ]] || { echo "SSH key counter did not count valid keys" >&2; exit 1; }
     rm -f "$AUTH_KEYS"
     [[ "$(ssh_key_count)" = 0 ]] || { echo "Missing authorized_keys did not return zero" >&2; exit 1; }
+)
+
+[[ "$(ts_https_date_epoch 'Sat, 25 Jul 2026 12:00:00 GMT')" = 1784980800 ]] || { echo "HTTPS Date header parsing failed" >&2; exit 1; }
+! ts_https_date_epoch 'invalid date' >/dev/null 2>&1 || { echo "Invalid HTTPS Date header was accepted" >&2; exit 1; }
+[[ "$(ts_epoch_utc 1784980800)" = '2026-07-25 12:00:00' ]] || { echo "HTTPS epoch formatting failed" >&2; exit 1; }
+[[ "$(ts_https_consensus 1784980800 1784980802 1784980900)" = '1784980801 2 2' ]] || { echo "HTTPS time consensus did not reject an outlier" >&2; exit 1; }
+! ts_https_consensus 1784980800 1784980820 >/dev/null 2>&1 || { echo "HTTPS time consensus accepted disagreeing sources" >&2; exit 1; }
+(
+    # shellcheck disable=SC2329 # test stub used indirectly by ts_https_fetch_epoch
+    curl() { printf 'HTTP/2 200\r\nDate: Sat, 25 Jul 2026 12:00:00 GMT\r\n\r\n'; }
+    [[ "$(ts_https_fetch_epoch https://example.com/)" = 1784980800 ]] || { echo "HTTPS response Date extraction failed" >&2; exit 1; }
 )
 
 CADDYFILE="$TMP/Caddyfile"
