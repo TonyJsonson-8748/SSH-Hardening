@@ -3,8 +3,32 @@
 # ══════════════════════════════════════════════════════════
 
 show_keys() {
-    print_header "查看 root 已有公钥"
-    list_keys
+    print_header "查看指定用户 SSH 公钥"
+
+    local USERNAME RECORD ACCOUNT_UID HOME_DIR LOGIN_SHELL INVENTORY KEY_COUNT
+    ssh_print_key_accounts
+    read -rp "  输入要查看公钥的用户名（直接回车取消）: " USERNAME
+    [ -n "$USERNAME" ] || { warn "已取消。"; return; }
+    RECORD=$(ssh_account_record "$USERNAME")
+    [ -n "$RECORD" ] || { error "用户 $USERNAME 不存在"; return 1; }
+    IFS=: read -r _ _ ACCOUNT_UID _ _ HOME_DIR LOGIN_SHELL <<< "$RECORD"
+    ssh_key_target_allowed "$USERNAME" "$ACCOUNT_UID" "$HOME_DIR" "$LOGIN_SHELL" || {
+        error "用户 $USERNAME 不是可用的交互式登录账号"
+        return 1
+    }
+
+    INVENTORY=$(mktemp) || { error "无法创建公钥清单"; return 1; }
+    ssh_key_inventory "$SSHD_CONFIG" "$USERNAME" "$ACCOUNT_UID" "$HOME_DIR" > "$INVENTORY"
+    if [ ! -s "$INVENTORY" ]; then
+        rm -f "$INVENTORY"
+        audit_action "查看用户 $USERNAME SSH 公钥（0 个）" SUCCESS
+        warn "用户 $USERNAME 当前没有可识别的 SSH 公钥"
+        return 0
+    fi
+    KEY_COUNT=$(wc -l < "$INVENTORY" | tr -d '[:space:]')
+    ssh_key_inventory_print "$INVENTORY"
+    rm -f "$INVENTORY"
+    audit_action "查看用户 $USERNAME SSH 公钥（${KEY_COUNT:-0} 个）" SUCCESS
 }
 
 ssh_account_records() {
@@ -81,16 +105,17 @@ ssh_expand_authorized_keys_path() {
     RESULT=${RESULT//%U/$ACCOUNT_UID}
     RESULT=${RESULT//$SENTINEL/%}
     case "$RESULT" in
-        *%*|*'|'*|*$'\n'*|*$'\r'*|*/../*|*/..|*/./*) return 1 ;;
+        *%*|*'|'*|*$'\t'*|*$'\n'*|*$'\r'*|*/../*|*/..|*/./*) return 1 ;;
         /*) ;;
         *) RESULT="${HOME_DIR%/}/$RESULT" ;;
     esac
     printf '%s\n' "$RESULT"
 }
 
-ssh_authorized_keys_path_for_user() {
+ssh_authorized_keys_paths_for_user() {
     local CONFIG_FILE="$1" USERNAME="$2" ACCOUNT_UID="$3" HOME_DIR="$4"
-    local DUMP KEY_PATHS TEMPLATE RESOLVED
+    local DUMP KEY_PATHS TEMPLATE RESOLVED EXISTING DUPLICATE
+    local RESOLVED_PATHS=()
     DUMP=$(ssh_effective_config_dump "$CONFIG_FILE" "$USERNAME") || return 1
     KEY_PATHS=$(ssh_config_dump_value "$DUMP" authorizedkeysfile)
     [ -n "$KEY_PATHS" ] || return 1
@@ -98,9 +123,25 @@ ssh_authorized_keys_path_for_user() {
         [ -n "$TEMPLATE" ] || continue
         RESOLVED=$(ssh_expand_authorized_keys_path "$TEMPLATE" "$USERNAME" "$ACCOUNT_UID" "$HOME_DIR") \
             || continue
+        DUPLICATE=no
+        for EXISTING in "${RESOLVED_PATHS[@]}"; do
+            [ "$EXISTING" != "$RESOLVED" ] || { DUPLICATE=yes; break; }
+        done
+        [ "$DUPLICATE" = no ] || continue
+        RESOLVED_PATHS+=("$RESOLVED")
         printf '%s\n' "$RESOLVED"
-        return 0
     done < <(printf '%s\n' "$KEY_PATHS" | tr '[:space:]' '\n')
+    [ "${#RESOLVED_PATHS[@]}" -gt 0 ]
+}
+
+ssh_authorized_keys_path_for_user() {
+    local CONFIG_FILE="$1" USERNAME="$2" ACCOUNT_UID="$3" HOME_DIR="$4" KEY_FILE
+    while IFS= read -r KEY_FILE; do
+        [ -n "$KEY_FILE" ] || continue
+        printf '%s\n' "$KEY_FILE"
+        return 0
+    done < <(ssh_authorized_keys_paths_for_user \
+        "$CONFIG_FILE" "$USERNAME" "$ACCOUNT_UID" "$HOME_DIR")
     return 1
 }
 
@@ -130,6 +171,203 @@ ssh_public_key_line_valid() {
     return 1
 }
 
+ssh_public_key_line_fields() {
+    local KEY_LINE="$1" INDEX KEY_TYPE KEY_DATA COMMENT OPTIONS FIELD
+    local FIELDS=()
+    KEY_LINE="${KEY_LINE%$'\r'}"
+    KEY_LINE="${KEY_LINE#"${KEY_LINE%%[![:space:]]*}"}"
+    case "$KEY_LINE" in ""|\#*) return 1 ;; esac
+    read -r -a FIELDS <<< "$KEY_LINE"
+    [ "${#FIELDS[@]}" -ge 2 ] || return 1
+    for ((INDEX=0; INDEX<${#FIELDS[@]}-1; INDEX++)); do
+        KEY_TYPE=${FIELDS[$INDEX]}
+        ssh_public_key_type_supported "$KEY_TYPE" || continue
+        KEY_DATA=${FIELDS[$((INDEX+1))]}
+        ssh_public_key_line_valid "$KEY_TYPE $KEY_DATA" || continue
+        OPTIONS="none"
+        if [ "$INDEX" -gt 0 ]; then
+            OPTIONS=""
+            for ((FIELD=0; FIELD<INDEX; FIELD++)); do
+                OPTIONS="${OPTIONS}${OPTIONS:+ }${FIELDS[$FIELD]}"
+            done
+        fi
+        COMMENT=""
+        for ((FIELD=INDEX+2; FIELD<${#FIELDS[@]}; FIELD++)); do
+            COMMENT="${COMMENT}${COMMENT:+ }${FIELDS[$FIELD]}"
+        done
+        COMMENT=${COMMENT//$'\t'/ }
+        OPTIONS=${OPTIONS//$'\t'/ }
+        printf '%s\t%s\t%s\t%s\n' \
+            "$KEY_TYPE" "$KEY_DATA" "${COMMENT:-（无备注）}" "$OPTIONS"
+        return 0
+    done
+    return 1
+}
+
+ssh_public_key_fingerprint() {
+    local KEY_TYPE="$1" KEY_DATA="$2" TMP_KEY FINGERPRINT
+    command -v ssh-keygen >/dev/null 2>&1 || { printf 'N/A\n'; return; }
+    TMP_KEY=$(mktemp) || { printf 'N/A\n'; return; }
+    printf '%s %s\n' "$KEY_TYPE" "$KEY_DATA" > "$TMP_KEY"
+    FINGERPRINT=$(ssh-keygen -lf "$TMP_KEY" 2>/dev/null | awk 'NR == 1 {print $2}')
+    rm -f "$TMP_KEY"
+    printf '%s\n' "${FINGERPRINT:-N/A}"
+}
+
+ssh_print_key_accounts() {
+    local USERNAME ACCOUNT_UID HOME_DIR LOGIN_SHELL
+    echo -e "  ${DIM}可管理公钥的登录账号：${NC}"
+    printf "  %-18s %-8s %-24s %s\n" "用户名" "UID" "主目录" "Shell"
+    menu_div
+    while IFS=: read -r USERNAME _ ACCOUNT_UID _ _ HOME_DIR LOGIN_SHELL; do
+        ssh_key_target_allowed "$USERNAME" "$ACCOUNT_UID" "$HOME_DIR" "$LOGIN_SHELL" || continue
+        printf "  %-18s %-8s %-24s %s\n" "$USERNAME" "$ACCOUNT_UID" "$HOME_DIR" "$LOGIN_SHELL"
+    done < <(ssh_account_records)
+    menu_div
+    echo ""
+}
+
+ssh_key_inventory() {
+    local CONFIG_FILE="$1" USERNAME="$2" ACCOUNT_UID="$3" HOME_DIR="$4"
+    local KEY_FILE KEY_LINE LINE_NO FIELDS KEY_TYPE KEY_DATA COMMENT OPTIONS FINGERPRINT
+    while IFS= read -r KEY_FILE; do
+        [ -f "$KEY_FILE" ] && [ -r "$KEY_FILE" ] && [ ! -L "$KEY_FILE" ] || continue
+        LINE_NO=0
+        while IFS= read -r KEY_LINE || [ -n "$KEY_LINE" ]; do
+            LINE_NO=$((LINE_NO+1))
+            FIELDS=$(ssh_public_key_line_fields "$KEY_LINE") || continue
+            IFS=$'\t' read -r KEY_TYPE KEY_DATA COMMENT OPTIONS <<< "$FIELDS"
+            FINGERPRINT=$(ssh_public_key_fingerprint "$KEY_TYPE" "$KEY_DATA")
+            printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+                "$KEY_FILE" "$LINE_NO" "$KEY_TYPE" "$KEY_DATA" \
+                "$FINGERPRINT" "$COMMENT" "$OPTIONS"
+        done < "$KEY_FILE"
+    done < <(ssh_authorized_keys_paths_for_user \
+        "$CONFIG_FILE" "$USERNAME" "$ACCOUNT_UID" "$HOME_DIR")
+}
+
+ssh_key_inventory_print() {
+    local INVENTORY="$1" INDEX=1 KEY_FILE LINE_NO KEY_TYPE KEY_DATA FINGERPRINT COMMENT OPTIONS
+    while IFS=$'\t' read -r KEY_FILE LINE_NO KEY_TYPE KEY_DATA FINGERPRINT COMMENT OPTIONS; do
+        echo -e "  ${GREEN}[$INDEX]${NC} ${BOLD}${KEY_TYPE}${NC}"
+        echo -e "      ${DIM}指纹：${NC}${BLUE}${FINGERPRINT}${NC}"
+        echo -e "      ${DIM}备注：${NC}${YELLOW}${COMMENT}${NC}"
+        echo -e "      ${DIM}位置：${NC}${KEY_FILE}:${LINE_NO}"
+        if [ "$OPTIONS" = none ]; then
+            echo -e "      ${DIM}授权选项：${NC}无（普通登录密钥）"
+        else
+            echo -e "      ${DIM}授权选项：${NC}${OPTIONS}"
+        fi
+        echo ""
+        INDEX=$((INDEX+1))
+    done < "$INVENTORY"
+}
+
+ssh_key_inventory_line_matches() {
+    local KEY_FILE="$1" LINE_NO="$2" EXPECTED_TYPE="$3" EXPECTED_DATA="$4"
+    local KEY_LINE FIELDS KEY_TYPE KEY_DATA COMMENT OPTIONS
+    KEY_LINE=$(awk -v target="$LINE_NO" 'NR == target {print; exit}' "$KEY_FILE") || return 1
+    [ -n "$KEY_LINE" ] || return 1
+    FIELDS=$(ssh_public_key_line_fields "$KEY_LINE") || return 1
+    IFS=$'\t' read -r KEY_TYPE KEY_DATA COMMENT OPTIONS <<< "$FIELDS"
+    [ "$KEY_TYPE" = "$EXPECTED_TYPE" ] && [ "$KEY_DATA" = "$EXPECTED_DATA" ]
+}
+
+ssh_key_file_restore() {
+    local BACKUP="$1" KEY_FILE="$2" RESTORE_TMP
+    RESTORE_TMP=$(mktemp "${KEY_FILE}.vps-tools-restore.XXXXXX") || return 1
+    if cp -p -- "$BACKUP" "$RESTORE_TMP" \
+        && mv -f -- "$RESTORE_TMP" "$KEY_FILE"; then
+        return 0
+    fi
+    rm -f "$RESTORE_TMP"
+    return 1
+}
+
+ssh_key_delete_safety_arm() {
+    local KEY_FILE="$1" BACKUP="$2" USERNAME="$3"
+    local STATE_FILE="${SAFETY_STATE_FILE:-${VPS_DATA_DIR}/rollback.active}" SCRIPT SOURCE_IP=local
+    [ -z "${SSH_CONNECTION:-}" ] || SOURCE_IP=${SSH_CONNECTION%% *}
+    mkdir -p "$VPS_DATA_DIR" 2>/dev/null || {
+        error "无法创建防断联任务目录"
+        return 1
+    }
+    chmod 700 "$VPS_DATA_DIR" 2>/dev/null || true
+    if ! safety_lock_acquire; then
+        error "另一个防断联保护操作正在进行，请稍后重试"
+        return 1
+    fi
+    if safety_load_pending; then
+        safety_lock_release
+        error "已有防断联回滚任务正在计时，请先确认上一项变更或等待其完成"
+        return 1
+    fi
+    SCRIPT="$VPS_DATA_DIR/rollback_key_$$_$(date +%s)_${RANDOM}.sh"
+    if ! {
+        printf '#!/usr/bin/env bash\n'
+        printf 'sleep 180\n'
+        printf 'rollback_tmp=$(mktemp %q) || exit 1\n' \
+            "${KEY_FILE}.vps-tools-rollback.XXXXXX"
+        printf 'if cp -p -- %q "$rollback_tmp" >/dev/null 2>&1 \\\n' "$BACKUP"
+        printf '    && mv -f -- "$rollback_tmp" %q >/dev/null 2>&1; then\n' "$KEY_FILE"
+        printf '    logger -t vps-tools %q >/dev/null 2>&1 || true\n' \
+            "未确认新登录，已自动恢复用户 $USERNAME 的 SSH 公钥文件"
+        printf '    printf "%%s\\tFAILED\\t%%s\\t%%s\\n" "$(date '"'"'+%%Y-%%m-%%d %%H:%%M:%%S'"'"')" %q %q >> %q 2>/dev/null || true\n' \
+            "$SOURCE_IP" "删除用户 $USERNAME SSH 公钥未确认，自动回滚成功" "$VPS_AUDIT_LOG"
+        printf 'else\n'
+        printf '    rm -f -- "$rollback_tmp"\n'
+        printf '    logger -t vps-tools %q >/dev/null 2>&1 || true\n' \
+            "未确认新登录，但自动恢复用户 $USERNAME 的 SSH 公钥文件失败"
+        printf '    printf "%%s\\tFAILED\\t%%s\\t%%s\\n" "$(date '"'"'+%%Y-%%m-%%d %%H:%%M:%%S'"'"')" %q %q >> %q 2>/dev/null || true\n' \
+            "$SOURCE_IP" "删除用户 $USERNAME SSH 公钥未确认，自动回滚失败" "$VPS_AUDIT_LOG"
+        printf 'fi\n'
+        printf 'chmod 600 %q 2>/dev/null || true\n' "$VPS_AUDIT_LOG"
+        printf 'rm -f -- %q %q\n' "$SCRIPT" "$STATE_FILE"
+    } > "$SCRIPT"; then
+        rm -f "$SCRIPT"
+        safety_lock_release
+        error "无法创建公钥自动回滚任务"
+        return 1
+    fi
+    if ! chmod 700 "$SCRIPT"; then
+        rm -f "$SCRIPT"
+        safety_lock_release
+        error "无法设置公钥自动回滚任务权限"
+        return 1
+    fi
+    nohup bash "$SCRIPT" >/dev/null 2>&1 &
+    SAFETY_PID=$!
+    SAFETY_SCRIPT="$SCRIPT"
+    if ! printf '%s|%s\n' "$SAFETY_PID" "$SAFETY_SCRIPT" > "$STATE_FILE"; then
+        kill "$SAFETY_PID" 2>/dev/null || true
+        wait "$SAFETY_PID" 2>/dev/null || true
+        rm -f "$SAFETY_SCRIPT"
+        SAFETY_PID="" SAFETY_SCRIPT=""
+        safety_lock_release
+        error "无法保存公钥自动回滚任务状态"
+        return 1
+    fi
+    chmod 600 "$STATE_FILE" 2>/dev/null || true
+    safety_lock_release
+    audit_action "启动删除用户 $USERNAME SSH 公钥的防断联保护" SUCCESS
+    warn "防断联保护已启动：180 秒内未确认新登录，将自动恢复该公钥文件。"
+}
+
+ssh_key_delete_confirm_new_session() {
+    local EXPECTED_USER="$1" ROUTE="$2" CONFIRMED_USER
+    echo ""
+    warn "请保持当前窗口，并立即用新终端验证剩余管理员入口。"
+    echo -e "  验证用户：${BOLD}${EXPECTED_USER}${NC}  预计方式：${BOLD}${ROUTE}${NC}"
+    read -rp "  新会话成功并确认具备 root 管理能力后，输入用户名 ${EXPECTED_USER}: " CONFIRMED_USER
+    if [ "$CONFIRMED_USER" = "$EXPECTED_USER" ]; then
+        cancel_safety_timer
+        audit_action "确认删除公钥后的管理员入口 $EXPECTED_USER" SUCCESS
+        info "验证确认完成，已取消自动回滚"
+    else
+        warn "未完成确认，180 秒自动回滚仍在计时；请勿关闭当前连接。"
+    fi
+}
+
 ssh_key_file_count() {
     local KEY_FILE="$1" COUNT
     COUNT=$(grep -cE '^(ssh-rsa|ssh-ed25519|ecdsa-sha2|sk-ssh|sk-ecdsa|ssh-dss) ' \
@@ -145,15 +383,7 @@ add_key() {
 
     local USERNAME RECORD ACCOUNT_UID ACCOUNT_GID HOME_DIR LOGIN_SHELL
     local TARGET_KEYS KEY_DIR PUBKEY_INPUT KEY_TYPE KEY_DATA TOTAL
-    echo -e "  ${DIM}可添加公钥的登录账号：${NC}"
-    printf "  %-18s %-8s %-24s %s\n" "用户名" "UID" "主目录" "Shell"
-    menu_div
-    while IFS=: read -r USERNAME _ ACCOUNT_UID ACCOUNT_GID _ HOME_DIR LOGIN_SHELL; do
-        ssh_key_target_allowed "$USERNAME" "$ACCOUNT_UID" "$HOME_DIR" "$LOGIN_SHELL" || continue
-        printf "  %-18s %-8s %-24s %s\n" "$USERNAME" "$ACCOUNT_UID" "$HOME_DIR" "$LOGIN_SHELL"
-    done < <(ssh_account_records)
-    menu_div
-    echo ""
+    ssh_print_key_accounts
 
     read -rp "  输入目标用户名（直接回车取消）: " USERNAME
     [ -n "$USERNAME" ] || { warn "已取消，未添加公钥。"; return; }
@@ -228,47 +458,209 @@ add_key() {
 }
 
 delete_key() {
-    print_header "删除 root SSH 公钥"
+    print_header "删除指定用户 SSH 公钥"
 
-    if ! list_keys; then
+    local USERNAME RECORD ACCOUNT_UID HOME_DIR LOGIN_SHELL INVENTORY DEL_NUM SELECTED
+    local KEY_FILE LINE_NO KEY_TYPE KEY_DATA FINGERPRINT COMMENT OPTIONS ORIGINAL CANDIDATE
+    local REMAINING VERIFY_USER VERIFY_LINE VERIFY_ROUTE VERIFY_ADMIN CONFIRM_NAME
+    local LIST_USER LIST_ROUTE LIST_ADMIN BACKUP APPLY_TMP POST_REMAINING KEY_META KEY_OWNER KEY_MODE
+    ssh_print_key_accounts
+    read -rp "  输入要删除公钥的用户名（直接回车取消）: " USERNAME
+    [ -n "$USERNAME" ] || { warn "已取消，公钥未修改。"; return; }
+    RECORD=$(ssh_account_record "$USERNAME")
+    [ -n "$RECORD" ] || { error "用户 $USERNAME 不存在"; return 1; }
+    IFS=: read -r _ _ ACCOUNT_UID _ _ HOME_DIR LOGIN_SHELL <<< "$RECORD"
+    ssh_key_target_allowed "$USERNAME" "$ACCOUNT_UID" "$HOME_DIR" "$LOGIN_SHELL" || {
+        error "用户 $USERNAME 不是可用的交互式登录账号"
+        return 1
+    }
+
+    INVENTORY=$(mktemp) || { error "无法创建公钥清单"; return 1; }
+    ssh_key_inventory "$SSHD_CONFIG" "$USERNAME" "$ACCOUNT_UID" "$HOME_DIR" > "$INVENTORY"
+    if [ ! -s "$INVENTORY" ]; then
+        rm -f "$INVENTORY"
+        audit_action "查看待删除的用户 $USERNAME SSH 公钥（0 个）" SUCCESS
+        warn "用户 $USERNAME 当前没有可删除的 SSH 公钥"
+        return 0
+    fi
+    ssh_key_inventory_print "$INVENTORY"
+    read -rp "  请输入要删除的编号（直接回车取消）: " DEL_NUM
+    [ -n "$DEL_NUM" ] || { rm -f "$INVENTORY"; warn "已取消，公钥未修改。"; return; }
+    [[ "$DEL_NUM" =~ ^[0-9]+$ ]] || {
+        rm -f "$INVENTORY"
+        error "无效编号"
+        return 1
+    }
+    SELECTED=$(sed -n "${DEL_NUM}p" "$INVENTORY")
+    rm -f "$INVENTORY"
+    [ -n "$SELECTED" ] || { error "编号 $DEL_NUM 不存在"; return 1; }
+    IFS=$'\t' read -r KEY_FILE LINE_NO KEY_TYPE KEY_DATA FINGERPRINT COMMENT OPTIONS <<< "$SELECTED"
+    [ -f "$KEY_FILE" ] && [ -r "$KEY_FILE" ] && [ ! -L "$KEY_FILE" ] || {
+        error "目标公钥文件不是安全、可读的普通文件：$KEY_FILE"
+        return 1
+    }
+    [[ "$LINE_NO" =~ ^[1-9][0-9]*$ ]] || { error "公钥行号无效"; return 1; }
+    ssh_key_inventory_line_matches "$KEY_FILE" "$LINE_NO" "$KEY_TYPE" "$KEY_DATA" || {
+        error "公钥文件已发生变化，请重新进入菜单后再操作"
+        return 1
+    }
+
+    ORIGINAL=$(mktemp) || { error "无法创建公钥文件快照"; return 1; }
+    cp -- "$KEY_FILE" "$ORIGINAL" || {
+        rm -f "$ORIGINAL"
+        error "无法读取目标公钥文件"
+        return 1
+    }
+    CANDIDATE=$(mktemp) || { rm -f "$ORIGINAL"; error "无法创建候选公钥文件"; return 1; }
+    awk -v target="$LINE_NO" 'NR != target {print}' "$ORIGINAL" > "$CANDIDATE" || {
+        rm -f "$ORIGINAL" "$CANDIDATE"
+        error "无法生成删除后的候选公钥文件"
+        return 1
+    }
+    REMAINING=$(SSH_KEY_EXCLUDE_FILE="$KEY_FILE" SSH_KEY_EXCLUDE_LINE="$LINE_NO" \
+        ssh_login_candidates "$SSHD_CONFIG")
+    if [ -z "$REMAINING" ]; then
+        rm -f "$ORIGINAL" "$CANDIDATE"
+        audit_action "拒绝删除用户 $USERNAME SSH 公钥：无剩余登录入口" FAILED
+        error "删除后没有任何账号可以确认登录，禁止执行以避免锁死"
+        return 1
+    fi
+    if ! ssh_login_candidates_have_admin "$REMAINING"; then
+        rm -f "$ORIGINAL" "$CANDIDATE"
+        audit_action "拒绝删除用户 $USERNAME SSH 公钥：无剩余管理入口" FAILED
+        error "删除后虽有账号可登录，但没有 root 或具备完整 sudo/doas root 权限的管理入口，禁止执行"
+        return 1
+    fi
+
+    echo -e "  ${BOLD}删除后仍可用的登录入口：${NC}"
+    while IFS='|' read -r LIST_USER LIST_ROUTE LIST_ADMIN; do
+        if [ "$LIST_ADMIN" = yes ]; then LIST_ADMIN="可管理"; else LIST_ADMIN="普通用户"; fi
+        echo -e "  ${GREEN}•${NC} ${BOLD}${LIST_USER}${NC}  ${LIST_ROUTE}  ${DIM}${LIST_ADMIN}${NC}"
+    done <<< "$REMAINING"
+    echo ""
+    read -rp "  选择一个将在新终端验证的管理员用户名（直接回车取消）: " VERIFY_USER
+    [ -n "$VERIFY_USER" ] || {
+        rm -f "$ORIGINAL" "$CANDIDATE"
+        warn "已取消，公钥未修改。"
+        return
+    }
+    VERIFY_LINE=$(printf '%s\n' "$REMAINING" \
+        | awk -F'|' -v username="$VERIFY_USER" '$1 == username && $3 == "yes" {print; exit}')
+    if [ -z "$VERIFY_LINE" ]; then
+        rm -f "$ORIGINAL" "$CANDIDATE"
+        audit_action "拒绝删除用户 $USERNAME SSH 公钥：验证用户 $VERIFY_USER 不是可用管理员" FAILED
+        error "用户 $VERIFY_USER 不是删除后可登录且可取得完整 root 权限的管理员"
+        return 1
+    fi
+    IFS='|' read -r _ VERIFY_ROUTE VERIFY_ADMIN <<< "$VERIFY_LINE"
+
+    warn "即将删除用户 $USERNAME 的以下公钥："
+    echo -e "  ${RED}${KEY_TYPE}${NC}  ${FINGERPRINT}  ${COMMENT}"
+    echo -e "  ${DIM}${KEY_FILE}:${LINE_NO}${NC}"
+    read -rp "  输入目标用户名 $USERNAME 确认删除（其他输入取消）: " CONFIRM_NAME
+    if [ "$CONFIRM_NAME" != "$USERNAME" ]; then
+        rm -f "$ORIGINAL" "$CANDIDATE"
+        warn "用户名不匹配，已取消删除"
+        return
+    fi
+    if ! confirm_file_diff "$KEY_FILE" "$CANDIDATE" "删除用户 $USERNAME 的 SSH 公钥"; then
+        rm -f "$ORIGINAL" "$CANDIDATE"
+        warn "已取消，公钥未修改。"
         return
     fi
 
-    menu_div
-    read -rp "  请输入要删除的编号（直接回车取消）: " DEL_NUM
-    [ -z "$DEL_NUM" ] && { warn "已取消。"; return; }
-
-    if ! echo "$DEL_NUM" | grep -qE '^[0-9]+$'; then
-        error "无效编号。"; return
+    if ! cmp -s "$ORIGINAL" "$KEY_FILE"; then
+        rm -f "$ORIGINAL" "$CANDIDATE"
+        audit_action "取消删除用户 $USERNAME SSH 公钥：目标文件并发变更" FAILED
+        error "确认期间公钥文件已发生变化，删除已取消"
+        return 1
     fi
+    mkdir -p "$VPS_BACKUP_DIR" || {
+        rm -f "$ORIGINAL" "$CANDIDATE"
+        error "无法创建备份目录"
+        return 1
+    }
+    chmod 700 "$VPS_DATA_DIR" "$VPS_BACKUP_DIR" 2>/dev/null || true
+    BACKUP="$VPS_BACKUP_DIR/$(date +%Y%m%d_%H%M%S)_ssh-key_${USERNAME}_$$_${RANDOM}.bak"
+    cp -p -- "$KEY_FILE" "$BACKUP" || {
+        rm -f "$ORIGINAL" "$CANDIDATE" "$BACKUP"
+        audit_action "删除用户 $USERNAME SSH 公钥：备份失败" FAILED
+        error "无法备份目标公钥文件，删除已取消"
+        return 1
+    }
+    if ! cmp -s "$ORIGINAL" "$KEY_FILE"; then
+        rm -f "$ORIGINAL" "$CANDIDATE" "$BACKUP"
+        audit_action "取消删除用户 $USERNAME SSH 公钥：备份期间目标文件并发变更" FAILED
+        error "确认期间公钥文件已发生变化，删除已取消"
+        return 1
+    fi
+    ssh_key_delete_safety_arm "$KEY_FILE" "$BACKUP" "$USERNAME" || {
+        rm -f "$ORIGINAL" "$CANDIDATE"
+        audit_action "删除用户 $USERNAME SSH 公钥：启动自动回滚失败" FAILED
+        return 1
+    }
 
-    local i=1 TARGET_LINE=""
-    while IFS= read -r line; do
-        if echo "$line" | grep -qE '^(ssh-rsa|ssh-ed25519|ecdsa-sha2|sk-ssh|sk-ecdsa|ssh-dss) '; then
-            if [ "$i" -eq "$DEL_NUM" ]; then TARGET_LINE="$line"; break; fi
-            i=$((i+1))
+    KEY_META=$(stat -Lc '%u:%g %a' "$KEY_FILE" 2>/dev/null) || KEY_META=""
+    read -r KEY_OWNER KEY_MODE <<< "$KEY_META"
+    if ! [[ "$KEY_OWNER" =~ ^[0-9]+:[0-9]+$ && "$KEY_MODE" =~ ^[0-7]+$ ]]; then
+        rm -f "$ORIGINAL" "$CANDIDATE"
+        cancel_safety_timer
+        audit_action "删除用户 $USERNAME SSH 公钥：无法读取原文件属主或权限" FAILED
+        error "无法读取公钥文件的属主或权限，删除已取消"
+        return 1
+    fi
+    APPLY_TMP=$(mktemp "${KEY_FILE}.vps-tools.XXXXXX") || {
+        rm -f "$ORIGINAL" "$CANDIDATE"
+        cancel_safety_timer
+        audit_action "删除用户 $USERNAME SSH 公钥：无法创建安全临时文件" FAILED
+        error "无法在公钥目录中创建安全临时文件，删除已取消"
+        return 1
+    }
+    if ! awk -v target="$LINE_NO" 'NR != target {print}' "$ORIGINAL" > "$APPLY_TMP" \
+        || ! chown "$KEY_OWNER" "$APPLY_TMP" \
+        || ! chmod "$KEY_MODE" "$APPLY_TMP" \
+        || ! mv -f -- "$APPLY_TMP" "$KEY_FILE"; then
+        rm -f "$ORIGINAL" "$CANDIDATE" "$APPLY_TMP"
+        if ssh_key_file_restore "$BACKUP" "$KEY_FILE"; then
+            cancel_safety_timer
+            audit_action "删除用户 $USERNAME SSH 公钥：写入失败并回滚" FAILED
+            error "写入公钥文件失败，已恢复原文件"
+        else
+            audit_action "删除用户 $USERNAME SSH 公钥：写入失败且即时恢复失败" FAILED
+            error "写入失败且即时恢复失败；180 秒自动回滚仍在运行，请保持当前连接"
         fi
-    done < "$AUTH_KEYS"
+        return 1
+    fi
+    if ! cmp -s "$CANDIDATE" "$KEY_FILE"; then
+        rm -f "$ORIGINAL" "$CANDIDATE"
+        if ssh_key_file_restore "$BACKUP" "$KEY_FILE"; then
+            cancel_safety_timer
+            audit_action "删除用户 $USERNAME SSH 公钥：写入结果不一致并回滚" FAILED
+            error "写入后的公钥文件与候选结果不一致，已恢复原文件"
+        else
+            audit_action "删除用户 $USERNAME SSH 公钥：写入结果不一致且即时恢复失败" FAILED
+            error "写入结果异常且即时恢复失败；180 秒自动回滚仍在运行，请保持当前连接"
+        fi
+        return 1
+    fi
+    rm -f "$ORIGINAL" "$CANDIDATE"
 
-    if [ -z "$TARGET_LINE" ]; then
-        error "编号 $DEL_NUM 不存在。"; return
+    POST_REMAINING=$(ssh_login_candidates "$SSHD_CONFIG")
+    if [ -z "$POST_REMAINING" ] || ! ssh_login_candidates_have_admin "$POST_REMAINING"; then
+        if ssh_key_file_restore "$BACKUP" "$KEY_FILE"; then
+            cancel_safety_timer
+            audit_action "删除用户 $USERNAME SSH 公钥后校验失败并回滚" FAILED
+            error "删除后的实际校验未找到可用管理入口，已立即恢复原公钥文件"
+        else
+            audit_action "删除用户 $USERNAME SSH 公钥后校验失败且即时恢复失败" FAILED
+            error "删除后校验失败且即时恢复失败！180 秒自动回滚仍在运行，请保持当前连接；备份：$BACKUP"
+        fi
+        return 1
     fi
 
-    echo ""
-    warn "即将删除以下公钥："
-    echo -e "  ${RED}$(echo "$TARGET_LINE" | awk '{print $1, $3}')${NC}"
-    echo ""
-    read -rp "  确认删除？(Y/n，默认Y): " CONFIRM
-    [ -z "${CONFIRM}" ] && CONFIRM="y"
-    if ! echo "${CONFIRM}" | grep -qiE '^y(es)?$'; then warn "已取消"; return; fi
-
-    # 取公钥主体（类型+base64）作为匹配依据，避免尾部空格/备注差异导致删除失败
-    local KEY_BODY
-    KEY_BODY=$(echo "$TARGET_LINE" | awk '{print $1, $2}')
-    grep -vF "$KEY_BODY" "$AUTH_KEYS" > "${AUTH_KEYS}.tmp" || true
-    mv "${AUTH_KEYS}.tmp" "$AUTH_KEYS"
-    chmod 600 "$AUTH_KEYS"
-    info "公钥已删除 ✓"
+    info "公钥已删除；原文件备份：$BACKUP"
+    audit_action "删除用户 $USERNAME SSH 公钥" SUCCESS
+    ssh_key_delete_confirm_new_session "$VERIFY_USER" "$VERIFY_ROUTE"
 }
 
 generate_key() {
@@ -409,8 +801,14 @@ ssh_strict_key_path_secure() {
 }
 
 ssh_strict_key_file_has_unrestricted_key() {
-    local KEY_FILE="$1" KEY_LINE KEY_TYPE
+    local KEY_FILE="$1" KEY_LINE KEY_TYPE LINE_NO=0
     while IFS= read -r KEY_LINE || [ -n "$KEY_LINE" ]; do
+        LINE_NO=$((LINE_NO+1))
+        if [ -n "${SSH_KEY_EXCLUDE_FILE:-}" ] \
+            && [ "$KEY_FILE" = "$SSH_KEY_EXCLUDE_FILE" ] \
+            && [ "$LINE_NO" = "${SSH_KEY_EXCLUDE_LINE:-}" ]; then
+            continue
+        fi
         KEY_LINE="${KEY_LINE#"${KEY_LINE%%[![:space:]]*}"}"
         case "$KEY_LINE" in ""|\#*) continue ;; esac
         read -r KEY_TYPE _ <<< "$KEY_LINE"

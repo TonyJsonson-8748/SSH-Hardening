@@ -14,8 +14,8 @@ ssh_tools_menu() {
                  "  密码登录 ${BOLD}${CUR_PWD:-未设置}${NC}  |  公钥认证 ${BOLD}${CUR_PUBKEY:-未设置}${NC}"
         echo ""
         menu_div
-        menu_pair "1" "查看 root 公钥" "2" "为指定用户添加公钥"
-        menu_pair "3" "删除 root 公钥" "4" "生成密钥对"
+        menu_pair "1" "查看指定用户公钥" "2" "为指定用户添加公钥"
+        menu_pair "3" "删除指定用户公钥" "4" "生成密钥对"
         menu_pair "5" "设置登录方式" "6" "修改 SSH 端口"
         menu_item "7" "撤销指定用户 SSH 登录权限" "$RED"
         menu_pair "0" "返回主菜单" "00" "退出脚本" "$RED" "$RED"

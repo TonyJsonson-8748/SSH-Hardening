@@ -8,7 +8,7 @@ export VPS_TOOLS_TEST_MODE=1
 # shellcheck source=/dev/null
 source "$ROOT/SSH-Hardening.sh"
 
-for fn in systemd_available show_cli_help main_menu ssh_tools_menu ssh_key_count add_key set_login_mode ssh_account_record ssh_key_target_allowed ssh_expand_authorized_keys_path ssh_authorized_keys_path_for_user ssh_public_key_line_valid ssh_strict_auth_methods_allow_pubkey ssh_strict_effective_policy_ok ssh_strict_access_policy_allows ssh_strict_find_candidates ssh_strict_candidate_valid ssh_authentication_route ssh_login_route_for_user ssh_login_candidates ssh_login_candidates_have_admin ssh_user_has_full_sudo_access ssh_user_can_admin revoke_user_ssh_login user_management_menu user_require_root user_name_valid user_create_account user_grant_admin user_promote_admin user_revoke_admin user_revoke_admin_rights user_is_admin_account user_has_sudo_access user_change_password user_password_target_allowed user_delete_account user_delete_system_account user_home_safe_to_remove user_home_is_shared fail2ban_menu f2b_effective_ssh_port f2b_sync_ssh_port bbr_menu firewall_menu dns_menu timesync_menu \
+for fn in systemd_available show_cli_help main_menu ssh_tools_menu ssh_key_count show_keys add_key delete_key set_login_mode ssh_account_record ssh_key_target_allowed ssh_expand_authorized_keys_path ssh_authorized_keys_paths_for_user ssh_authorized_keys_path_for_user ssh_public_key_line_valid ssh_public_key_line_fields ssh_key_inventory ssh_key_inventory_line_matches ssh_key_file_restore ssh_key_delete_safety_arm ssh_key_delete_confirm_new_session ssh_strict_auth_methods_allow_pubkey ssh_strict_effective_policy_ok ssh_strict_access_policy_allows ssh_strict_find_candidates ssh_strict_candidate_valid ssh_authentication_route ssh_login_route_for_user ssh_login_candidates ssh_login_candidates_have_admin ssh_user_has_full_sudo_access ssh_user_can_admin revoke_user_ssh_login user_management_menu user_require_root user_name_valid user_create_account user_grant_admin user_promote_admin user_revoke_admin user_revoke_admin_rights user_is_admin_account user_has_sudo_access user_change_password user_password_target_allowed user_delete_account user_delete_system_account user_home_safe_to_remove user_home_is_shared fail2ban_menu f2b_effective_ssh_port f2b_sync_ssh_port bbr_menu firewall_menu dns_menu timesync_menu \
     ts_https_date_epoch ts_epoch_utc ts_https_fetch_epoch ts_https_consensus ts_sync_https \
     ip_config_menu caddy_menu caddy_site_records caddy_site_count nft_menu ddns_menu ddns_install ddns_install_cloudflare ddns_install_huawei ddns_run_now ddns_view_logs ddns_status ddns_share_link_tool \
     ddns_provider ddns_provider_label ddns_sed_escape ddns_install_transaction_begin ddns_install_transaction_restore ddns_install_transaction_commit ddns_domain_dot ddns_ipv6_subdomain_default ddns_cf_exact_records ddns_cf_record_ensure ddns_cf_cleanup_cross_record \
@@ -38,6 +38,8 @@ ssh_key_target_allowed tony 1000 "$STRICT_HOME" /bin/bash \
     || { echo "AuthorizedKeysFile token expansion failed" >&2; exit 1; }
 ! ssh_expand_authorized_keys_path '%x/authorized_keys' tony 1000 "$STRICT_HOME" >/dev/null 2>&1 \
     || { echo "Unknown AuthorizedKeysFile token was accepted" >&2; exit 1; }
+! ssh_expand_authorized_keys_path $'.ssh/authorized\tkeys' tony 1000 "$STRICT_HOME" >/dev/null 2>&1 \
+    || { echo "AuthorizedKeysFile path containing a tab was accepted" >&2; exit 1; }
 ssh_strict_auth_methods_allow_pubkey any \
     || { echo "AuthenticationMethods any was rejected for strict mode" >&2; exit 1; }
 ssh_strict_auth_methods_allow_pubkey 'publickey publickey,password' \
@@ -117,6 +119,27 @@ ssh_login_candidates_have_admin $'root|密钥|yes\nguest|密码|no' \
         || { echo "Malformed SSH public key data was accepted" >&2; exit 1; }
     ! ssh_public_key_line_valid 'not-a-key VALID_KEY_DATA' >/dev/null 2>&1 \
         || { echo "Unsupported SSH public key type was accepted" >&2; exit 1; }
+    KEY_FIELDS=$(ssh_public_key_line_fields \
+        'command="/usr/bin/id -u",no-pty ssh-ed25519 VALID_KEY_DATA ops@example')
+    IFS=$'\t' read -r FIELD_TYPE FIELD_DATA FIELD_COMMENT FIELD_OPTIONS <<< "$KEY_FIELDS"
+    [[ "$FIELD_TYPE|$FIELD_DATA|$FIELD_COMMENT" \
+        = 'ssh-ed25519|VALID_KEY_DATA|ops@example' ]] \
+        || { echo "AuthorizedKeys options prevented public key parsing" >&2; exit 1; }
+    [[ "$FIELD_OPTIONS" == *"no-pty"* ]] \
+        || { echo "AuthorizedKeys options were not retained in the key inventory" >&2; exit 1; }
+)
+
+(
+    ssh_effective_config_dump() {
+        printf '%s\n' \
+            'authorizedkeysfile .ssh/authorized_keys .ssh/authorized_keys2 .ssh/authorized_keys'
+    }
+    EXPECTED_PATHS=$(printf '%s\n' \
+        "$STRICT_HOME/.ssh/authorized_keys" \
+        "$STRICT_HOME/.ssh/authorized_keys2")
+    [[ "$(ssh_authorized_keys_paths_for_user /tmp/sshd tony 1000 "$STRICT_HOME")" \
+        = "$EXPECTED_PATHS" ]] \
+        || { echo "Multiple or duplicate AuthorizedKeysFile paths were not resolved correctly" >&2; exit 1; }
 )
 
 (
@@ -148,6 +171,10 @@ EOF
     [[ "$(ssh_strict_find_candidates /tmp/strict-sshd-config)" \
         = "tony|$STRICT_HOME/.ssh/authorized_keys" ]] \
         || { echo "Valid non-root SSH key candidate was not detected" >&2; exit 1; }
+    ! SSH_KEY_EXCLUDE_FILE="$STRICT_HOME/.ssh/authorized_keys" SSH_KEY_EXCLUDE_LINE=1 \
+        ssh_strict_key_file_has_unrestricted_key "$STRICT_HOME/.ssh/authorized_keys" \
+        >/dev/null 2>&1 \
+        || { echo "Excluded SSH key line was still treated as a login route" >&2; exit 1; }
     printf '%s\n' 'command="/bin/false" ssh-ed25519 VALID_KEY_DATA test@example' \
         > "$STRICT_HOME/.ssh/authorized_keys"
     [ -z "$(ssh_strict_find_candidates /tmp/strict-sshd-config)" ] \
@@ -167,6 +194,171 @@ EOF
     ADD_CANCEL_OUTPUT=$(add_key <<< "")
     [[ "$ADD_CANCEL_OUTPUT" == *"已取消，未添加公钥"* ]] \
         || { echo "Blank target did not cancel SSH key addition" >&2; exit 1; }
+)
+
+(
+    VIEW_HOME="$TMP/view-key-home"
+    mkdir -p "$VIEW_HOME/.ssh"
+    printf '%s\n' 'ssh-ed25519 VALID_KEY_DATA view-key' > "$VIEW_HOME/.ssh/authorized_keys"
+    SSH_PASSWD_FILE="$TMP/view-key-passwd"
+    printf '%s\n' "tony:x:1000:1000::${VIEW_HOME}:/bin/bash" > "$SSH_PASSWD_FILE"
+    SSHD_CONFIG="$TMP/view-key-sshd"
+    printf '%s\n' 'Port 22' > "$SSHD_CONFIG"
+    ssh_effective_config_dump() {
+        printf '%s\n' 'authorizedkeysfile .ssh/authorized_keys'
+    }
+    ssh_public_key_line_valid() {
+        [[ "$1" == 'ssh-ed25519 VALID_KEY_DATA' ]]
+    }
+    ssh_public_key_fingerprint() { printf 'SHA256:view\n'; }
+    print_header() { :; }
+    menu_div() { :; }
+    warn() { :; }
+    error() { printf '%s\n' "$*" >&2; }
+    VIEW_AUDIT_LOG="$TMP/view-key-audit"
+    audit_action() { printf '%s|%s\n' "$1" "$2" >> "$VIEW_AUDIT_LOG"; }
+    show_keys <<< "tony" >/dev/null
+    grep -q '查看用户 tony SSH 公钥（1 个）|SUCCESS' "$VIEW_AUDIT_LOG" \
+        || { echo "SSH public key viewing was not written to the audit log" >&2; exit 1; }
+)
+
+(
+    DELETE_HOME="$TMP/delete-key-no-fallback-home"
+    DELETE_KEY_FILE="$DELETE_HOME/.ssh/authorized_keys"
+    mkdir -p "$DELETE_HOME/.ssh"
+    printf '%s\n' 'ssh-ed25519 VALID_KEY_DATA only-key' > "$DELETE_KEY_FILE"
+    SSH_PASSWD_FILE="$TMP/delete-key-no-fallback-passwd"
+    printf '%s\n' "tony:x:1000:1000::${DELETE_HOME}:/bin/bash" > "$SSH_PASSWD_FILE"
+    SSHD_CONFIG="$TMP/delete-key-no-fallback-sshd"
+    printf '%s\n' 'Port 22' > "$SSHD_CONFIG"
+    ssh_effective_config_dump() {
+        printf '%s\n' \
+            'pubkeyauthentication yes' \
+            'authorizedkeysfile .ssh/authorized_keys'
+    }
+    ssh_public_key_line_valid() {
+        [[ "$1" == 'ssh-ed25519 VALID_KEY_DATA' ]]
+    }
+    ssh_public_key_fingerprint() { printf 'SHA256:test\n'; }
+    ssh_login_candidates() {
+        if [ "${SSH_KEY_EXCLUDE_FILE:-}" = "$DELETE_KEY_FILE" ] \
+            && [ "${SSH_KEY_EXCLUDE_LINE:-}" = 1 ]; then
+            return 0
+        fi
+        printf '%s\n' 'tony|密钥|yes'
+    }
+    print_header() { :; }
+    menu_div() { :; }
+    error() { printf '%s\n' "$*"; }
+    warn() { printf '%s\n' "$*"; }
+    DELETE_AUDIT_LOG="$TMP/delete-key-no-fallback-audit"
+    audit_action() { printf '%s|%s\n' "$1" "$2" >> "$DELETE_AUDIT_LOG"; }
+    DELETE_SAFETY_CALLED="$TMP/delete-key-no-fallback-safety-called"
+    ssh_key_delete_safety_arm() { : > "$DELETE_SAFETY_CALLED"; }
+    if DELETE_OUTPUT=$(delete_key <<< $'tony\n1'); then
+        echo "SSH public key deletion succeeded without any remaining login" >&2
+        exit 1
+    fi
+    [[ "$DELETE_OUTPUT" == *"没有任何账号可以确认登录"* ]] \
+        || { echo "Missing post-deletion login route was not reported" >&2; exit 1; }
+    grep -qx 'ssh-ed25519 VALID_KEY_DATA only-key' "$DELETE_KEY_FILE" \
+        || { echo "Public key file changed before login-route validation" >&2; exit 1; }
+    [ ! -e "$DELETE_SAFETY_CALLED" ] \
+        || { echo "Public key safety timer started before login-route validation" >&2; exit 1; }
+    grep -q '无剩余登录入口|FAILED' "$DELETE_AUDIT_LOG" \
+        || { echo "Rejected public key deletion was not written to the audit log" >&2; exit 1; }
+)
+
+(
+    DELETE_HOME="$TMP/delete-key-success-home"
+    DELETE_KEY_FILE="$DELETE_HOME/.ssh/authorized_keys"
+    mkdir -p "$DELETE_HOME/.ssh"
+    printf '%s\n' \
+        'ssh-ed25519 VALID_KEY_DATA delete-me' \
+        'ssh-ed25519 SECOND_KEY_DATA keep-me' > "$DELETE_KEY_FILE"
+    DELETE_ORIGINAL=$(cat "$DELETE_KEY_FILE")
+    SSH_PASSWD_FILE="$TMP/delete-key-success-passwd"
+    printf '%s\n' "tony:x:1000:1000::${DELETE_HOME}:/bin/bash" > "$SSH_PASSWD_FILE"
+    SSHD_CONFIG="$TMP/delete-key-success-sshd"
+    printf '%s\n' 'Port 22' > "$SSHD_CONFIG"
+    VPS_DATA_DIR="$TMP/delete-key-success-data"
+    VPS_BACKUP_DIR="$VPS_DATA_DIR/backups"
+    ssh_effective_config_dump() {
+        printf '%s\n' \
+            'pubkeyauthentication yes' \
+            'authorizedkeysfile .ssh/authorized_keys'
+    }
+    ssh_public_key_line_valid() {
+        case "$1" in
+            'ssh-ed25519 VALID_KEY_DATA'|'ssh-ed25519 SECOND_KEY_DATA') return 0 ;;
+            *) return 1 ;;
+        esac
+    }
+    ssh_public_key_fingerprint() {
+        case "$2" in
+            VALID_KEY_DATA) printf 'SHA256:delete\n' ;;
+            *) printf 'SHA256:keep\n' ;;
+        esac
+    }
+    ssh_login_candidates() { printf '%s\n' 'admin|密钥|yes'; }
+    print_header() { :; }
+    menu_div() { :; }
+    info() { :; }
+    warn() { :; }
+    error() { printf '%s\n' "$*"; }
+    DELETE_AUDIT_LOG="$TMP/delete-key-success-audit"
+    audit_action() { printf '%s|%s\n' "$1" "$2" >> "$DELETE_AUDIT_LOG"; }
+    confirm_file_diff() { return 0; }
+    DELETE_SAFETY_CALLED="$TMP/delete-key-success-safety-called"
+    ssh_key_delete_safety_arm() {
+        printf '%s|%s|%s\n' "$1" "$2" "$3" > "$DELETE_SAFETY_CALLED"
+    }
+    DELETE_CONFIRM_LOG="$TMP/delete-key-success-confirm"
+    ssh_key_delete_confirm_new_session() {
+        printf '%s|%s\n' "$1" "$2" > "$DELETE_CONFIRM_LOG"
+    }
+    delete_key <<< $'tony\n1\nadmin\ntony'
+    grep -qx 'ssh-ed25519 SECOND_KEY_DATA keep-me' "$DELETE_KEY_FILE" \
+        || { echo "Selected public key line was not deleted precisely" >&2; exit 1; }
+    ! grep -q 'VALID_KEY_DATA' "$DELETE_KEY_FILE" \
+        || { echo "Deleted public key data remained in the target file" >&2; exit 1; }
+    grep -qx 'admin|密钥' "$DELETE_CONFIRM_LOG" \
+        || { echo "Post-deletion admin login verification was not requested" >&2; exit 1; }
+    DELETE_BACKUP=$(find "$VPS_BACKUP_DIR" -maxdepth 1 -type f -name '*_ssh-key_tony_*.bak' | head -1)
+    [ -n "$DELETE_BACKUP" ] && [ "$(cat "$DELETE_BACKUP")" = "$DELETE_ORIGINAL" ] \
+        || { echo "Original public key file was not preserved in the independent backup" >&2; exit 1; }
+    [ -s "$DELETE_SAFETY_CALLED" ] \
+        || { echo "Public key deletion did not arm the safety rollback" >&2; exit 1; }
+    grep -q '删除用户 tony SSH 公钥|SUCCESS' "$DELETE_AUDIT_LOG" \
+        || { echo "Successful public key deletion was not written to the audit log" >&2; exit 1; }
+)
+
+(
+    VPS_DATA_DIR="$TMP/delete-key-safety-data"
+    SAFETY_STATE_FILE="$VPS_DATA_DIR/rollback.active"
+    SAFETY_HOME="$TMP/delete key safety home"
+    SAFETY_KEY_FILE="$SAFETY_HOME/authorized_keys"
+    SAFETY_BACKUP="$VPS_DATA_DIR/authorized_keys.backup"
+    mkdir -p "$SAFETY_HOME" "$VPS_DATA_DIR"
+    printf '%s\n' 'ssh-ed25519 VALID_KEY_DATA rollback-test' > "$SAFETY_KEY_FILE"
+    cp -p "$SAFETY_KEY_FILE" "$SAFETY_BACKUP"
+    error() { printf '%s\n' "$*" >&2; }
+    warn() { :; }
+    audit_action() { :; }
+    nohup() { return 0; }
+    ssh_key_delete_safety_arm "$SAFETY_KEY_FILE" "$SAFETY_BACKUP" tony \
+        || { echo "Public key safety rollback could not be armed" >&2; exit 1; }
+    IFS='|' read -r SAFETY_TEST_PID SAFETY_TEST_SCRIPT < "$SAFETY_STATE_FILE"
+    [[ "$SAFETY_TEST_PID" =~ ^[0-9]+$ ]] && [ -f "$SAFETY_TEST_SCRIPT" ] \
+        || { echo "Public key safety rollback state was not persisted" >&2; exit 1; }
+    bash -n "$SAFETY_TEST_SCRIPT" \
+        || { echo "Generated public key rollback script has invalid syntax" >&2; exit 1; }
+    printf -v SAFETY_KEY_QUOTED '%q' "$SAFETY_KEY_FILE"
+    grep -Fq "$SAFETY_KEY_QUOTED" "$SAFETY_TEST_SCRIPT" \
+        || { echo "Generated public key rollback script lost the target path" >&2; exit 1; }
+    grep -Fq "$VPS_AUDIT_LOG" "$SAFETY_TEST_SCRIPT" \
+        || { echo "Automatic public key rollback was not connected to the audit log" >&2; exit 1; }
+    rm -f "$SAFETY_STATE_FILE" "$SAFETY_TEST_SCRIPT"
 )
 
 (
