@@ -1,8 +1,10 @@
-# VPS 开荒脚本 V3.11.1
+# VPS 开荒脚本 V3.11.2
 
 > **银趴火山帮** 出品 · SSH · BBR · DDNS · Caddy · Firewall · NFT 转发
 
 一键式 VPS 初始化与管理工具，覆盖安全加固、网络调优、服务部署、端口转发全流程。支持 Debian / Ubuntu / CentOS / Alpine / OpenWrt 等主流系统。
+
+> 当前长期维护仓库：[TonyJsonson-8748/SSH-Hardening](https://github.com/TonyJsonson-8748/SSH-Hardening)；上游原仓库：[chnnic/SSH-Hardening](https://github.com/chnnic/SSH-Hardening)。
 
 > **运行依赖：** 脚本需 **bash** 运行（使用了数组 / `[[ ]]` / here-string 等特性）。Debian/Ubuntu/CentOS 默认自带；**Alpine 需 `apk add bash`，OpenWrt 需 `opkg install bash`**。脚本头部带解释器守卫：非 bash 环境会自动尝试切到 bash，缺失时给出清晰安装提示而非报一堆语法错。
 
@@ -11,7 +13,7 @@
 ## 快速开始
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/chnnic/SSH-Hardening/refs/heads/main/SSH-Hardening.sh)
+bash <(curl -fsSL https://raw.githubusercontent.com/TonyJsonson-8748/SSH-Hardening/refs/heads/main/SSH-Hardening.sh)
 ```
 
 ## 命令行合集
@@ -19,7 +21,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/chnnic/SSH-Hardening/refs/he
 所有入口都可以直接从 GitHub 调用，也可以在安装到本地后用 `v --命令` 调用。
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/chnnic/SSH-Hardening/refs/heads/main/SSH-Hardening.sh) --help
+bash <(curl -fsSL https://raw.githubusercontent.com/TonyJsonson-8748/SSH-Hardening/refs/heads/main/SSH-Hardening.sh) --help
 ```
 
 | 命令 | 功能 |
@@ -74,7 +76,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/chnnic/SSH-Hardening/refs/he
 ╚═╝╚═╝     ╚═╝╚═╝     ╚═╝  ╚═╝╚═╝  ╚═╝   ╚═╝        ╚═════╝ ╚═╝     ╚══════╝
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  VPS TOOLS  ·  V3.11.1
+  VPS TOOLS  ·  V3.11.2
   VPS 开荒脚本 · 银趴火山帮
 ────────────────────────────────────────────────────────────────
   SSH · BBR · DDNS · Caddy · Firewall · NFT · Monitor
@@ -577,12 +579,12 @@ DNS 设置会自动识别 `systemd-resolved`、NetworkManager、resolvconf 或�
 ## 开源地址
 
 ```
-https://github.com/chnnic/SSH-Hardening
+https://github.com/TonyJsonson-8748/SSH-Hardening
 ```
 
 ```bash
 # 一行安装
-bash <(curl -fsSL https://raw.githubusercontent.com/chnnic/SSH-Hardening/refs/heads/main/SSH-Hardening.sh)
+bash <(curl -fsSL https://raw.githubusercontent.com/TonyJsonson-8748/SSH-Hardening/refs/heads/main/SSH-Hardening.sh)
 ```
 
 ### 开发与构建
@@ -619,6 +621,7 @@ tests/smoke.sh
 
 | 版本 | 主要变更 |
 |------|---------|
+| **V3.11.2** | 将快速开始、命令行调用、安装清单和脚本自更新源切换到长期维护 Fork `TonyJsonson-8748/SSH-Hardening`，同时保留上游原仓库说明 |
 | **V3.11.1** | Fail2ban 安装及 SSH 改端口时同步实际监听端口；自更新改用安全临时文件并移除共享 `/tmp` 脚本缓存；防断联回滚任务增加持久单实例保护；Cloudflare/华为云 DDNS 重配置失败自动恢复旧配置；新增 `.gitattributes` 固定 Linux 发布文件为 LF |
 | **V3.11.0** | 时间菜单新增 HTTPS 时间同步，使用 TCP/443 适配 UDP/123 被封锁的 VPS；从 Cloudflare、阿里云、Microsoft、GitHub、Google 获取经 TLS 验证的 `Date` 响应，至少两个来源在 10 秒内达成共识才设置系统时间，并作为普通强制同步的最终兜底 |
 | **V3.10.9** | 修复未配置公钥时首页和 SSH 工具集显示 `0` 后又换行显示第二个 `0`：保留 `grep -c` 的零计数输出，空文件或文件不存在时统一返回单个 `0` |

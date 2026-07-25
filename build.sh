@@ -69,9 +69,9 @@ cat > "$MANIFEST" <<EOF
   "sha256": "$HASH",
   "generated_at": "$(date -u '+%Y-%m-%dT%H:%M:%SZ')",
   "urls": [
-    "https://raw.githubusercontent.com/chnnic/SSH-Hardening/refs/heads/main/SSH-Hardening.sh",
-    "https://github.com/chnnic/SSH-Hardening/raw/refs/heads/main/SSH-Hardening.sh",
-    "https://cdn.jsdelivr.net/gh/chnnic/SSH-Hardening@main/SSH-Hardening.sh"
+    "https://raw.githubusercontent.com/TonyJsonson-8748/SSH-Hardening/refs/heads/main/SSH-Hardening.sh",
+    "https://github.com/TonyJsonson-8748/SSH-Hardening/raw/refs/heads/main/SSH-Hardening.sh",
+    "https://cdn.jsdelivr.net/gh/TonyJsonson-8748/SSH-Hardening@main/SSH-Hardening.sh"
   ]
 }
 EOF

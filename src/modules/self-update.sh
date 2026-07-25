@@ -2,10 +2,10 @@
 #  脚本自我管理模块
 # ══════════════════════════════════════════════════════════
 
-SCRIPT_URL="https://raw.githubusercontent.com/chnnic/SSH-Hardening/refs/heads/main/SSH-Hardening.sh"
-CHECKSUM_URL="https://raw.githubusercontent.com/chnnic/SSH-Hardening/refs/heads/main/SSH-Hardening.sh.sha256"
-MANIFEST_URL="https://raw.githubusercontent.com/chnnic/SSH-Hardening/refs/heads/main/SSH-Hardening.manifest.json"
-GITHUB_REF_URL="https://api.github.com/repos/chnnic/SSH-Hardening/git/ref/heads/main"
+SCRIPT_URL="https://raw.githubusercontent.com/TonyJsonson-8748/SSH-Hardening/refs/heads/main/SSH-Hardening.sh"
+CHECKSUM_URL="https://raw.githubusercontent.com/TonyJsonson-8748/SSH-Hardening/refs/heads/main/SSH-Hardening.sh.sha256"
+MANIFEST_URL="https://raw.githubusercontent.com/TonyJsonson-8748/SSH-Hardening/refs/heads/main/SSH-Hardening.manifest.json"
+GITHUB_REF_URL="https://api.github.com/repos/TonyJsonson-8748/SSH-Hardening/git/ref/heads/main"
 LOCAL_BIN_DIR="${LOCAL_BIN_DIR:-/usr/local/bin}"
 LOCAL_SCRIPT="${LOCAL_SCRIPT:-${LOCAL_BIN_DIR}/vps-tools}"
 UPDATE_NOTICE_FILE="${UPDATE_NOTICE_FILE:-${VPS_DATA_DIR}/update_available}"
@@ -52,7 +52,7 @@ self_fetch_script() {
     local DEST="$1" REMOTE_SHA FETCH_URL
     REMOTE_SHA=$(self_remote_main_sha || true)
     if [ -n "$REMOTE_SHA" ]; then
-        FETCH_URL="https://raw.githubusercontent.com/chnnic/SSH-Hardening/${REMOTE_SHA}/SSH-Hardening.sh"
+        FETCH_URL="https://raw.githubusercontent.com/TonyJsonson-8748/SSH-Hardening/${REMOTE_SHA}/SSH-Hardening.sh"
     else
         FETCH_URL="${SCRIPT_URL}?ts=$(date +%s)"
     fi
@@ -223,9 +223,9 @@ self_update() {
         case "$TRY" in
             1)
                 if [ -n "$REMOTE_SHA" ]; then
-                    SCRIPT_FETCH_URL="https://raw.githubusercontent.com/chnnic/SSH-Hardening/${REMOTE_SHA}/SSH-Hardening.sh"
-                    CHECKSUM_FETCH_URL="https://raw.githubusercontent.com/chnnic/SSH-Hardening/${REMOTE_SHA}/SSH-Hardening.sh.sha256"
-                    MANIFEST_FETCH_URL="https://raw.githubusercontent.com/chnnic/SSH-Hardening/${REMOTE_SHA}/SSH-Hardening.manifest.json"
+                    SCRIPT_FETCH_URL="https://raw.githubusercontent.com/TonyJsonson-8748/SSH-Hardening/${REMOTE_SHA}/SSH-Hardening.sh"
+                    CHECKSUM_FETCH_URL="https://raw.githubusercontent.com/TonyJsonson-8748/SSH-Hardening/${REMOTE_SHA}/SSH-Hardening.sh.sha256"
+                    MANIFEST_FETCH_URL="https://raw.githubusercontent.com/TonyJsonson-8748/SSH-Hardening/${REMOTE_SHA}/SSH-Hardening.manifest.json"
                 else
                     SCRIPT_FETCH_URL="$SCRIPT_URL"
                     CHECKSUM_FETCH_URL="$CHECKSUM_URL"
@@ -243,14 +243,14 @@ self_update() {
                 MANIFEST_FETCH_URL="$MANIFEST_URL?ts=$TS"
                 ;;
             4)
-                SCRIPT_FETCH_URL="https://github.com/chnnic/SSH-Hardening/raw/refs/heads/main/SSH-Hardening.sh"
-                CHECKSUM_FETCH_URL="https://github.com/chnnic/SSH-Hardening/raw/refs/heads/main/SSH-Hardening.sh.sha256"
-                MANIFEST_FETCH_URL="https://github.com/chnnic/SSH-Hardening/raw/refs/heads/main/SSH-Hardening.manifest.json"
+                SCRIPT_FETCH_URL="https://github.com/TonyJsonson-8748/SSH-Hardening/raw/refs/heads/main/SSH-Hardening.sh"
+                CHECKSUM_FETCH_URL="https://github.com/TonyJsonson-8748/SSH-Hardening/raw/refs/heads/main/SSH-Hardening.sh.sha256"
+                MANIFEST_FETCH_URL="https://github.com/TonyJsonson-8748/SSH-Hardening/raw/refs/heads/main/SSH-Hardening.manifest.json"
                 ;;
             *)
-                SCRIPT_FETCH_URL="https://cdn.jsdelivr.net/gh/chnnic/SSH-Hardening@main/SSH-Hardening.sh"
-                CHECKSUM_FETCH_URL="https://cdn.jsdelivr.net/gh/chnnic/SSH-Hardening@main/SSH-Hardening.sh.sha256"
-                MANIFEST_FETCH_URL="https://cdn.jsdelivr.net/gh/chnnic/SSH-Hardening@main/SSH-Hardening.manifest.json"
+                SCRIPT_FETCH_URL="https://cdn.jsdelivr.net/gh/TonyJsonson-8748/SSH-Hardening@main/SSH-Hardening.sh"
+                CHECKSUM_FETCH_URL="https://cdn.jsdelivr.net/gh/TonyJsonson-8748/SSH-Hardening@main/SSH-Hardening.sh.sha256"
+                MANIFEST_FETCH_URL="https://cdn.jsdelivr.net/gh/TonyJsonson-8748/SSH-Hardening@main/SSH-Hardening.manifest.json"
                 ;;
         esac
         : > "$TMP_FILE"

@@ -255,6 +255,13 @@ EOF
 ! grep -Fq '/tmp/.vps_new_version' "$ROOT/src/modules/main.sh" "$ROOT/src/modules/self-update.sh" \
     || { echo "Update notice still uses a shared /tmp path" >&2; exit 1; }
 
+# This maintained fork must install and self-update from its own release files.
+FORK_REPO='TonyJsonson-8748/SSH-Hardening'
+grep -Fq "$FORK_REPO" "$ROOT/README.md" "$ROOT/build.sh" "$ROOT/src/modules/self-update.sh" \
+    || { echo "Maintained fork release source is missing" >&2; exit 1; }
+! grep -Fq 'chnnic/SSH-Hardening' "$ROOT/build.sh" "$ROOT/src/modules/self-update.sh" \
+    || { echo "Installer or updater still points to the upstream repository" >&2; exit 1; }
+
 # Cross-type Cloudflare records must never be deleted without explicit confirmation.
 (
     CF_DELETE_LOG="$TMP/cloudflare-delete.log"
