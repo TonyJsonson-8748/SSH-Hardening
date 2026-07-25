@@ -14,13 +14,14 @@ ssh_tools_menu() {
                  "  密码登录 ${BOLD}${CUR_PWD:-未设置}${NC}  |  公钥认证 ${BOLD}${CUR_PUBKEY:-未设置}${NC}"
         echo ""
         menu_div
-        menu_pair "1" "查看已有公钥" "2" "添加公钥"
-        menu_pair "3" "删除公钥" "4" "生成密钥对"
+        menu_pair "1" "查看 root 公钥" "2" "为指定用户添加公钥"
+        menu_pair "3" "删除 root 公钥" "4" "生成密钥对"
         menu_pair "5" "设置登录方式" "6" "修改 SSH 端口"
+        menu_item "7" "撤销指定用户 SSH 登录权限" "$RED"
         menu_pair "0" "返回主菜单" "00" "退出脚本" "$RED" "$RED"
         menu_div
         echo ""
-        read -rp "$(ui_prompt '选择操作 [0-6]: ')" CHOICE
+        read -rp "$(ui_prompt '选择操作 [0-7]: ')" CHOICE
 
         local NEED_PAUSE=1
         case "$CHOICE" in
@@ -30,6 +31,7 @@ ssh_tools_menu() {
             4) generate_key ;;
             5) set_login_mode ;;
             6) change_port ;;
+            7) revoke_user_ssh_login ;;
             0) return ;;
             00) safe_clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;
             *) warn "无效选项"; sleep 1; NEED_PAUSE=0 ;;

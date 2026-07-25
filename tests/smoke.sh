@@ -8,7 +8,7 @@ export VPS_TOOLS_TEST_MODE=1
 # shellcheck source=/dev/null
 source "$ROOT/SSH-Hardening.sh"
 
-for fn in systemd_available show_cli_help main_menu ssh_tools_menu ssh_key_count user_management_menu user_require_root user_name_valid user_create_account user_grant_admin user_promote_admin user_revoke_admin user_revoke_admin_rights user_is_admin_account user_has_sudo_access user_change_password user_password_target_allowed user_delete_account user_delete_system_account user_home_safe_to_remove user_home_is_shared fail2ban_menu f2b_effective_ssh_port f2b_sync_ssh_port bbr_menu firewall_menu dns_menu timesync_menu \
+for fn in systemd_available show_cli_help main_menu ssh_tools_menu ssh_key_count add_key set_login_mode ssh_account_record ssh_key_target_allowed ssh_expand_authorized_keys_path ssh_authorized_keys_path_for_user ssh_public_key_line_valid ssh_strict_auth_methods_allow_pubkey ssh_strict_effective_policy_ok ssh_strict_access_policy_allows ssh_strict_find_candidates ssh_strict_candidate_valid ssh_authentication_route ssh_login_route_for_user ssh_login_candidates ssh_login_candidates_have_admin ssh_user_has_full_sudo_access ssh_user_can_admin revoke_user_ssh_login user_management_menu user_require_root user_name_valid user_create_account user_grant_admin user_promote_admin user_revoke_admin user_revoke_admin_rights user_is_admin_account user_has_sudo_access user_change_password user_password_target_allowed user_delete_account user_delete_system_account user_home_safe_to_remove user_home_is_shared fail2ban_menu f2b_effective_ssh_port f2b_sync_ssh_port bbr_menu firewall_menu dns_menu timesync_menu \
     ts_https_date_epoch ts_epoch_utc ts_https_fetch_epoch ts_https_consensus ts_sync_https \
     ip_config_menu caddy_menu caddy_site_records caddy_site_count nft_menu ddns_menu ddns_install ddns_install_cloudflare ddns_install_huawei ddns_run_now ddns_view_logs ddns_status ddns_share_link_tool \
     ddns_provider ddns_provider_label ddns_sed_escape ddns_install_transaction_begin ddns_install_transaction_restore ddns_install_transaction_commit ddns_domain_dot ddns_ipv6_subdomain_default ddns_cf_exact_records ddns_cf_record_ensure ddns_cf_cleanup_cross_record \
@@ -19,6 +19,230 @@ for fn in systemd_available show_cli_help main_menu ssh_tools_menu ssh_key_count
     resource_health_check system_update_manager system_hostname_apply config_backup_create safety_load_pending safety_lock_acquire safety_lock_release self_update docker_menu change_port; do
     declare -F "$fn" >/dev/null || { echo "Missing function: $fn" >&2; exit 1; }
 done
+
+STRICT_HOME="$TMP/strict-home"
+mkdir -p "$STRICT_HOME/.ssh"
+ssh_key_target_allowed tony 1000 "$STRICT_HOME" /bin/bash \
+    || { echo "Regular SSH key target was rejected" >&2; exit 1; }
+! ssh_key_target_allowed root 1000 "$STRICT_HOME" /bin/bash >/dev/null 2>&1 \
+    || { echo "Non-root UID using the root name was accepted" >&2; exit 1; }
+! ssh_key_target_allowed daemon 1 "$STRICT_HOME" /bin/bash >/dev/null 2>&1 \
+    || { echo "System account was accepted as an SSH key target" >&2; exit 1; }
+! ssh_key_target_allowed tony 1000 "$STRICT_HOME" /usr/sbin/nologin >/dev/null 2>&1 \
+    || { echo "Nologin account was accepted as an SSH key target" >&2; exit 1; }
+[[ "$(ssh_expand_authorized_keys_path '.ssh/authorized_keys' tony 1000 "$STRICT_HOME")" \
+    = "$STRICT_HOME/.ssh/authorized_keys" ]] \
+    || { echo "Relative AuthorizedKeysFile expansion failed" >&2; exit 1; }
+[[ "$(ssh_expand_authorized_keys_path '/etc/ssh/keys/%u-%U' tony 1000 "$STRICT_HOME")" \
+    = "/etc/ssh/keys/tony-1000" ]] \
+    || { echo "AuthorizedKeysFile token expansion failed" >&2; exit 1; }
+! ssh_expand_authorized_keys_path '%x/authorized_keys' tony 1000 "$STRICT_HOME" >/dev/null 2>&1 \
+    || { echo "Unknown AuthorizedKeysFile token was accepted" >&2; exit 1; }
+ssh_strict_auth_methods_allow_pubkey any \
+    || { echo "AuthenticationMethods any was rejected for strict mode" >&2; exit 1; }
+ssh_strict_auth_methods_allow_pubkey 'publickey publickey,password' \
+    || { echo "Publickey alternative was not recognized" >&2; exit 1; }
+! ssh_strict_auth_methods_allow_pubkey 'publickey,password' >/dev/null 2>&1 \
+    || { echo "Password-dependent AuthenticationMethods was accepted" >&2; exit 1; }
+
+STRICT_POLICY_DUMP=$(cat <<'EOF'
+passwordauthentication no
+pubkeyauthentication yes
+authenticationmethods publickey
+permitrootlogin no
+kbdinteractiveauthentication no
+maxauthtries 3
+clientaliveinterval 300
+clientalivecountmax 2
+x11forwarding no
+EOF
+)
+ssh_strict_effective_policy_ok "$STRICT_POLICY_DUMP" \
+    || { echo "Valid strict SSH policy was rejected" >&2; exit 1; }
+! ssh_strict_effective_policy_ok "${STRICT_POLICY_DUMP/permitrootlogin no/permitrootlogin prohibit-password}" \
+    >/dev/null 2>&1 \
+    || { echo "Strict policy accepted root key login" >&2; exit 1; }
+ssh_strict_access_policy_allows "${STRICT_POLICY_DUMP}"$'\n''allowusers tony' tony \
+    || { echo "Allowed strict SSH user was rejected" >&2; exit 1; }
+! ssh_strict_access_policy_allows "${STRICT_POLICY_DUMP}"$'\n''denyusers tony' tony \
+    >/dev/null 2>&1 \
+    || { echo "Denied strict SSH user was accepted" >&2; exit 1; }
+ssh_strict_access_policy_allows "${STRICT_POLICY_DUMP}"$'\n''allowusers t*' tony \
+    || { echo "OpenSSH AllowUsers wildcard was not matched literally" >&2; exit 1; }
+! ssh_strict_access_policy_allows "${STRICT_POLICY_DUMP}"$'\n''denyusers *' tony \
+    >/dev/null 2>&1 \
+    || { echo "OpenSSH DenyUsers wildcard was expanded as a filesystem glob" >&2; exit 1; }
+[[ "$(ssh_authentication_route "$STRICT_POLICY_DUMP" yes locked)" = "密钥" ]] \
+    || { echo "Strict public-key authentication route was not detected" >&2; exit 1; }
+PASSWORD_POLICY_DUMP=${STRICT_POLICY_DUMP/passwordauthentication no/passwordauthentication yes}
+PASSWORD_POLICY_DUMP=${PASSWORD_POLICY_DUMP/pubkeyauthentication yes/pubkeyauthentication no}
+PASSWORD_POLICY_DUMP=${PASSWORD_POLICY_DUMP/authenticationmethods publickey/authenticationmethods any}
+PASSWORD_POLICY_DUMP=${PASSWORD_POLICY_DUMP/permitrootlogin no/permitrootlogin yes}
+[[ "$(ssh_authentication_route "$PASSWORD_POLICY_DUMP" no set)" = "密码" ]] \
+    || { echo "Password authentication route was not detected" >&2; exit 1; }
+MFA_POLICY_DUMP=${STRICT_POLICY_DUMP/passwordauthentication no/passwordauthentication yes}
+MFA_POLICY_DUMP=${MFA_POLICY_DUMP/authenticationmethods publickey/authenticationmethods publickey,password}
+[[ "$(ssh_authentication_route "$MFA_POLICY_DUMP" yes set)" = "密钥 + 密码" ]] \
+    || { echo "Multi-factor SSH authentication route was not detected" >&2; exit 1; }
+! ssh_authentication_route "$MFA_POLICY_DUMP" no set >/dev/null 2>&1 \
+    || { echo "Unavailable MFA route was treated as usable" >&2; exit 1; }
+ssh_login_candidates_have_admin $'root|密钥|yes\nguest|密码|no' \
+    || { echo "Remaining SSH management entry was not recognized" >&2; exit 1; }
+! ssh_login_candidates_have_admin 'guest|密码|no' >/dev/null 2>&1 \
+    || { echo "Ordinary login was treated as a management recovery entry" >&2; exit 1; }
+(
+    sudo() {
+        printf '%s\n' \
+            'User tony may run the following commands on test-host:' \
+            '    (ALL : ALL) ALL'
+    }
+    ssh_user_has_full_sudo_access tony \
+        || { echo "Full sudo recovery access was not recognized" >&2; exit 1; }
+    sudo() {
+        printf '%s\n' \
+            'User tony may run the following commands on test-host:' \
+            '    (root) /usr/bin/systemctl restart ssh'
+    }
+    ! ssh_user_has_full_sudo_access tony >/dev/null 2>&1 \
+        || { echo "Limited sudo command was treated as full recovery access" >&2; exit 1; }
+)
+
+(
+    ssh-keygen() {
+        grep -qx 'ssh-ed25519 VALID_KEY_DATA' "$3"
+    }
+    ssh_public_key_line_valid 'ssh-ed25519 VALID_KEY_DATA test@example' \
+        || { echo "Valid SSH public key line was rejected" >&2; exit 1; }
+    ! ssh_public_key_line_valid 'ssh-ed25519 TRUNCATED test@example' >/dev/null 2>&1 \
+        || { echo "Malformed SSH public key data was accepted" >&2; exit 1; }
+    ! ssh_public_key_line_valid 'not-a-key VALID_KEY_DATA' >/dev/null 2>&1 \
+        || { echo "Unsupported SSH public key type was accepted" >&2; exit 1; }
+)
+
+(
+    SSH_PASSWD_FILE="$TMP/strict-passwd"
+    printf '%s\n' \
+        "root:x:0:0:root:/root:/bin/bash" \
+        "tony:x:1000:1000::${STRICT_HOME}:/bin/bash" \
+        "daemon:x:1:1::/usr/sbin:/usr/sbin/nologin" > "$SSH_PASSWD_FILE"
+    printf '%s\n' 'ssh-ed25519 VALID_KEY_DATA test@example' > "$STRICT_HOME/.ssh/authorized_keys"
+    ssh_effective_config_dump() {
+        cat <<'EOF'
+passwordauthentication no
+pubkeyauthentication yes
+authenticationmethods publickey
+permitrootlogin no
+kbdinteractiveauthentication no
+maxauthtries 3
+clientaliveinterval 300
+clientalivecountmax 2
+x11forwarding no
+authorizedkeysfile .ssh/authorized_keys
+EOF
+    }
+    ssh_strict_key_path_secure() { return 0; }
+    ssh_public_key_line_valid() {
+        [[ "$1" == 'ssh-ed25519 VALID_KEY_DATA test@example' ]]
+    }
+    ssh_user_can_admin() { [ "$1" = tony ]; }
+    [[ "$(ssh_strict_find_candidates /tmp/strict-sshd-config)" \
+        = "tony|$STRICT_HOME/.ssh/authorized_keys" ]] \
+        || { echo "Valid non-root SSH key candidate was not detected" >&2; exit 1; }
+    printf '%s\n' 'command="/bin/false" ssh-ed25519 VALID_KEY_DATA test@example' \
+        > "$STRICT_HOME/.ssh/authorized_keys"
+    [ -z "$(ssh_strict_find_candidates /tmp/strict-sshd-config)" ] \
+        || { echo "Restricted SSH key was accepted as a strict-mode rescue login" >&2; exit 1; }
+    printf '%s\n' 'ssh-ed25519 VALID_KEY_DATA test@example' > "$STRICT_HOME/.ssh/authorized_keys"
+    ssh_user_can_admin() { return 1; }
+    [ -z "$(ssh_strict_find_candidates /tmp/strict-sshd-config)" ] \
+        || { echo "Non-admin key user was accepted for root-disabled strict mode" >&2; exit 1; }
+)
+
+(
+    SSH_PASSWD_FILE="$TMP/add-key-cancel-passwd"
+    printf '%s\n' "tony:x:1000:1000::${STRICT_HOME}:/bin/bash" > "$SSH_PASSWD_FILE"
+    print_header() { :; }
+    menu_div() { :; }
+    warn() { printf '%s\n' "$*"; }
+    ADD_CANCEL_OUTPUT=$(add_key <<< "")
+    [[ "$ADD_CANCEL_OUTPUT" == *"已取消，未添加公钥"* ]] \
+        || { echo "Blank target did not cancel SSH key addition" >&2; exit 1; }
+)
+
+(
+    SSHD_CONFIG="$TMP/revoke-no-fallback-sshd-config"
+    printf '%s\n' 'Port 22' > "$SSHD_CONFIG"
+    ssh_account_records() {
+        printf '%s\n' "tony:x:1000:1000::${STRICT_HOME}:/bin/bash"
+    }
+    ssh_account_record() {
+        ssh_account_records
+    }
+    ssh_effective_config_dump() {
+        if grep -q '^DenyUsers tony$' "$1" 2>/dev/null; then
+            printf '%s\n' "${STRICT_POLICY_DUMP}" 'denyusers tony'
+        else
+            printf '%s\n' "${STRICT_POLICY_DUMP}"
+        fi
+    }
+    sshd() { return 0; }
+    ssh_login_candidates() { return 0; }
+    print_header() { :; }
+    menu_div() { :; }
+    error() { printf '%s\n' "$*"; }
+    warn() { printf '%s\n' "$*"; }
+    REVOKE_BACKUP_CALLED="$TMP/revoke-backup-called"
+    backup_config() { : > "$REVOKE_BACKUP_CALLED"; }
+    if REVOKE_OUTPUT=$(revoke_user_ssh_login <<< "tony"); then
+        echo "SSH login revocation succeeded without any fallback user" >&2
+        exit 1
+    fi
+    [[ "$REVOKE_OUTPUT" == *"没有任何其他账号可确认登录"* ]] \
+        || { echo "Missing fallback login was not reported" >&2; exit 1; }
+    [ ! -e "$REVOKE_BACKUP_CALLED" ] \
+        || { echo "SSH config backup/apply started before fallback validation" >&2; exit 1; }
+)
+
+(
+    SSHD_CONFIG="$TMP/revoke-success-sshd-config"
+    printf '%s\n' 'Port 22' > "$SSHD_CONFIG"
+    ssh_account_records() {
+        printf '%s\n' \
+            'root:x:0:0:root:/root:/bin/bash' \
+            "tony:x:1000:1000::${STRICT_HOME}:/bin/bash"
+    }
+    ssh_account_record() {
+        ssh_account_records | awk -F: -v username="$1" '$1 == username {print; exit}'
+    }
+    ssh_effective_config_dump() {
+        if [ "$2" = tony ] && grep -q '^DenyUsers tony$' "$1" 2>/dev/null; then
+            printf '%s\n' "${STRICT_POLICY_DUMP}" 'denyusers tony'
+        else
+            printf '%s\n' "${STRICT_POLICY_DUMP}"
+        fi
+    }
+    sshd() { return 0; }
+    ssh_login_candidates() { printf '%s\n' 'root|密钥|yes'; }
+    print_header() { :; }
+    menu_div() { :; }
+    info() { :; }
+    warn() { :; }
+    error() { :; }
+    audit_action() { :; }
+    backup_config() { :; }
+    confirm_file_diff() { return 0; }
+    safety_arm() { return 0; }
+    apply_and_restart() { return 0; }
+    REVOKE_CONFIRM_LOG="$TMP/revoke-confirm-log"
+    ssh_revoke_confirm_new_session() {
+        printf '%s|%s\n' "$1" "$2" > "$REVOKE_CONFIRM_LOG"
+    }
+    revoke_user_ssh_login <<< $'tony\nroot\ntony'
+    grep -q '^DenyUsers tony$' "$SSHD_CONFIG" \
+        || { echo "Successful SSH login revocation did not persist DenyUsers" >&2; exit 1; }
+    grep -qx 'root|密钥' "$REVOKE_CONFIRM_LOG" \
+        || { echo "Successful SSH login revocation did not verify the selected fallback" >&2; exit 1; }
+)
 
 user_name_valid alice || { echo "Valid username was rejected" >&2; exit 1; }
 user_name_valid ops_admin-2 || { echo "Valid service-style username was rejected" >&2; exit 1; }

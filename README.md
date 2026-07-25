@@ -1,4 +1,4 @@
-# VPS 开荒脚本 V3.11.9
+# VPS 开荒脚本 V3.20.0
 
 > **银趴火山帮** 出品 · SSH · BBR · DDNS · Caddy · Firewall · NFT 转发
 
@@ -87,7 +87,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/TonyJsonson-8748/SSH-Hardeni
 ╚═╝╚═╝     ╚═╝╚═╝     ╚═╝  ╚═╝╚═╝  ╚═╝   ╚═╝        ╚═════╝ ╚═╝     ╚══════╝
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  VPS TOOLS  ·  V3.11.9
+  VPS TOOLS  ·  V3.20.0
   VPS 开荒脚本 · 银趴火山帮
 ────────────────────────────────────────────────────────────────
   SSH · BBR · DDNS · Caddy · Firewall · NFT · Monitor
@@ -123,14 +123,33 @@ bash <(curl -fsSL https://raw.githubusercontent.com/TonyJsonson-8748/SSH-Hardeni
 
 | 功能 | 说明 |
 |------|------|
-| 查看已有公钥 | 列出所有已授权公钥（支持 ed25519/rsa/ecdsa/sk-ssh/sk-ecdsa/dss） |
-| 添加公钥 | 粘贴公钥添加，自动去重 |
-| 删除公钥 | 按编号删除，匹配公钥主体不受备注/末尾空格影响 |
-| 生成密钥对 | Ed25519 或 RSA-4096，可直接加入服务器（去重） |
-| 设置登录方式 | 仅密钥 / 密码+密钥 / 仅密码 |
+| 查看 root 公钥 | 列出 root 的已授权公钥（支持 ed25519/rsa/ecdsa/sk-ssh/sk-ecdsa/dss） |
+| 为指定用户添加公钥 | 从 root 和可登录普通用户中选择目标，解析该用户实际生效的 `AuthorizedKeysFile`，使用 `ssh-keygen` 验证格式后写入并自动去重；用户名或公钥直接回车均可取消 |
+| 删除 root 公钥 | 按编号删除，匹配公钥主体不受备注/末尾空格影响 |
+| 生成密钥对 | Ed25519 或 RSA-4096，可选择加入 root（去重） |
+| 设置登录方式 | 仅密钥 / 密码+密钥 / 仅密码 / 严格模式 |
 | 修改 SSH 端口 | 自动备份、语法验证、防火墙放行，并同步 Fail2ban 监控端口 |
+| 撤销指定用户 SSH 登录权限 | 通过 `DenyUsers` 禁止目标用户的新 SSH 登录；应用前综合密码、密钥、键盘交互、AuthenticationMethods、Allow/Deny、账号期限和 root 策略确认仍有备用登录及管理入口 |
 
-**root 用户固定使用 `/root/.ssh/authorized_keys`**，兼容系统预装公钥。
+查看、删除和“生成后直接加入”仍操作 root 的 `/root/.ssh/authorized_keys`；“为指定用户添加公钥”则写入所选用户经 `sshd -T -C` 解析后实际生效的路径，并设置正确的属主与权限。
+
+**严格模式**会设置：
+
+```text
+PasswordAuthentication no
+PubkeyAuthentication yes
+AuthenticationMethods publickey
+PermitRootLogin no
+KbdInteractiveAuthentication no
+MaxAuthTries 3
+ClientAliveInterval 300
+ClientAliveCountMax 2
+X11Forwarding no
+```
+
+严格模式没有强制绕过入口。脚本只接受拥有完整 sudo/doas root 管理权限、可交互登录、未被 Allow/Deny 规则阻止，且存在格式有效、路径与权限安全、无前置限制选项公钥的非 root 用户。候选配置还必须同时通过 `sshd -t` 和按当前连接条件执行的 `sshd -T -C` 校验。应用后会启动 180 秒自动回滚；必须从新终端强制使用该用户的公钥成功登录，并输入用户名确认，才会取消回滚。
+
+撤销用户登录同样先生成候选配置并验证。撤权后至少要保留一个其他可登录账号，并且剩余入口中必须有可登录的 root，或拥有完整 sudo/doas root 权限的可登录用户；只具备有限 sudo 命令的账号不计作恢复入口。否则脚本拒绝执行。应用后也必须从新终端验证所选备用账号，未确认时配置会自动恢复。
 
 ---
 
@@ -666,6 +685,7 @@ tests/smoke.sh
 
 | 版本 | 主要变更 |
 |------|---------|
+| **V3.20.0** | SSH 工具集新增严格模式：仅在确认存在可管理的非 root 有效密钥入口后禁用 root、密码、键盘交互与 X11，并收紧认证次数及保活；“添加公钥”改为指定用户、支持空输入取消并用 `ssh-keygen` 验证；新增带剩余登录及管理入口校验的指定用户 SSH 登录撤权 |
 | **V3.11.9** | 修复撤销管理员后，部分 sudo 环境仅凭 `sudo -l -U` 退出码可能继续把普通用户显示为管理员；改为解析实际授权结果，并在存在其他 sudoers 来源时展示权限报告 |
 | **V3.11.8** | 修复系统安全体检将 `PermitRootLogin without-password` 误报为允许 root 密码登录；改为组合判断密码、键盘交互、root 策略、PAM 与 AuthenticationMethods，并显示实际有效值 |
 | **V3.11.7** | 用户管理新增“增加管理员”和“撤销管理员权限”：支持现有用户事务式授权，撤权时移除 sudo/wheel 组及托管 sudoers，并检测其他残留授权来源 |
