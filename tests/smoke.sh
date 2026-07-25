@@ -47,6 +47,18 @@ user_home_safe_to_remove /home/alice || { echo "Normal user home was rejected fo
     user_is_protected_account root 0 || { echo "Root account was not protected from deletion" >&2; exit 1; }
 )
 (
+    USER_PASSWD_FILE="$TMP/user-list-passwd"
+    PAUSE_LOG="$TMP/user-list-paused"
+    printf '%s\n' \
+        'root:x:0:0:root:/root:/bin/bash' \
+        'alice:x:1000:1000::/home/alice:/bin/bash' > "$USER_PASSWD_FILE"
+    ui_pause() { : > "$PAUSE_LOG"; }
+    USER_LIST_OUTPUT=$(user_list_accounts)
+    [[ "$USER_LIST_OUTPUT" = *"root"* && "$USER_LIST_OUTPUT" = *"alice"* ]] \
+        || { echo "User list did not render root and regular accounts" >&2; exit 1; }
+    [ -e "$PAUSE_LOG" ] || { echo "User list returned without pausing" >&2; exit 1; }
+)
+(
     USER_SUDOERS_DIR="$TMP/sudoers.d"
     USER_GROUP_FILE="$TMP/group"
     mkdir -p "$USER_SUDOERS_DIR"

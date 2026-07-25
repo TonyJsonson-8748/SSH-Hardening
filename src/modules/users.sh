@@ -459,8 +459,7 @@ user_list_accounts() {
         [ -f "$USER_SUDOERS_DIR/vps-tools-$USERNAME" ] && ROLE=管理员
         printf "  %-18s %-8s %-10s %-24s %s\n" "$USERNAME" "$USER_ID" "$ROLE" "$HOME_DIR" "$LOGIN_SHELL"
     done < "$USER_PASSWD_FILE"
-    echo ""
-    press_enter
+    ui_pause
 }
 
 user_management_menu() {
