@@ -19,10 +19,12 @@ self_check_update() {
         | head -1 | grep -oE 'V[0-9]+[.][0-9]+([.][0-9]+)?')
     [ -z "$CUR_VER" ] && return
     if [ "$REMOTE_VER" = "$CUR_VER" ]; then
-        rm -f /tmp/.vps_new_version 2>/dev/null
+        rm -f "$UPDATE_NOTICE_FILE" 2>/dev/null
         return
     fi
-    echo "$REMOTE_VER" > /tmp/.vps_new_version 2>/dev/null
+    mkdir -p "$VPS_DATA_DIR" 2>/dev/null || return
+    chmod 700 "$VPS_DATA_DIR" 2>/dev/null || true
+    printf '%s\n' "$REMOTE_VER" > "$UPDATE_NOTICE_FILE" 2>/dev/null
 }
 
 show_cli_help() {
@@ -143,8 +145,8 @@ main_menu() {
         status_pair "时间" "$SYS_TIME" "active"
         ui_hint "时区 $SYS_TZ"
         # 更新提示
-        if [ -f /tmp/.vps_new_version ]; then
-            local NEW_VER; NEW_VER=$(cat /tmp/.vps_new_version 2>/dev/null)
+        if [ -f "$UPDATE_NOTICE_FILE" ]; then
+            local NEW_VER; NEW_VER=$(cat "$UPDATE_NOTICE_FILE" 2>/dev/null)
             [ -n "$NEW_VER" ] && echo -e "  ${YELLOW}${BOLD}! 新版本 ${NEW_VER} 可用${NC}  ${DIM}输入 m 后选择 2 更新${NC}"
         fi
         box_sep

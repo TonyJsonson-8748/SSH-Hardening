@@ -216,7 +216,13 @@ set_login_mode() {
             fi
             safety_arm ssh_login || { rm -f "$CANDIDATE"; return 1; }
             cp "$CANDIDATE" "$SSHD_CONFIG"; rm -f "$CANDIDATE"
-            if apply_and_restart; then info "已切换：仅密钥登录 ✓"; audit_action "SSH切换为仅密钥登录" SUCCESS; safety_confirm; fi
+            if apply_and_restart; then
+                info "已切换：仅密钥登录 ✓"
+                audit_action "SSH切换为仅密钥登录" SUCCESS
+                safety_confirm
+            else
+                cancel_safety_timer
+            fi
             ;;
         2)
             backup_config
@@ -230,7 +236,13 @@ set_login_mode() {
             fi
             safety_arm ssh_login || { rm -f "$CANDIDATE"; return 1; }
             cp "$CANDIDATE" "$SSHD_CONFIG"; rm -f "$CANDIDATE"
-            if apply_and_restart; then info "已切换：密码 + 密钥均可登录 ✓"; audit_action "SSH启用密码和密钥登录" SUCCESS; safety_confirm; fi
+            if apply_and_restart; then
+                info "已切换：密码 + 密钥均可登录 ✓"
+                audit_action "SSH启用密码和密钥登录" SUCCESS
+                safety_confirm
+            else
+                cancel_safety_timer
+            fi
             ;;
         3)
             warn "仅密码登录安全性较低，建议配合强密码使用！"
@@ -248,7 +260,13 @@ set_login_mode() {
             fi
             safety_arm ssh_login || { rm -f "$CANDIDATE"; return 1; }
             cp "$CANDIDATE" "$SSHD_CONFIG"; rm -f "$CANDIDATE"
-            if apply_and_restart; then info "已切换：仅密码登录 ✓"; audit_action "SSH切换为仅密码登录" SUCCESS; safety_confirm; fi
+            if apply_and_restart; then
+                info "已切换：仅密码登录 ✓"
+                audit_action "SSH切换为仅密码登录" SUCCESS
+                safety_confirm
+            else
+                cancel_safety_timer
+            fi
             ;;
         0) return ;;
         00) safe_clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;
@@ -303,9 +321,13 @@ change_port() {
 
     # 应用并重启（失败会自动回滚到旧配置）
     apply_and_restart || {
+        cancel_safety_timer
         error "SSH 重启失败，已回滚。旧端口 ${OLD_PORT} 未改动，当前连接安全。"
         return
     }
+    if ! f2b_sync_ssh_port "$INPUT_PORT"; then
+        warn "SSH 已切换到 $INPUT_PORT，但 Fail2ban 端口同步失败，请进入 Fail2ban 菜单检查"
+    fi
     audit_action "SSH端口 ${CURRENT_PORT:-22} 修改为 $INPUT_PORT" SUCCESS
 
     echo ""

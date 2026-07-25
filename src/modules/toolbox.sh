@@ -88,11 +88,78 @@ config_backup_prune() {
     audit_action "自动清理 $REMOVE_COUNT 个旧配置备份" SUCCESS
 }
 
+safety_load_pending() {
+    local STATE_FILE="${SAFETY_STATE_FILE:-${VPS_DATA_DIR}/rollback.active}"
+    local PID="" SCRIPT="" CMDLINE=""
+    if [ -f "$STATE_FILE" ]; then
+        IFS='|' read -r PID SCRIPT < "$STATE_FILE" || true
+        if [[ "$PID" =~ ^[0-9]+$ ]] && [ -f "$SCRIPT" ] && kill -0 "$PID" 2>/dev/null; then
+            if [ -r "/proc/${PID}/cmdline" ]; then
+                CMDLINE=$(tr '\0' ' ' < "/proc/${PID}/cmdline" 2>/dev/null || true)
+                case "$CMDLINE" in
+                    *"$SCRIPT"*) ;;
+                    *) PID="" ;;
+                esac
+            fi
+        else
+            PID=""
+        fi
+        if [ -n "$PID" ]; then
+            SAFETY_PID="$PID"
+            SAFETY_SCRIPT="$SCRIPT"
+            return 0
+        fi
+        case "$SCRIPT" in
+            "${VPS_DATA_DIR}"/rollback_*.sh) rm -f "$SCRIPT" 2>/dev/null || true ;;
+        esac
+        rm -f "$STATE_FILE" 2>/dev/null || true
+    fi
+    if [ -n "${SAFETY_PID:-}" ] && [ -f "${SAFETY_SCRIPT:-}" ] \
+        && kill -0 "$SAFETY_PID" 2>/dev/null; then
+        return 0
+    fi
+    SAFETY_PID="" SAFETY_SCRIPT=""
+    return 1
+}
+
+safety_lock_acquire() {
+    local STATE_FILE="${SAFETY_STATE_FILE:-${VPS_DATA_DIR}/rollback.active}"
+    local LOCK_DIR="${STATE_FILE}.lock" LOCK_PID=""
+    if ! mkdir "$LOCK_DIR" 2>/dev/null; then
+        LOCK_PID=$(cat "$LOCK_DIR/pid" 2>/dev/null || true)
+        if [[ "$LOCK_PID" =~ ^[0-9]+$ ]] && kill -0 "$LOCK_PID" 2>/dev/null; then
+            return 1
+        fi
+        rm -f "$LOCK_DIR/pid" 2>/dev/null || return 1
+        rmdir "$LOCK_DIR" 2>/dev/null || return 1
+        mkdir "$LOCK_DIR" 2>/dev/null || return 1
+    fi
+    if ! printf '%s\n' "$$" > "$LOCK_DIR/pid"; then
+        rm -f "$LOCK_DIR/pid" 2>/dev/null || true
+        rmdir "$LOCK_DIR" 2>/dev/null || true
+        return 1
+    fi
+    SAFETY_LOCK_DIR="$LOCK_DIR"
+}
+
+safety_lock_release() {
+    local LOCK_DIR="${SAFETY_LOCK_DIR:-}" LOCK_PID=""
+    [ -n "$LOCK_DIR" ] || return 0
+    LOCK_PID=$(cat "$LOCK_DIR/pid" 2>/dev/null || true)
+    if [ "$LOCK_PID" = "$$" ]; then
+        rm -f "$LOCK_DIR/pid" 2>/dev/null || true
+        rmdir "$LOCK_DIR" 2>/dev/null || true
+    fi
+    SAFETY_LOCK_DIR=""
+}
+
 cancel_safety_timer() {
-    [ -n "${SAFETY_PID:-}" ] || return 0
+    local STATE_FILE="${SAFETY_STATE_FILE:-${VPS_DATA_DIR}/rollback.active}"
+    safety_load_pending || return 0
     kill "$SAFETY_PID" 2>/dev/null || true
     wait "$SAFETY_PID" 2>/dev/null || true
     rm -f "${SAFETY_SCRIPT:-}"
+    rm -f "$STATE_FILE" 2>/dev/null || true
     SAFETY_PID="" SAFETY_SCRIPT=""
 }
 
@@ -2868,17 +2935,35 @@ EOF
 
 safety_arm() {
     local LABEL="$1" SNAP SCRIPT UFW_STATE="inactive" FIREWALLD_STATE="inactive"
-    SNAP=$(config_backup_create "safety_${LABEL}" true) || return 1
+    local STATE_FILE="${SAFETY_STATE_FILE:-${VPS_DATA_DIR}/rollback.active}"
+    mkdir -p "$VPS_DATA_DIR" 2>/dev/null || return 1
+    chmod 700 "$VPS_DATA_DIR" 2>/dev/null || true
+    if ! safety_lock_acquire; then
+        error "另一个防断联保护操作正在进行，请稍后重试"
+        return 1
+    fi
+    if safety_load_pending; then
+        safety_lock_release
+        error "已有防断联回滚任务正在计时，请先确认上一项变更或等待其完成"
+        return 1
+    fi
+    SNAP=$(config_backup_create "safety_${LABEL}" true) || {
+        safety_lock_release
+        return 1
+    }
     command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q 'Status: active' && UFW_STATE="active"
     svc_is_active firewalld && FIREWALLD_STATE="active"
     SCRIPT="$VPS_DATA_DIR/rollback_$$_$(date +%s)_${RANDOM}.sh"
     mkdir -p "$VPS_DATA_DIR"
-    cat > "$SCRIPT" <<ROLLBACK_EOF
+    if ! cat > "$SCRIPT" <<ROLLBACK_EOF
 #!/bin/bash
 sleep 180
 tar -xzf '$SNAP' -C / >/dev/null 2>&1
 tar -tzf '$SNAP' 2>/dev/null | grep -qx 'etc/sysctl.d/99-ipv6-disable.conf' || rm -f /etc/sysctl.d/99-ipv6-disable.conf
 sshd -t >/dev/null 2>&1 && (systemctl restart ssh 2>/dev/null || systemctl restart sshd 2>/dev/null || service ssh restart 2>/dev/null || service sshd restart 2>/dev/null)
+if command -v fail2ban-client >/dev/null 2>&1; then
+    systemctl restart fail2ban >/dev/null 2>&1 || service fail2ban restart >/dev/null 2>&1 || true
+fi
 systemctl restart systemd-resolved >/dev/null 2>&1 || true
 systemctl restart NetworkManager >/dev/null 2>&1 || true
 if command -v ufw >/dev/null 2>&1; then
@@ -2890,18 +2975,39 @@ if command -v firewall-cmd >/dev/null 2>&1; then
 fi
 nft -f /etc/nftables.conf >/dev/null 2>&1 || true
 logger -t vps-tools '未确认连接，已自动恢复 $LABEL 配置'
-rm -f '$SCRIPT'
+rm -f '$SCRIPT' '$STATE_FILE'
 ROLLBACK_EOF
-    chmod 700 "$SCRIPT"
+    then
+        rm -f "$SCRIPT"
+        safety_lock_release
+        return 1
+    fi
+    if ! chmod 700 "$SCRIPT"; then
+        rm -f "$SCRIPT"
+        safety_lock_release
+        return 1
+    fi
     nohup bash "$SCRIPT" >/dev/null 2>&1 &
     SAFETY_PID=$!
     SAFETY_SCRIPT="$SCRIPT"
+    if ! printf '%s|%s\n' "$SAFETY_PID" "$SAFETY_SCRIPT" > "$STATE_FILE"; then
+        kill "$SAFETY_PID" 2>/dev/null || true
+        wait "$SAFETY_PID" 2>/dev/null || true
+        rm -f "$SAFETY_SCRIPT"
+        SAFETY_PID="" SAFETY_SCRIPT=""
+        safety_lock_release
+        error "无法保存防断联任务状态"
+        return 1
+    fi
+    chmod 600 "$STATE_FILE" 2>/dev/null || true
+    safety_lock_release
     audit_action "启动防断联保护 $LABEL" SUCCESS
     warn "防断联保护已启动：180 秒内未确认将自动恢复。"
 }
 
 safety_confirm() {
-    [ -n "${SAFETY_PID:-}" ] || return 0
+    local STATE_FILE="${SAFETY_STATE_FILE:-${VPS_DATA_DIR}/rollback.active}"
+    safety_load_pending || return 0
     echo ""
     warn "请保持当前连接，并用新终端确认 SSH 和网络正常。"
     read -rp "  确认连接正常，取消自动回滚？(y/N): " OK
@@ -2909,6 +3015,7 @@ safety_confirm() {
         kill "$SAFETY_PID" 2>/dev/null || true
         wait "$SAFETY_PID" 2>/dev/null || true
         rm -f "${SAFETY_SCRIPT:-}"
+        rm -f "$STATE_FILE" 2>/dev/null || true
         audit_action "确认连接正常，取消自动回滚" SUCCESS
         info "已取消自动回滚"
         SAFETY_PID="" SAFETY_SCRIPT=""

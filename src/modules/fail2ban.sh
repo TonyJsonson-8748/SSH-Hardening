@@ -59,6 +59,34 @@ f2b_status() {
     fi
 }
 
+f2b_effective_ssh_port() {
+    local PORT
+    PORT=$(get_config "Port" 2>/dev/null || true)
+    if ! echo "${PORT:-}" | grep -qE '^[0-9]+$' \
+        || [ "$PORT" -lt 1 ] || [ "$PORT" -gt 65535 ]; then
+        PORT=22
+    fi
+    printf '%s\n' "$PORT"
+}
+
+f2b_sync_ssh_port() {
+    local PORT="${1:-}" JAIL_LOCAL="${F2B_JAIL_LOCAL:-/etc/fail2ban/jail.local}"
+    [ -f "$JAIL_LOCAL" ] || return 0
+    if ! echo "$PORT" | grep -qE '^[0-9]+$' \
+        || [ "$PORT" -lt 1 ] || [ "$PORT" -gt 65535 ]; then
+        error "Fail2ban 端口同步失败：无效 SSH 端口 ${PORT:-空}"
+        return 1
+    fi
+    f2b_set_section_param sshd port "$PORT" || return 1
+    if [ "$(f2b_status)" = "running" ]; then
+        restart_fail2ban || {
+            error "Fail2ban 已写入端口 $PORT，但服务重启失败"
+            return 1
+        }
+    fi
+    info "Fail2ban 监控端口已同步为 $PORT ✓"
+}
+
 # 安装 fail2ban
 f2b_install() {
     print_header "安装 Fail2ban"
@@ -109,7 +137,8 @@ f2b_install() {
         info "已备份原有 jail.local"
     fi
 
-    local LOGPATH_LINE=""
+    local LOGPATH_LINE="" SSH_PORT
+    SSH_PORT=$(f2b_effective_ssh_port)
     [ "$BACKEND" = "auto" ] && LOGPATH_LINE="logpath  = %(sshd_log)s"
     # systemd backend：显式声明 journalmatch，同时匹配 Debian(ssh.service) 与
     # RedHat(sshd.service)，避免纯公钥机/不同发行版漏抓（不修改系统 filter 文件）
@@ -127,7 +156,7 @@ f2b_install() {
         echo ""
         echo "[sshd]"
         echo "enabled  = true"
-        echo "port     = ssh"
+        echo "port     = ${SSH_PORT}"
         # aggressive：纯公钥机(禁密码)下，扫描者被 publickey 拒绝/探测即断的行为
         # 默认 normal 模式不计为 failure；aggressive 才能抓到并封禁
         echo "mode     = aggressive"
@@ -365,7 +394,9 @@ f2b_edit_config() {
         1)
             if [ ! -f "$JAIL_LOCAL" ]; then
                 warn "jail.local 不存在，正在创建默认模板..."
-                cat > "$JAIL_LOCAL" << 'JAILEOF'
+                local SSH_PORT
+                SSH_PORT=$(f2b_effective_ssh_port)
+                cat > "$JAIL_LOCAL" <<JAILEOF
 [DEFAULT]
 bantime  = 3600
 findtime = 600
@@ -374,7 +405,7 @@ backend  = auto
 
 [sshd]
 enabled  = true
-port     = ssh
+port     = ${SSH_PORT}
 logpath  = %(sshd_log)s
 JAILEOF
                 info "已创建 $JAIL_LOCAL"

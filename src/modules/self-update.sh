@@ -8,6 +8,7 @@ MANIFEST_URL="https://raw.githubusercontent.com/chnnic/SSH-Hardening/refs/heads/
 GITHUB_REF_URL="https://api.github.com/repos/chnnic/SSH-Hardening/git/ref/heads/main"
 LOCAL_BIN_DIR="${LOCAL_BIN_DIR:-/usr/local/bin}"
 LOCAL_SCRIPT="${LOCAL_SCRIPT:-${LOCAL_BIN_DIR}/vps-tools}"
+UPDATE_NOTICE_FILE="${UPDATE_NOTICE_FILE:-${VPS_DATA_DIR}/update_available}"
 
 file_sha256() {
     if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | awk '{print $1}'
@@ -153,9 +154,6 @@ self_install() {
         }
         if self_fetch_script "$DOWNLOAD_TMP"; then
             SOURCE="$DOWNLOAD_TMP"
-        elif self_script_valid /tmp/ssh_hardening.sh; then
-            warn "下载失败，改用已校验的本地缓存"
-            SOURCE="/tmp/ssh_hardening.sh"
         else
             rm -f "$DOWNLOAD_TMP"
             error "无法获取完整脚本，请检查网络"
@@ -196,7 +194,21 @@ self_update() {
     echo -e "  ${DIM}${SCRIPT_URL}${NC}"
     echo ""
 
-    local TMP_FILE CHECKSUM_FILE MANIFEST_FILE; TMP_FILE="/tmp/vps_update_$$.sh"; CHECKSUM_FILE="/tmp/vps_update_$$.sha256"; MANIFEST_FILE="/tmp/vps_update_$$.manifest.json"
+    local TMP_FILE CHECKSUM_FILE MANIFEST_FILE
+    TMP_FILE=$(mktemp "${TMPDIR:-/tmp}/vps-update-script.XXXXXX") || {
+        error "无法创建更新临时文件"
+        return 1
+    }
+    CHECKSUM_FILE=$(mktemp "${TMPDIR:-/tmp}/vps-update-checksum.XXXXXX") || {
+        rm -f "$TMP_FILE"
+        error "无法创建更新校验临时文件"
+        return 1
+    }
+    MANIFEST_FILE=$(mktemp "${TMPDIR:-/tmp}/vps-update-manifest.XXXXXX") || {
+        rm -f "$TMP_FILE" "$CHECKSUM_FILE"
+        error "无法创建更新清单临时文件"
+        return 1
+    }
 
     info "正在下载最新版本..."
     local TRY EXPECTED_HASH ACTUAL_HASH DOWNLOAD_OK SCRIPT_FETCH_URL CHECKSUM_FETCH_URL MANIFEST_FETCH_URL TS REMOTE_SHA
@@ -206,6 +218,7 @@ self_update() {
         info "已锁定 GitHub main commit：${REMOTE_SHA:0:12}"
     fi
     for TRY in 1 2 3 4 5; do
+        EXPECTED_HASH="" ACTUAL_HASH=""
         TS=$(date +%s)
         case "$TRY" in
             1)
@@ -240,7 +253,9 @@ self_update() {
                 MANIFEST_FETCH_URL="https://cdn.jsdelivr.net/gh/chnnic/SSH-Hardening@main/SSH-Hardening.manifest.json"
                 ;;
         esac
-        rm -f "$TMP_FILE" "$CHECKSUM_FILE" "$MANIFEST_FILE"
+        : > "$TMP_FILE"
+        : > "$CHECKSUM_FILE"
+        : > "$MANIFEST_FILE"
         if curl -fsSL --retry 2 --retry-delay 1 -H 'Cache-Control: no-cache' -H 'Pragma: no-cache' \
             "$SCRIPT_FETCH_URL" -o "$TMP_FILE" 2>/dev/null \
             && curl -fsSL --retry 2 --retry-delay 1 -H 'Cache-Control: no-cache' -H 'Pragma: no-cache' \
@@ -305,7 +320,6 @@ self_update() {
         audit_action "脚本更新安装失败" FAILED
         return 1
     fi
-    cp "$TMP_FILE" /tmp/ssh_hardening.sh 2>/dev/null
     rm -f "$TMP_FILE"
 
     # 确保 v 命令还在
@@ -333,7 +347,7 @@ self_update() {
         fi
     done
     # 清除更新提示，避免新版本启动后还显示旧提示
-    rm -f /tmp/.vps_new_version 2>/dev/null
+    rm -f "$UPDATE_NOTICE_FILE" 2>/dev/null
     warn "即将用新版本重启脚本..."
     sleep 1
     exec "$LOCAL_SCRIPT"

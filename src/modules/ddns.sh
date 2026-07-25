@@ -35,6 +35,55 @@ ddns_sed_escape() {
     printf '%s' "$1" | sed 's/[&|\\]/\\&/g'
 }
 
+ddns_install_transaction_begin() {
+    local DIR SPEC NAME PATH
+    DIR=$(mktemp -d "${TMPDIR:-/tmp}/vps-ddns-install.XXXXXX") || return 1
+    chmod 700 "$DIR" 2>/dev/null || true
+    for SPEC in \
+        "script|$DDNS_SCRIPT" \
+        "token|$DDNS_TOKEN_FILE" \
+        "huawei_key|$DDNS_HUAWEI_KEY_FILE" \
+        "zone|$DDNS_ZONE_FILE"; do
+        NAME=${SPEC%%|*}
+        PATH=${SPEC#*|}
+        if [ -e "$PATH" ] || [ -L "$PATH" ]; then
+            cp -a "$PATH" "$DIR/$NAME" || { rm -rf "$DIR"; return 1; }
+        else
+            : > "$DIR/$NAME.absent" || { rm -rf "$DIR"; return 1; }
+        fi
+    done
+    printf '%s\n' "$DIR"
+}
+
+ddns_install_transaction_restore() {
+    local DIR="$1" SPEC NAME PATH
+    [ -d "$DIR" ] || return 1
+    for SPEC in \
+        "script|$DDNS_SCRIPT" \
+        "token|$DDNS_TOKEN_FILE" \
+        "huawei_key|$DDNS_HUAWEI_KEY_FILE" \
+        "zone|$DDNS_ZONE_FILE"; do
+        NAME=${SPEC%%|*}
+        PATH=${SPEC#*|}
+        if [ -f "$DIR/$NAME.absent" ]; then
+            rm -f "$PATH" || { rm -rf "$DIR"; return 1; }
+        elif [ -e "$DIR/$NAME" ] || [ -L "$DIR/$NAME" ]; then
+            mkdir -p "$(dirname "$PATH")" || { rm -rf "$DIR"; return 1; }
+            cp -a "$DIR/$NAME" "$PATH" || { rm -rf "$DIR"; return 1; }
+        else
+            rm -rf "$DIR"
+            return 1
+        fi
+    done
+    rm -rf "$DIR"
+}
+
+ddns_install_transaction_commit() {
+    local DIR="$1"
+    [ -n "$DIR" ] || return 0
+    rm -rf "$DIR"
+}
+
 ddns_domain_dot() {
     local domain="$1"
     case "$domain" in
@@ -886,13 +935,23 @@ ddns_install_cloudflare() {
         ddns_cf_cleanup_cross_record "$ZONE_ID" "$DDNS_TOKEN" A "$DDNS_DOMAIN6" "IPv6 域名上的额外 A 记录" || true
     fi
 
+    local DDNS_TX_DIR
+    DDNS_TX_DIR=$(ddns_install_transaction_begin) || {
+        error "无法创建 DDNS 配置事务快照"
+        return 1
+    }
+
     # 保存配置
-    echo "$DDNS_TOKEN" > "$DDNS_TOKEN_FILE"
-    chmod 600 "$DDNS_TOKEN_FILE"
+    if ! printf '%s\n' "$DDNS_TOKEN" > "$DDNS_TOKEN_FILE" \
+        || ! chmod 600 "$DDNS_TOKEN_FILE"; then
+        ddns_install_transaction_restore "$DDNS_TX_DIR" || true
+        error "保存 Cloudflare Token 失败，已恢复原配置"
+        return 1
+    fi
     touch "$DDNS_LOG" 2>/dev/null || { DDNS_LOG="$HOME/ddns.log"; touch "$DDNS_LOG"; }
     chmod 644 "$DDNS_LOG" 2>/dev/null || true
     local DDNS_PRIMARY_DOMAIN="${DDNS_DOMAIN4:-$DDNS_DOMAIN6}"
-    {
+    if ! {
         echo "PROVIDER=cloudflare"
         echo "DOMAIN=${DDNS_PRIMARY_DOMAIN}"
         echo "DOMAIN4=${DDNS_DOMAIN4}"
@@ -905,7 +964,11 @@ ddns_install_cloudflare() {
         echo "TTL=${DDNS_TTL}"
         echo "INTERVAL_MIN=${DDNS_INTERVAL_MIN}"
         echo "LOG=${DDNS_LOG}"
-    } > "$DDNS_ZONE_FILE"
+    } > "$DDNS_ZONE_FILE"; then
+        ddns_install_transaction_restore "$DDNS_TX_DIR" || true
+        error "保存 Cloudflare DDNS 配置失败，已恢复原配置"
+        return 1
+    fi
 
     # 生成 DDNS 执行脚本
     cat > "$DDNS_SCRIPT" << 'DDNS_INNER'
@@ -1266,15 +1329,19 @@ DDNS_INNER
     DDNS_DOMAIN6_ESC=$(ddns_sed_escape "$DDNS_DOMAIN6")
     DDNS_ZONE_ESC=$(ddns_sed_escape "$DDNS_ZONE_NAME")
     DDNS_LOG_ESC=$(ddns_sed_escape "$DDNS_LOG")
-    sed -i "s|__DOMAIN4__|${DDNS_DOMAIN4_ESC}|g" "$DDNS_SCRIPT"
-    sed -i "s|__DOMAIN6__|${DDNS_DOMAIN6_ESC}|g" "$DDNS_SCRIPT"
-    sed -i "s|__ZONE__|${DDNS_ZONE_ESC}|g" "$DDNS_SCRIPT"
-    sed -i "s|__ENABLE_A__|${DDNS_ENABLE_A}|g" "$DDNS_SCRIPT"
-    sed -i "s|__ENABLE_AAAA__|${DDNS_ENABLE_AAAA}|g" "$DDNS_SCRIPT"
-    sed -i "s|__PROXIED__|${DDNS_PROXIED}|g" "$DDNS_SCRIPT"
-    sed -i "s|__TTL__|${DDNS_TTL}|g" "$DDNS_SCRIPT"
-    sed -i "s|__LOG__|${DDNS_LOG_ESC}|g" "$DDNS_SCRIPT"
-    chmod 700 "$DDNS_SCRIPT"
+    if ! sed -i "s|__DOMAIN4__|${DDNS_DOMAIN4_ESC}|g" "$DDNS_SCRIPT" \
+        || ! sed -i "s|__DOMAIN6__|${DDNS_DOMAIN6_ESC}|g" "$DDNS_SCRIPT" \
+        || ! sed -i "s|__ZONE__|${DDNS_ZONE_ESC}|g" "$DDNS_SCRIPT" \
+        || ! sed -i "s|__ENABLE_A__|${DDNS_ENABLE_A}|g" "$DDNS_SCRIPT" \
+        || ! sed -i "s|__ENABLE_AAAA__|${DDNS_ENABLE_AAAA}|g" "$DDNS_SCRIPT" \
+        || ! sed -i "s|__PROXIED__|${DDNS_PROXIED}|g" "$DDNS_SCRIPT" \
+        || ! sed -i "s|__TTL__|${DDNS_TTL}|g" "$DDNS_SCRIPT" \
+        || ! sed -i "s|__LOG__|${DDNS_LOG_ESC}|g" "$DDNS_SCRIPT" \
+        || ! chmod 700 "$DDNS_SCRIPT"; then
+        ddns_install_transaction_restore "$DDNS_TX_DIR" || true
+        error "生成 Cloudflare DDNS 脚本失败，已恢复原配置"
+        return 1
+    fi
 
     echo ""
     info "立即执行一次测试..."
@@ -1282,10 +1349,17 @@ DDNS_INNER
         tail -1 "$DDNS_LOG" 2>/dev/null | while IFS= read -r l; do echo -e "  ${GREEN}$l${NC}"; done
     else
         error "执行失败，请查看日志"
+        ddns_install_transaction_restore "$DDNS_TX_DIR" || true
+        warn "Cloudflare DDNS 新配置未通过测试，已恢复原配置"
         return 1
     fi
     local CRON_JOB; CRON_JOB="$(ddns_cron_expr "$DDNS_INTERVAL_MIN") ${DDNS_SCRIPT} >> ${DDNS_LOG} 2>&1 ${DDNS_CRON_MARKER}"
-    ddns_install_cron_job "$CRON_JOB" || return 1
+    if ! ddns_install_cron_job "$CRON_JOB"; then
+        ddns_install_transaction_restore "$DDNS_TX_DIR" || true
+        error "写入 DDNS 定时任务失败，已恢复原配置"
+        return 1
+    fi
+    ddns_install_transaction_commit "$DDNS_TX_DIR"
     info "crontab 已设置（每 ${DDNS_INTERVAL_MIN} 分钟自动更新）✓"
     echo ""
     info "DDNS 配置完成 ✓"
@@ -1407,16 +1481,25 @@ ddns_install_huawei() {
     [ -z "$CONFIRM" ] && CONFIRM="y"
     if ! echo "$CONFIRM" | grep -qiE '^y(es)?$'; then warn "已取消"; return; fi
 
-    {
+    local DDNS_TX_DIR
+    DDNS_TX_DIR=$(ddns_install_transaction_begin) || {
+        error "无法创建 DDNS 配置事务快照"
+        return 1
+    }
+
+    if ! {
         echo "AK=${DDNS_HW_AK}"
         echo "SK=${DDNS_HW_SK}"
-    } > "$DDNS_HUAWEI_KEY_FILE"
-    chmod 600 "$DDNS_HUAWEI_KEY_FILE"
+    } > "$DDNS_HUAWEI_KEY_FILE" || ! chmod 600 "$DDNS_HUAWEI_KEY_FILE"; then
+        ddns_install_transaction_restore "$DDNS_TX_DIR" || true
+        error "保存华为云 AK/SK 失败，已恢复原配置"
+        return 1
+    fi
 
     touch "$DDNS_LOG" 2>/dev/null || { DDNS_LOG="$HOME/ddns.log"; touch "$DDNS_LOG"; }
     chmod 644 "$DDNS_LOG" 2>/dev/null || true
     local DDNS_PRIMARY_DOMAIN="${DDNS_DOMAIN4:-$DDNS_DOMAIN6}"
-    {
+    if ! {
         echo "PROVIDER=huawei"
         echo "DOMAIN=${DDNS_PRIMARY_DOMAIN}"
         echo "DOMAIN4=${DDNS_DOMAIN4}"
@@ -1429,7 +1512,11 @@ ddns_install_huawei() {
         echo "TTL=${DDNS_TTL}"
         echo "INTERVAL_MIN=${DDNS_INTERVAL_MIN}"
         echo "LOG=${DDNS_LOG}"
-    } > "$DDNS_ZONE_FILE"
+    } > "$DDNS_ZONE_FILE"; then
+        ddns_install_transaction_restore "$DDNS_TX_DIR" || true
+        error "保存华为云 DDNS 配置失败，已恢复原配置"
+        return 1
+    fi
 
     cat > "$DDNS_SCRIPT" << 'DDNS_HUAWEI_INNER'
 #!/bin/bash
@@ -1921,15 +2008,19 @@ DDNS_HUAWEI_INNER
     DDNS_ZONE_ESC=$(ddns_sed_escape "$DDNS_ZONE_NAME")
     DDNS_ENDPOINT_ESC=$(ddns_sed_escape "$DDNS_ENDPOINT")
     DDNS_LOG_ESC=$(ddns_sed_escape "$DDNS_LOG")
-    sed -i "s|__DOMAIN4__|${DDNS_DOMAIN4_ESC}|g" "$DDNS_SCRIPT"
-    sed -i "s|__DOMAIN6__|${DDNS_DOMAIN6_ESC}|g" "$DDNS_SCRIPT"
-    sed -i "s|__ZONE__|${DDNS_ZONE_ESC}|g" "$DDNS_SCRIPT"
-    sed -i "s|__ENDPOINT__|${DDNS_ENDPOINT_ESC}|g" "$DDNS_SCRIPT"
-    sed -i "s|__ENABLE_A__|${DDNS_ENABLE_A}|g" "$DDNS_SCRIPT"
-    sed -i "s|__ENABLE_AAAA__|${DDNS_ENABLE_AAAA}|g" "$DDNS_SCRIPT"
-    sed -i "s|__TTL__|${DDNS_TTL}|g" "$DDNS_SCRIPT"
-    sed -i "s|__LOG__|${DDNS_LOG_ESC}|g" "$DDNS_SCRIPT"
-    chmod 700 "$DDNS_SCRIPT"
+    if ! sed -i "s|__DOMAIN4__|${DDNS_DOMAIN4_ESC}|g" "$DDNS_SCRIPT" \
+        || ! sed -i "s|__DOMAIN6__|${DDNS_DOMAIN6_ESC}|g" "$DDNS_SCRIPT" \
+        || ! sed -i "s|__ZONE__|${DDNS_ZONE_ESC}|g" "$DDNS_SCRIPT" \
+        || ! sed -i "s|__ENDPOINT__|${DDNS_ENDPOINT_ESC}|g" "$DDNS_SCRIPT" \
+        || ! sed -i "s|__ENABLE_A__|${DDNS_ENABLE_A}|g" "$DDNS_SCRIPT" \
+        || ! sed -i "s|__ENABLE_AAAA__|${DDNS_ENABLE_AAAA}|g" "$DDNS_SCRIPT" \
+        || ! sed -i "s|__TTL__|${DDNS_TTL}|g" "$DDNS_SCRIPT" \
+        || ! sed -i "s|__LOG__|${DDNS_LOG_ESC}|g" "$DDNS_SCRIPT" \
+        || ! chmod 700 "$DDNS_SCRIPT"; then
+        ddns_install_transaction_restore "$DDNS_TX_DIR" || true
+        error "生成华为云 DDNS 脚本失败，已恢复原配置"
+        return 1
+    fi
 
     echo ""
     info "立即执行一次测试..."
@@ -1937,10 +2028,17 @@ DDNS_HUAWEI_INNER
         tail -1 "$DDNS_LOG" 2>/dev/null | while IFS= read -r l; do echo -e "  ${GREEN}$l${NC}"; done
     else
         error "执行失败，请查看日志"
+        ddns_install_transaction_restore "$DDNS_TX_DIR" || true
+        warn "华为云 DDNS 新配置未通过测试，已恢复原配置"
         return 1
     fi
     local CRON_JOB; CRON_JOB="$(ddns_cron_expr "$DDNS_INTERVAL_MIN") ${DDNS_SCRIPT} >> ${DDNS_LOG} 2>&1 ${DDNS_CRON_MARKER}"
-    ddns_install_cron_job "$CRON_JOB" || return 1
+    if ! ddns_install_cron_job "$CRON_JOB"; then
+        ddns_install_transaction_restore "$DDNS_TX_DIR" || true
+        error "写入 DDNS 定时任务失败，已恢复原配置"
+        return 1
+    fi
+    ddns_install_transaction_commit "$DDNS_TX_DIR"
     info "crontab 已设置（每 ${DDNS_INTERVAL_MIN} 分钟自动更新）✓"
     echo ""
     info "华为云 DDNS 配置完成 ✓"

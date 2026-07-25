@@ -8,14 +8,14 @@ export VPS_TOOLS_TEST_MODE=1
 # shellcheck source=/dev/null
 source "$ROOT/SSH-Hardening.sh"
 
-for fn in systemd_available show_cli_help main_menu ssh_tools_menu ssh_key_count fail2ban_menu bbr_menu firewall_menu dns_menu \
+for fn in systemd_available show_cli_help main_menu ssh_tools_menu ssh_key_count fail2ban_menu f2b_effective_ssh_port f2b_sync_ssh_port bbr_menu firewall_menu dns_menu \
     ip_config_menu caddy_menu caddy_site_records caddy_site_count nft_menu ddns_menu ddns_install ddns_install_cloudflare ddns_install_huawei ddns_run_now ddns_view_logs ddns_status ddns_share_link_tool \
-    ddns_provider ddns_provider_label ddns_sed_escape ddns_domain_dot ddns_ipv6_subdomain_default ddns_cf_exact_records ddns_cf_record_ensure ddns_cf_cleanup_cross_record \
+    ddns_provider ddns_provider_label ddns_sed_escape ddns_install_transaction_begin ddns_install_transaction_restore ddns_install_transaction_commit ddns_domain_dot ddns_ipv6_subdomain_default ddns_cf_exact_records ddns_cf_record_ensure ddns_cf_cleanup_cross_record \
     ddns_interval_normalize ddns_interval_min ddns_cron_expr ddns_cron_without_managed ddns_prompt_interval \
     ddns_cfg_enable_a ddns_cfg_enable_aaaa ddns_cfg_domain4 ddns_cfg_domain6 ddns_primary_domain ddns_mode_label ddns_build_domain ddns_replace_link_host \
     ddns_latest_log_line ddns_latest_change_log_line ddns_line_time ddns_line_result_ip ddns_newer_line ddns_change_matches_status ddns_record_status_line ddns_record_change_line ddns_print_record_summary \
     system_toolbox_menu \
-    resource_health_check system_update_manager system_hostname_apply config_backup_create self_update docker_menu change_port; do
+    resource_health_check system_update_manager system_hostname_apply config_backup_create safety_load_pending safety_lock_acquire safety_lock_release self_update docker_menu change_port; do
     declare -F "$fn" >/dev/null || { echo "Missing function: $fn" >&2; exit 1; }
 done
 
@@ -425,6 +425,7 @@ CF_DUPLICATE_RECORDS='{"success":true,"result":[{"id":"a-1","type":"A","name":"d
     mkdir -p "$DDNS_TEST/state"
     DDNS_SCRIPT="$DDNS_TEST/ddns.sh"
     DDNS_TOKEN_FILE="$DDNS_TEST/cf_token"
+    DDNS_HUAWEI_KEY_FILE="$DDNS_TEST/huawei_key"
     DDNS_LOG="$DDNS_TEST/ddns.log"
     DDNS_ZONE_FILE="$DDNS_TEST/cf_zone"
     DDNS_STATE_DIR="$DDNS_TEST/state"

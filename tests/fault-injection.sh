@@ -163,12 +163,97 @@ EOF
         || { echo "Fail2ban DEFAULT update changed sshd override" >&2; exit 1; }
 )
 
+# Fail2ban must follow the effective sshd port instead of the /etc/services ssh alias.
+(
+    export F2B_JAIL_LOCAL="$TMP/jail-port.local"
+    cat > "$F2B_JAIL_LOCAL" <<'EOF'
+[DEFAULT]
+bantime = 3600
+[sshd]
+enabled = true
+port = 22
+EOF
+    get_config() { echo 2222; }
+    fail2ban-client() { return 0; }
+    f2b_status() { echo stopped; }
+    [ "$(f2b_effective_ssh_port)" = 2222 ] || { echo "Fail2ban did not read the effective SSH port" >&2; exit 1; }
+    f2b_sync_ssh_port 2222 >/dev/null
+    [ "$(awk '/^\[sshd\]/{s=1;next} /^\[/{s=0} s && /^port/{print $3}' "$F2B_JAIL_LOCAL")" = 2222 ] \
+        || { echo "Fail2ban SSH port synchronization failed" >&2; exit 1; }
+)
+
+# A second safety timer must be rejected while the first rollback is pending.
+(
+    SAFETY_STATE_FILE="$TMP/safety.active"
+    SAFETY_SCRIPT="$TMP/rollback-active.sh"
+    : > "$SAFETY_SCRIPT"
+    SAFETY_PID=$$
+    ! safety_arm second_change >/dev/null 2>&1 \
+        || { echo "A second safety rollback replaced the active timer" >&2; exit 1; }
+    [ "$SAFETY_PID" = "$$" ] || { echo "Active safety PID was overwritten" >&2; exit 1; }
+)
+(
+    SAFETY_STATE_FILE="$TMP/safety-lock.active"
+    mkdir "${SAFETY_STATE_FILE}.lock"
+    printf '%s\n' "$$" > "${SAFETY_STATE_FILE}.lock/pid"
+    ! safety_arm concurrent_change >/dev/null 2>&1 \
+        || { echo "Safety rollback ignored a concurrent setup operation" >&2; exit 1; }
+)
+grep -Fq 'restart fail2ban' "$ROOT/src/modules/toolbox.sh" \
+    || { echo "Safety rollback does not reload restored Fail2ban configuration" >&2; exit 1; }
+
 # DDNS cron write errors must propagate.
 (
     crontab() { return 1; }
     ! ddns_install_cron_job '* * * * * /root/ddns.sh' >/dev/null 2>&1 \
         || { echo "DDNS cron helper hid a write failure" >&2; exit 1; }
 )
+
+# Failed DDNS reconfiguration must restore the previous provider, script and credentials.
+(
+    DDNS_TEST="$TMP/ddns-transaction"
+    mkdir -p "$DDNS_TEST/state"
+    DDNS_SCRIPT="$DDNS_TEST/ddns.sh"
+    DDNS_TOKEN_FILE="$DDNS_TEST/cf_token"
+    DDNS_HUAWEI_KEY_FILE="$DDNS_TEST/huawei_key"
+    DDNS_ZONE_FILE="$DDNS_TEST/zone"
+    DDNS_LOG="$DDNS_TEST/ddns.log"
+    DDNS_STATE_DIR="$DDNS_TEST/state"
+    printf 'old-script\n' > "$DDNS_SCRIPT"
+    printf 'old-token\n' > "$DDNS_TOKEN_FILE"
+    printf 'old-huawei-key\n' > "$DDNS_HUAWEI_KEY_FILE"
+    printf 'PROVIDER=cloudflare\n' > "$DDNS_ZONE_FILE"
+    ddns_ensure_cron() { return 0; }
+    ddns_start_cron_service() { return 0; }
+    bash() { return 1; }
+    if ddns_install_huawei <<'EOF' >/dev/null 2>&1; then
+example.com
+
+
+home
+
+test-ak
+test-sk
+
+
+
+EOF
+        echo "Broken Huawei DDNS configuration unexpectedly succeeded" >&2
+        exit 1
+    fi
+    grep -qx old-script "$DDNS_SCRIPT" || { echo "DDNS rollback did not restore the old script" >&2; exit 1; }
+    grep -qx old-token "$DDNS_TOKEN_FILE" || { echo "DDNS rollback did not restore the Cloudflare token" >&2; exit 1; }
+    grep -qx old-huawei-key "$DDNS_HUAWEI_KEY_FILE" || { echo "DDNS rollback did not restore the Huawei credentials" >&2; exit 1; }
+    grep -qx PROVIDER=cloudflare "$DDNS_ZONE_FILE" || { echo "DDNS rollback did not restore the provider config" >&2; exit 1; }
+)
+
+# Installation and update paths must not trust or recreate fixed files in the shared /tmp directory.
+! grep -Fq '/tmp/ssh_hardening.sh' "$ROOT/src/modules/self-update.sh" \
+    || { echo "Installer still trusts the shared /tmp cache" >&2; exit 1; }
+! grep -Fq '/tmp/vps_update_$$' "$ROOT/src/modules/self-update.sh" \
+    || { echo "Updater still uses predictable temporary files" >&2; exit 1; }
+! grep -Fq '/tmp/.vps_new_version' "$ROOT/src/modules/main.sh" "$ROOT/src/modules/self-update.sh" \
+    || { echo "Update notice still uses a shared /tmp path" >&2; exit 1; }
 
 # Cross-type Cloudflare records must never be deleted without explicit confirmation.
 (

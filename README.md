@@ -1,4 +1,4 @@
-# VPS 开荒脚本 V3.10.9
+# VPS 开荒脚本 V3.10.10
 
 > **银趴火山帮** 出品 · SSH · BBR · DDNS · Caddy · Firewall · NFT 转发
 
@@ -74,7 +74,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/chnnic/SSH-Hardening/refs/he
 ╚═╝╚═╝     ╚═╝╚═╝     ╚═╝  ╚═╝╚═╝  ╚═╝   ╚═╝        ╚═════╝ ╚═╝     ╚══════╝
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  VPS TOOLS  ·  V3.10.9
+  VPS TOOLS  ·  V3.10.10
   VPS 开荒脚本 · 银趴火山帮
 ────────────────────────────────────────────────────────────────
   SSH · BBR · DDNS · Caddy · Firewall · NFT · Monitor
@@ -115,7 +115,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/chnnic/SSH-Hardening/refs/he
 | 删除公钥 | 按编号删除，匹配公钥主体不受备注/末尾空格影响 |
 | 生成密钥对 | Ed25519 或 RSA-4096，可直接加入服务器（去重） |
 | 设置登录方式 | 仅密钥 / 密码+密钥 / 仅密码 |
-| 修改 SSH 端口 | 自动备份、语法验证、防火墙同步放行 |
+| 修改 SSH 端口 | 自动备份、语法验证、防火墙放行，并同步 Fail2ban 监控端口 |
 
 **root 用户固定使用 `/root/.ssh/authorized_keys`**，兼容系统预装公钥。
 
@@ -124,6 +124,8 @@ bash <(curl -fsSL https://raw.githubusercontent.com/chnnic/SSH-Hardening/refs/he
 ### 2. Fail2ban 管理
 
 自动封禁 SSH 暴力破解 IP。安装时自动检测 backend，支持 `python3-systemd` / `rsyslog` / `auto` 多种方式。
+
+安装和修改 SSH 端口时会读取 `sshd` 的实际监听端口，并同步写入 `[sshd] port`，避免自定义端口后只封禁默认的 TCP 22。
 
 | 功能 | 说明 |
 |------|------|
@@ -255,6 +257,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/chnnic/SSH-Hardening/refs/he
 - **IPv4 格式严格校验**：纯 IPv6 机器自动识别不会误发
 - **IPv6 独立运行**：仅启用 AAAA 时不会因为无 IPv4 而退出
 - **二次校验**：检测到 IP 变化时再查询一次，防止误推
+- **事务式重配置**：新凭据或脚本测试失败时自动恢复原服务商、凭据和执行脚本，已有 cron 不会接管失败配置
 - **日志自动轮转**：超过 500 行自动只保留最近 500 条
 - 日志：`/var/log/ddns.log`
 
@@ -521,8 +524,9 @@ DNS 设置会自动识别 `systemd-resolved`、NetworkManager、resolvconf 或�
 | HTTP 时间同步 | 标注未经认证，可被中间人伪造 |
 | 内核支持检测 | BBR 应用前检测内核版本和模块 |
 | 容器权限检测 | 自动识别无特权容器，sysctl 操作受限时友好提示 |
-| 防断联保护 | 高风险网络修改 180 秒未确认自动回滚 |
-| 更新完整性 | 下载脚本必须匹配仓库中的 SHA256 校验文件 |
+| 防断联保护 | 高风险网络修改 180 秒未确认自动回滚；同一时间只允许一个任务，状态跨脚本进程保存 |
+| 更新完整性 | 下载脚本必须匹配仓库中的 SHA256 校验文件；临时文件使用 `mktemp`，不信任共享 `/tmp` 缓存 |
+| DDNS 配置事务 | 重配置失败自动恢复旧凭据、服务商配置和执行脚本 |
 
 ---
 
@@ -547,6 +551,8 @@ DNS 设置会自动识别 `systemd-resolved`、NetworkManager、resolvconf 或�
 | `/usr/local/bin/v` `/V` | 快捷命令（软链接） |
 | `/var/lib/vps-tools/backups` | 统一配置备份与防断联快照 |
 | `/var/lib/vps-tools/versions` | 更新前的历史脚本版本 |
+| `/var/lib/vps-tools/rollback.active` | 当前防断联回滚任务状态（600） |
+| `/var/lib/vps-tools/update_available` | 后台版本检测结果 |
 | `/var/log/vps-tools-audit.log` | 脚本操作审计日志（600） |
 | `SSH-Hardening.sh.sha256` | 自更新完整性校验值 |
 | `/etc/sysctl.d/99-vps-bbr.conf` | BBR TCP 配置 |
@@ -591,6 +597,8 @@ tests/fault-injection.sh
 
 GitHub Actions 还会在 Debian、Ubuntu、Alpine、Rocky Linux 容器中加载生成脚本并执行冒烟测试。
 
+仓库通过 `.gitattributes` 强制 Bash、SHA256、JSON、YAML 和 Markdown 使用 LF 行尾，并统一构建器在 Windows/Linux 下的 SHA256 文件格式；Windows 上即使启用 `core.autocrlf=true`，发布脚本也不会被转换为 CRLF。已有旧工作区可在提交本地改动后重新检出，以应用新的行尾规则。
+
 ### BBR 独立仓同步
 
 `src/modules/bbr.sh` 同时发布到 [chnnic/BBR-tune](https://github.com/chnnic/BBR-tune)。修改 BBR 行为或其依赖的 core helper 后，必须在同一批工作中同步并推送独立仓：
@@ -610,6 +618,7 @@ tests/smoke.sh
 
 | 版本 | 主要变更 |
 |------|---------|
+| **V3.10.10** | Fail2ban 安装及 SSH 改端口时同步实际监听端口；自更新改用安全临时文件并移除共享 `/tmp` 脚本缓存；防断联回滚任务增加持久单实例保护；Cloudflare/华为云 DDNS 重配置失败自动恢复旧配置；新增 `.gitattributes` 固定 Linux 发布文件为 LF |
 | **V3.10.9** | 修复未配置公钥时首页和 SSH 工具集显示 `0` 后又换行显示第二个 `0`：保留 `grep -c` 的零计数输出，空文件或文件不存在时统一返回单个 `0` |
 | **V3.10.8** | 修复 Caddy 站点列表在 Tab 缩进或嵌套 `reverse_proxy` / `header_up` / `transport` 块下误把内部指令当作站点、真实后端显示不完整及站点计数错误；查看、删除与计数统一按顶层配置块解析，并正确保留多域名站点标题 |
 | **V3.10.7** | 续费提醒新增可选的“到期次日存活自动顺延”：每月固定日或循环续费到期后，后台监控仍运行即推定已续费，按原周期推进日期并记录历史、审计，已配置 Telegram 时发送通知；默认关闭且明确提示服务商宽限期可能造成误判 |

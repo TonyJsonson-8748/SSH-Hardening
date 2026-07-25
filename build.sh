@@ -35,7 +35,8 @@ trap 'rm -f "$TMP"' EXIT
 
 for part in "${PARTS[@]}"; do
     [ -f "$ROOT/$part" ] || { echo "Missing source part: $part" >&2; exit 1; }
-    cat "$ROOT/$part" >> "$TMP"
+    # Git Bash may expose CRLF files in older Windows worktrees. Always publish Linux LF.
+    LC_ALL=C sed 's/\r$//' "$ROOT/$part" >> "$TMP"
 done
 
 bash -n "$TMP"
@@ -54,13 +55,11 @@ trap - EXIT
 chmod 755 "$OUTPUT"
 
 if command -v sha256sum >/dev/null 2>&1; then
-    (cd "$ROOT" && sha256sum SSH-Hardening.sh > SSH-Hardening.sh.sha256)
+    HASH=$(sha256sum "$OUTPUT" | awk '{print $1}')
 else
     HASH=$(shasum -a 256 "$OUTPUT" | awk '{print $1}')
-    printf '%s  SSH-Hardening.sh\n' "$HASH" > "$CHECKSUM"
 fi
-
-HASH=$(awk 'NR==1{print $1}' "$CHECKSUM")
+printf '%s  SSH-Hardening.sh\n' "$HASH" > "$CHECKSUM"
 VERSION=$(grep -oE 'V[0-9]+\.[0-9]+\.[0-9]+|V[0-9]+\.[0-9]+' "$OUTPUT" | head -1)
 cat > "$MANIFEST" <<EOF
 {
