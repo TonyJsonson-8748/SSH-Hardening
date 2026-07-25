@@ -261,9 +261,19 @@ user_remove_from_group() {
 }
 
 user_has_sudo_access() {
+    local USERNAME="$1" SUDO_OUTPUT
+    command -v sudo >/dev/null 2>&1 || return 1
+    SUDO_OUTPUT=$(LC_ALL=C sudo -n -l -U "$USERNAME" 2>&1) || return 1
+    printf '%s\n' "$SUDO_OUTPUT" \
+        | grep -Eq '^User .+ may run the following commands( on .+)?:[[:space:]]*$'
+}
+
+user_print_sudo_access_report() {
     local USERNAME="$1"
-    command -v sudo >/dev/null 2>&1 \
-        && sudo -l -U "$USERNAME" >/dev/null 2>&1
+    command -v sudo >/dev/null 2>&1 || return 1
+    echo ""
+    warn "检测到其他 sudo 授权来源，以下为 sudo 的实际权限报告："
+    LC_ALL=C sudo -n -l -U "$USERNAME" 2>&1 | sed 's/^/    /'
 }
 
 user_is_admin_account() {
@@ -348,7 +358,7 @@ user_grant_admin() {
         return 1
     fi
     SUDOERS_TARGET="$USER_SUDOERS_DIR/vps-tools-$USERNAME"
-    if ! sudo -l -U "$USERNAME" >/dev/null 2>&1; then
+    if ! user_has_sudo_access "$USERNAME"; then
         rm -f "$SUDOERS_TARGET"
         [ "$GROUP_ADDED" = "0" ] \
             || user_remove_from_group "$USERNAME" "$ADMIN_GROUP" >/dev/null 2>&1 \
@@ -558,10 +568,16 @@ user_revoke_admin() {
             ;;
         2)
             audit_action "撤销管理员权限 $USERNAME（存在其他授权来源）" PARTIAL
+            user_print_sudo_access_report "$USERNAME" || true
+            ui_pause
             return 1
             ;;
         *)
             audit_action "撤销管理员权限 $USERNAME" FAILED
+            if user_has_sudo_access "$USERNAME"; then
+                user_print_sudo_access_report "$USERNAME" || true
+                ui_pause
+            fi
             return 1
             ;;
     esac

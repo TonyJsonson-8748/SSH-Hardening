@@ -8,7 +8,7 @@ export VPS_TOOLS_TEST_MODE=1
 # shellcheck source=/dev/null
 source "$ROOT/SSH-Hardening.sh"
 
-for fn in systemd_available show_cli_help main_menu ssh_tools_menu ssh_key_count user_management_menu user_require_root user_name_valid user_create_account user_grant_admin user_promote_admin user_revoke_admin user_revoke_admin_rights user_is_admin_account user_change_password user_password_target_allowed user_delete_account user_delete_system_account user_home_safe_to_remove user_home_is_shared fail2ban_menu f2b_effective_ssh_port f2b_sync_ssh_port bbr_menu firewall_menu dns_menu timesync_menu \
+for fn in systemd_available show_cli_help main_menu ssh_tools_menu ssh_key_count user_management_menu user_require_root user_name_valid user_create_account user_grant_admin user_promote_admin user_revoke_admin user_revoke_admin_rights user_is_admin_account user_has_sudo_access user_change_password user_password_target_allowed user_delete_account user_delete_system_account user_home_safe_to_remove user_home_is_shared fail2ban_menu f2b_effective_ssh_port f2b_sync_ssh_port bbr_menu firewall_menu dns_menu timesync_menu \
     ts_https_date_epoch ts_epoch_utc ts_https_fetch_epoch ts_https_consensus ts_sync_https \
     ip_config_menu caddy_menu caddy_site_records caddy_site_count nft_menu ddns_menu ddns_install ddns_install_cloudflare ddns_install_huawei ddns_run_now ddns_view_logs ddns_status ddns_share_link_tool \
     ddns_provider ddns_provider_label ddns_sed_escape ddns_install_transaction_begin ddns_install_transaction_restore ddns_install_transaction_commit ddns_domain_dot ddns_ipv6_subdomain_default ddns_cf_exact_records ddns_cf_record_ensure ddns_cf_cleanup_cross_record \
@@ -77,6 +77,20 @@ security_root_password_restricted yes no no || { echo "Globally disabled passwor
     user_is_elevation_account alice || { echo "Current sudo account was not protected from demotion" >&2; exit 1; }
     ! user_is_elevation_account bob >/dev/null 2>&1 || { echo "Unrelated user was treated as the current elevation account" >&2; exit 1; }
 )
+(
+    sudo() {
+        printf 'User tony is not allowed to run sudo on test-host.\n'
+        return 0
+    }
+    ! user_has_sudo_access tony >/dev/null 2>&1 \
+        || { echo "Denied sudo listing was treated as administrator access" >&2; exit 1; }
+    sudo() {
+        printf 'User tony may run the following commands on test-host:\n'
+        printf '    (ALL : ALL) ALL\n'
+    }
+    user_has_sudo_access tony \
+        || { echo "Allowed sudo listing was not recognized as administrator access" >&2; exit 1; }
+)
 user_home_safe_to_remove /home/alice || { echo "Normal user home was rejected for deletion" >&2; exit 1; }
 ! user_home_safe_to_remove / >/dev/null 2>&1 || { echo "Filesystem root was accepted as user workspace" >&2; exit 1; }
 ! user_home_safe_to_remove /home >/dev/null 2>&1 || { echo "Shared home root was accepted as user workspace" >&2; exit 1; }
@@ -111,12 +125,39 @@ user_home_safe_to_remove /home/alice || { echo "Normal user home was rejected fo
     [ -e "$PAUSE_LOG" ] || { echo "User list returned without pausing" >&2; exit 1; }
 )
 (
+    USER_PASSWD_FILE="$TMP/revoked-user-list-passwd"
+    USER_SUDOERS_DIR="$TMP/revoked-user-list-sudoers"
+    mkdir -p "$USER_SUDOERS_DIR"
+    printf '%s\n' \
+        'root:x:0:0:root:/root:/bin/bash' \
+        'tony:x:1000:1000::/home/tony:/bin/bash' > "$USER_PASSWD_FILE"
+    id() {
+        if [ "$1" = "-nG" ]; then
+            printf '%s\n' "$2"
+        else
+            command id "$@"
+        fi
+    }
+    sudo() {
+        printf 'User tony is not allowed to run sudo on test-host.\n'
+        return 0
+    }
+    ui_pause() { :; }
+    USER_LIST_OUTPUT=$(user_list_accounts)
+    TONY_LINE=$(printf '%s\n' "$USER_LIST_OUTPUT" | grep -E '^[[:space:]]*tony[[:space:]]')
+    [[ "$TONY_LINE" = *"普通用户"* ]] \
+        || { echo "Revoked user was still displayed as administrator" >&2; exit 1; }
+)
+(
     USER_SUDOERS_DIR="$TMP/sudoers.d"
     USER_GROUP_FILE="$TMP/group"
     mkdir -p "$USER_SUDOERS_DIR"
     printf 'wheel:x:10:\n' > "$USER_GROUP_FILE"
     USERMOD_LOG="$TMP/usermod.log"
-    sudo() { :; }
+    sudo() {
+        printf 'User alice may run the following commands on test-host:\n'
+        printf '    (ALL : ALL) ALL\n'
+    }
     visudo() { [ "$1" = "-cf" ] && [ -s "$2" ]; }
     usermod() { printf '%s\n' "$*" > "$USERMOD_LOG"; }
     user_grant_admin alice >/dev/null

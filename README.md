@@ -1,4 +1,4 @@
-# VPS 开荒脚本 V3.11.8
+# VPS 开荒脚本 V3.11.9
 
 > **银趴火山帮** 出品 · SSH · BBR · DDNS · Caddy · Firewall · NFT 转发
 
@@ -87,7 +87,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/TonyJsonson-8748/SSH-Hardeni
 ╚═╝╚═╝     ╚═╝╚═╝     ╚═╝  ╚═╝╚═╝  ╚═╝   ╚═╝        ╚═════╝ ╚═╝     ╚══════╝
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  VPS TOOLS  ·  V3.11.8
+  VPS TOOLS  ·  V3.11.9
   VPS 开荒脚本 · 银趴火山帮
 ────────────────────────────────────────────────────────────────
   SSH · BBR · DDNS · Caddy · Firewall · NFT · Monitor
@@ -142,7 +142,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/TonyJsonson-8748/SSH-Hardeni
 |------|------|
 | 创建普通用户 | 创建主目录、选择可用登录 Shell、设置隐藏输入的登录密码，不授予管理权限 |
 | 创建管理员用户 | 自动检测或安装 sudo，加入系统原生 `sudo` / `wheel` 组，并写入独立 sudoers 规则 |
-| 查看用户列表 | 展示 root 和普通 UID 范围内的账号、UID、主目录、Shell 及管理员类型 |
+| 查看用户列表 | 展示 root 和普通 UID 范围内的账号、UID、主目录、Shell，并按用户组、托管规则及 sudo 实际权限识别管理员类型 |
 | 修改用户密码 | 修改 root、普通用户或 sudo 管理员密码，隐藏输入、至少 8 位并要求二次确认 |
 | 增加管理员 | 将现有普通用户加入系统原生 `sudo` / `wheel` 组，并创建经过校验的独立 sudoers 规则 |
 | 撤销管理员权限 | 将用户移出 `sudo` / `wheel` 组并删除本脚本创建的 sudoers 规则，保留账号和工作空间 |
@@ -155,6 +155,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/TonyJsonson-8748/SSH-Hardeni
 - 增加管理员采用事务式授权；用户组或 sudoers 校验失败时会回滚本次权限变更。
 - 撤销管理员时禁止操作 root、系统服务账号和当前 sudo/doas 提权账号，并要求再次输入完整用户名确认。
 - 如果用户还通过其他手写 sudoers 规则拥有权限，脚本只撤销可安全识别的常规授权并提示人工核对，不会擅自改写 `/etc/sudoers`。
+- sudo 管理员检测会解析 `sudo -l -U <用户名>` 的实际授权内容，而不是只依赖命令退出码；撤权后若仍有其他授权，会显示完整权限报告并暂停等待确认。
 - 密码设置或管理员授权失败时，会删除本次未完成的新用户，避免留下半配置账号。
 - 管理员仍需输入自己的密码使用 sudo，不会配置免密 `NOPASSWD`。
 - 删除用户必须再次输入完整用户名确认；脚本拒绝删除 root、系统账号、当前 sudo/doas 提权账号及仍有会话或进程的账号。
@@ -665,6 +666,7 @@ tests/smoke.sh
 
 | 版本 | 主要变更 |
 |------|---------|
+| **V3.11.9** | 修复撤销管理员后，部分 sudo 环境仅凭 `sudo -l -U` 退出码可能继续把普通用户显示为管理员；改为解析实际授权结果，并在存在其他 sudoers 来源时展示权限报告 |
 | **V3.11.8** | 修复系统安全体检将 `PermitRootLogin without-password` 误报为允许 root 密码登录；改为组合判断密码、键盘交互、root 策略、PAM 与 AuthenticationMethods，并显示实际有效值 |
 | **V3.11.7** | 用户管理新增“增加管理员”和“撤销管理员权限”：支持现有用户事务式授权，撤权时移除 sudo/wheel 组及托管 sudoers，并检测其他残留授权来源 |
 | **V3.11.6** | 用户管理新增密码修改：支持 root、普通用户和 sudo 管理员，复用隐藏输入、长度及二次确认校验，并拒绝系统服务账号 |
