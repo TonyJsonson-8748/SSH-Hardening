@@ -8,7 +8,7 @@ export VPS_TOOLS_TEST_MODE=1
 # shellcheck source=/dev/null
 source "$ROOT/SSH-Hardening.sh"
 
-for fn in systemd_available show_cli_help main_menu ssh_tools_menu ssh_key_count user_management_menu user_require_root user_name_valid user_create_account user_grant_admin user_delete_account user_delete_system_account user_home_safe_to_remove user_home_is_shared fail2ban_menu f2b_effective_ssh_port f2b_sync_ssh_port bbr_menu firewall_menu dns_menu timesync_menu \
+for fn in systemd_available show_cli_help main_menu ssh_tools_menu ssh_key_count user_management_menu user_require_root user_name_valid user_create_account user_grant_admin user_change_password user_password_target_allowed user_delete_account user_delete_system_account user_home_safe_to_remove user_home_is_shared fail2ban_menu f2b_effective_ssh_port f2b_sync_ssh_port bbr_menu firewall_menu dns_menu timesync_menu \
     ts_https_date_epoch ts_epoch_utc ts_https_fetch_epoch ts_https_consensus ts_sync_https \
     ip_config_menu caddy_menu caddy_site_records caddy_site_count nft_menu ddns_menu ddns_install ddns_install_cloudflare ddns_install_huawei ddns_run_now ddns_view_logs ddns_status ddns_share_link_tool \
     ddns_provider ddns_provider_label ddns_sed_escape ddns_install_transaction_begin ddns_install_transaction_restore ddns_install_transaction_commit ddns_domain_dot ddns_ipv6_subdomain_default ddns_cf_exact_records ddns_cf_record_ensure ddns_cf_cleanup_cross_record \
@@ -25,6 +25,10 @@ user_name_valid ops_admin-2 || { echo "Valid service-style username was rejected
 ! user_name_valid Root >/dev/null 2>&1 || { echo "Uppercase username was accepted" >&2; exit 1; }
 ! user_name_valid 'bad name' >/dev/null 2>&1 || { echo "Username containing spaces was accepted" >&2; exit 1; }
 ! user_name_valid root >/dev/null 2>&1 || { echo "Reserved root username was accepted" >&2; exit 1; }
+user_password_target_allowed root 0 || { echo "Root password change was rejected" >&2; exit 1; }
+user_password_target_allowed alice 1000 || { echo "Regular user password change was rejected" >&2; exit 1; }
+! user_password_target_allowed daemon 1 >/dev/null 2>&1 || { echo "System account password change was accepted" >&2; exit 1; }
+! user_password_target_allowed nobody 65534 >/dev/null 2>&1 || { echo "Nobody password change was accepted" >&2; exit 1; }
 user_home_safe_to_remove /home/alice || { echo "Normal user home was rejected for deletion" >&2; exit 1; }
 ! user_home_safe_to_remove / >/dev/null 2>&1 || { echo "Filesystem root was accepted as user workspace" >&2; exit 1; }
 ! user_home_safe_to_remove /home >/dev/null 2>&1 || { echo "Shared home root was accepted as user workspace" >&2; exit 1; }

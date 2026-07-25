@@ -63,6 +63,31 @@ docker_download_installer "$TMP/broken-docker.sh" >/dev/null 2>&1 && {
     grep -qx adminuser "$REMOVED_LOG" || { echo "Failed admin creation left the account behind" >&2; exit 1; }
 )
 
+# Password changes must target the selected account and propagate failures.
+(
+    VPS_TOOLS_UID_OVERRIDE=0
+    PASSWORD_LOG="$TMP/password-change.log"
+    AUDIT_LOG="$TMP/password-audit.log"
+    user_account_record() { printf 'testuser:x:1000:1000::/home/testuser:/bin/bash\n'; }
+    confirm_change_preview() { return 0; }
+    user_prompt_password() { printf '%s\n' "$1" > "$PASSWORD_LOG"; }
+    audit_action() { printf '%s:%s\n' "$1" "$2" > "$AUDIT_LOG"; }
+    user_change_password <<< "testuser" >/dev/null
+    grep -qx testuser "$PASSWORD_LOG" || { echo "Password change targeted the wrong account" >&2; exit 1; }
+    grep -qx '修改用户密码 testuser:SUCCESS' "$AUDIT_LOG" || { echo "Successful password change was not audited" >&2; exit 1; }
+)
+(
+    VPS_TOOLS_UID_OVERRIDE=0
+    AUDIT_LOG="$TMP/password-failed-audit.log"
+    user_account_record() { printf 'testuser:x:1000:1000::/home/testuser:/bin/bash\n'; }
+    confirm_change_preview() { return 0; }
+    user_prompt_password() { return 1; }
+    audit_action() { printf '%s:%s\n' "$1" "$2" > "$AUDIT_LOG"; }
+    ! user_change_password <<< "testuser" >/dev/null \
+        || { echo "Failed password update was reported as successful" >&2; exit 1; }
+    grep -qx '修改用户密码 testuser:FAILED' "$AUDIT_LOG" || { echo "Failed password change was not audited" >&2; exit 1; }
+)
+
 # User deletion must preserve or remove the workspace exactly as selected and
 # clean up the managed sudoers rule only after successful account deletion.
 (

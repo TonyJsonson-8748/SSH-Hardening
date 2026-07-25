@@ -76,11 +76,27 @@ user_is_protected_account() {
     local USERNAME="$1" USER_ID="$2" UID_MIN PROTECTED_USER
     UID_MIN=$(user_uid_min)
     [ "$USERNAME" != "root" ] && [ "$USER_ID" != "0" ] || return 0
+    case "$USERNAME:$USER_ID" in
+        nobody:*|nfsnobody:*|*:65534) return 0 ;;
+    esac
     [ "$USER_ID" -ge "$UID_MIN" ] 2>/dev/null || return 0
     for PROTECTED_USER in "${SUDO_USER:-}" "${DOAS_USER:-}"; do
         [ -z "$PROTECTED_USER" ] || [ "$USERNAME" != "$PROTECTED_USER" ] || return 0
     done
     return 1
+}
+
+user_password_target_allowed() {
+    local USERNAME="$1" USER_ID="$2" UID_MIN
+    [[ "$USER_ID" =~ ^[0-9]+$ ]] || return 1
+    if [ "$USERNAME" = "root" ] && [ "$USER_ID" = "0" ]; then
+        return 0
+    fi
+    case "$USERNAME:$USER_ID" in
+        nobody:*|nfsnobody:*|*:65534) return 1 ;;
+    esac
+    UID_MIN=$(user_uid_min)
+    [ "$USER_ID" -ge "$UID_MIN" ] 2>/dev/null
 }
 
 user_home_safe_to_remove() {
@@ -340,6 +356,36 @@ user_create_account() {
     [ "$ROLE" = admin ] && ui_hint "验证方式：su - $USERNAME，然后执行 sudo -v"
 }
 
+user_change_password() {
+    local USERNAME="" RECORD USER_ID HOME_DIR LOGIN_SHELL
+    user_require_root || return 1
+    print_header "修改用户密码"
+    read -rp "  输入要修改密码的用户名（输入 0 返回）: " USERNAME
+    [ "$USERNAME" != "0" ] || return 0
+    RECORD=$(user_account_record "$USERNAME")
+    if [ -z "$RECORD" ]; then
+        error "用户 $USERNAME 不存在"
+        return 1
+    fi
+    IFS=: read -r _ _ USER_ID _ _ HOME_DIR LOGIN_SHELL <<< "$RECORD"
+    if ! user_password_target_allowed "$USERNAME" "$USER_ID"; then
+        error "拒绝修改系统服务账号密码：$USERNAME"
+        warn "该功能只允许 root、普通用户和 sudo 管理员账号"
+        return 1
+    fi
+    [ "$USERNAME" != "root" ] || warn "正在修改 root 密码，请确保你仍保留可用的 SSH 登录方式"
+    confirm_change_preview "修改用户密码" \
+        "用户名：$USERNAME" "UID：$USER_ID" \
+        "主目录：$HOME_DIR" "登录 Shell：$LOGIN_SHELL" \
+        "影响：现有密码将立即失效" || return 0
+    if ! user_prompt_password "$USERNAME"; then
+        audit_action "修改用户密码 $USERNAME" FAILED
+        return 1
+    fi
+    audit_action "修改用户密码 $USERNAME" SUCCESS
+    info "用户 $USERNAME 的密码已更新 ✓"
+}
+
 user_delete_account() {
     local USERNAME="" RECORD USER_ID HOME_DIR LOGIN_SHELL REMOVE_HOME MODE_LABEL CONFIRM_NAME CHOICE DELETE_RC=0
     user_require_root || return 1
@@ -469,16 +515,18 @@ user_management_menu() {
         menu_item "1" "创建普通用户"
         menu_item "2" "创建管理员用户  ${DIM}可使用 sudo${NC}" "$YELLOW"
         menu_item "3" "查看用户列表"
-        menu_item "4" "删除用户  ${DIM}可选择保留或删除工作空间${NC}" "$RED"
+        menu_item "4" "修改用户密码"
+        menu_item "5" "删除用户  ${DIM}可选择保留或删除工作空间${NC}" "$RED"
         menu_item "0" "返回主菜单" "$RED"
         menu_div
         echo ""
-        read -rp "$(ui_prompt '选择操作 [0-4]: ')" CHOICE
+        read -rp "$(ui_prompt '选择操作 [0-5]: ')" CHOICE
         case "$CHOICE" in
             1) user_create_account regular ;;
             2) user_create_account admin ;;
             3) user_list_accounts ;;
-            4) user_delete_account ;;
+            4) user_change_password ;;
+            5) user_delete_account ;;
             0) return ;;
             *) warn "无效选项" ;;
         esac
