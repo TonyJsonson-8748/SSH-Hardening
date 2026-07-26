@@ -53,6 +53,7 @@ VPS 开荒脚本 CLI
   --caddy-menu           Caddy 管理
   --nft-menu             NFT 转发
   --time-menu            时间与时区
+  --https-time-sync      立即执行 HTTPS 时间同步
   --swap-menu            Swap 管理
   --system-toolbox-menu  安全与诊断
   --stun-test            STUN / UDP / NAT 检测
@@ -282,6 +283,14 @@ case "${1:-}" in
         ;;
     --time-menu)
         timesync_menu
+        exit $?
+        ;;
+    --https-time-sync)
+        ts_sync_https
+        exit $?
+        ;;
+    --https-time-sync-run)
+        ts_https_scheduled_run
         exit $?
         ;;
     --swap-menu)

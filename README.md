@@ -1,4 +1,4 @@
-# VPS 开荒脚本 V3.20.1
+# VPS 开荒脚本 V3.20.2
 
 > **银趴火山帮** 出品 · SSH · BBR · DDNS · Caddy · Firewall · NFT 转发
 
@@ -25,6 +25,41 @@ sudo bash -c 'bash <(curl -fsSL https://raw.githubusercontent.com/TonyJsonson-87
 ```
 
 脚本涉及系统账号、SSH、防火墙和服务配置，除 `--help` 外必须使用 root 权限。本地脚本由普通用户启动时会询问是否通过 sudo/doas 重新运行；如果当前账号没有提权权限，会给出切换 root 的明确提示。
+
+### 离线安装包
+
+适合不能访问 GitHub 的 VPS。先在一台可以访问 GitHub 的电脑或跳板机打开本仓库的 [Releases 页面](https://github.com/TonyJsonson-8748/SSH-Hardening/releases)，下载版本一致的 `vps-tools-offline-V*.tar.gz` 和 `.sha256` 文件。若该版本尚未发布 Release，也可以克隆本仓库后自行构建：
+
+```bash
+git clone https://github.com/TonyJsonson-8748/SSH-Hardening.git
+cd SSH-Hardening
+./build-offline-package.sh
+```
+
+然后通过 `scp`、SFTP 或 WinSCP 将压缩包和外部校验文件传到 VPS。Linux/macOS 示例：
+
+```bash
+scp dist/vps-tools-offline-V*.tar.gz* root@你的VPS地址:/root/
+```
+
+登录 VPS 后离线安装：
+
+```bash
+cd /root
+sha256sum -c vps-tools-offline-V*.tar.gz.sha256
+tar -xzf vps-tools-offline-V*.tar.gz
+cd vps-tools-offline-V*
+bash install.sh
+v
+```
+
+安装阶段不会访问网络。安装包包含完整脚本、内部 SHA256 和独立安装器；不会覆盖其他程序已经占用的 `v` / `V` 命令。安装第三方软件、DDNS、自更新等功能仍需要相应网络连接。
+
+开发者也可以从仓库源码自行构建同样的安装包：
+
+```bash
+./build-offline-package.sh
+```
 
 ## 命令行合集
 
@@ -53,6 +88,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/TonyJsonson-8748/SSH-Hardeni
 | `--caddy-menu` | Caddy 管理 |
 | `--nft-menu` | NFT 转发 |
 | `--time-menu` | 时间与时区 |
+| `--https-time-sync` | 立即执行 HTTPS 时间同步 |
 | `--swap-menu` | Swap 管理 |
 | `--system-toolbox-menu` | 安全与诊断 |
 | `--stun-test` | STUN、多端口 UDP 与 NAT 类型检测 |
@@ -87,7 +123,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/TonyJsonson-8748/SSH-Hardeni
 ╚═╝╚═╝     ╚═╝╚═╝     ╚═╝  ╚═╝╚═╝  ╚═╝   ╚═╝        ╚═════╝ ╚═╝     ╚══════╝
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  VPS TOOLS  ·  V3.20.1
+  VPS TOOLS  ·  V3.20.2
   VPS 开荒脚本 · 银趴火山帮
 ────────────────────────────────────────────────────────────────
   SSH · BBR · DDNS · Caddy · Firewall · NFT · Monitor
@@ -488,9 +524,9 @@ IP 真实变化时推送通知，实时读取 `/root/.cf_tg`，兼容 crontab �
 | 一键同步+北京时区 | 两步合一 |
 | 其他时区 | 含常用时区参考 |
 | 开启 NTP 自动同步 | timesyncd / chrony 自动选择 |
-| HTTPS 时间同步 | 使用 TCP/443，适合 UDP/123 被封锁；至少两个来源达成时间共识才校时 |
+| HTTPS 时间同步 | 使用 TCP/443，适合 UDP/123 被封锁；支持立即同步及每 1/3/6/12/24 小时自动同步 |
 
-HTTPS 同步保持证书验证开启，不使用 `curl -k`；依次探测 Cloudflare、阿里云、Microsoft、GitHub、Google，最多采纳 3 个有效来源，并拒绝相差超过 10 秒的结果。它是单次校时，不能替代持续运行的 NTP；如果系统时间偏差大到 TLS 证书无法验证，需要先通过 VPS 控制台粗略校时。
+HTTPS 同步保持证书验证开启，不使用 `curl -k`；依次探测 Cloudflare、阿里云、Microsoft、GitHub、Google，最多采纳 3 个有效来源，并拒绝相差超过 10 秒的结果。自动同步优先使用 systemd timer，无 systemd 时回退 root crontab，默认推荐每 6 小时；如果系统时间偏差大到 TLS 证书无法验证，需要先通过 VPS 控制台粗略校时。
 
 ---
 
@@ -676,6 +712,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/TonyJsonson-8748/SSH-Hardeni
 ./build.sh --check  # 检查发行文件是否与模块源码一致
 tests/smoke.sh
 tests/fault-injection.sh
+tests/offline-package.sh
 ```
 
 GitHub Actions 还会在 Debian、Ubuntu、Alpine、Rocky Linux 容器中加载生成脚本并执行冒烟测试。
@@ -701,6 +738,7 @@ tests/smoke.sh
 
 | 版本 | 主要变更 |
 |------|---------|
+| **V3.20.2** | 合并上游离线安装包、GitHub Release 发布工作流与 HTTPS 自动校时：支持每 1/3/6/12/24 小时通过 systemd timer 或 root crontab 执行，记录最近结果并防止任务重叠；修复交互式首次同步后锁文件描述符未及时释放的问题；README 的安装、离线构建和仓库地址继续以长期维护 Fork 为准 |
 | **V3.20.1** | SSH 工具集的查看、删除公钥改为指定用户并支持多个有效 `AuthorizedKeysFile`；删除按物理行精确执行，新增变更并发检查、删除前后登录路径与完整管理入口校验、原文件独立备份及 180 秒自动回滚；补充严格模式各项配置说明 |
 | **V3.20.0** | SSH 工具集新增严格模式：仅在确认存在可管理的非 root 有效密钥入口后禁用 root、密码、键盘交互与 X11，并收紧认证次数及保活；“添加公钥”改为指定用户、支持空输入取消并用 `ssh-keygen` 验证；新增带剩余登录及管理入口校验的指定用户 SSH 登录撤权 |
 | **V3.11.9** | 修复撤销管理员后，部分 sudo 环境仅凭 `sudo -l -U` 退出码可能继续把普通用户显示为管理员；改为解析实际授权结果，并在存在其他 sudoers 来源时展示权限报告 |

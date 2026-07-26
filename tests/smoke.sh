@@ -10,6 +10,8 @@ source "$ROOT/SSH-Hardening.sh"
 
 for fn in systemd_available show_cli_help main_menu ssh_tools_menu ssh_key_count show_keys add_key delete_key set_login_mode ssh_account_record ssh_key_target_allowed ssh_expand_authorized_keys_path ssh_authorized_keys_paths_for_user ssh_authorized_keys_path_for_user ssh_public_key_line_valid ssh_public_key_line_fields ssh_key_inventory ssh_key_inventory_line_matches ssh_key_file_restore ssh_key_delete_safety_arm ssh_key_delete_confirm_new_session ssh_strict_auth_methods_allow_pubkey ssh_strict_effective_policy_ok ssh_strict_access_policy_allows ssh_strict_find_candidates ssh_strict_candidate_valid ssh_authentication_route ssh_login_route_for_user ssh_login_candidates ssh_login_candidates_have_admin ssh_user_has_full_sudo_access ssh_user_can_admin revoke_user_ssh_login user_management_menu user_require_root user_name_valid user_create_account user_grant_admin user_promote_admin user_revoke_admin user_revoke_admin_rights user_is_admin_account user_has_sudo_access user_change_password user_password_target_allowed user_delete_account user_delete_system_account user_home_safe_to_remove user_home_is_shared fail2ban_menu f2b_effective_ssh_port f2b_sync_ssh_port bbr_menu firewall_menu dns_menu timesync_menu \
     ts_https_date_epoch ts_epoch_utc ts_https_fetch_epoch ts_https_consensus ts_sync_https \
+    ts_https_interval_normalize ts_https_interval_current ts_https_cron_expr ts_https_cron_without_managed \
+    ts_https_schedule_backend ts_https_schedule_last_result ts_https_schedule_summary ts_https_runner_valid ts_https_runner_path_valid ts_https_ensure_runner ts_https_scheduled_run ts_https_schedule_enable_systemd ts_https_schedule_enable_cron ts_https_cron_daemon_enable ts_https_schedule_remove_cron ts_https_schedule_enable ts_https_schedule_disable ts_https_schedule_menu \
     ip_config_menu caddy_menu caddy_site_records caddy_site_count nft_menu ddns_menu ddns_install ddns_install_cloudflare ddns_install_huawei ddns_run_now ddns_view_logs ddns_status ddns_share_link_tool \
     ddns_provider ddns_provider_label ddns_sed_escape ddns_install_transaction_begin ddns_install_transaction_restore ddns_install_transaction_commit ddns_domain_dot ddns_ipv6_subdomain_default ddns_cf_exact_records ddns_cf_record_ensure ddns_cf_cleanup_cross_record \
     ddns_interval_normalize ddns_interval_min ddns_cron_expr ddns_cron_without_managed ddns_prompt_interval \
@@ -596,6 +598,13 @@ user_home_safe_to_remove /home/alice || { echo "Normal user home was rejected fo
 [[ "$(ts_epoch_utc 1784980800)" = '2026-07-25 12:00:00' ]] || { echo "HTTPS epoch formatting failed" >&2; exit 1; }
 [[ "$(ts_https_consensus 1784980800 1784980802 1784980900)" = '1784980801 2 2' ]] || { echo "HTTPS time consensus did not reject an outlier" >&2; exit 1; }
 ! ts_https_consensus 1784980800 1784980820 >/dev/null 2>&1 || { echo "HTTPS time consensus accepted disagreeing sources" >&2; exit 1; }
+for INTERVAL in 1 3 6 12 24; do
+    [[ "$(ts_https_interval_normalize "$INTERVAL")" = "$INTERVAL" ]] || { echo "HTTPS interval $INTERVAL was rejected" >&2; exit 1; }
+done
+! ts_https_interval_normalize 2 >/dev/null 2>&1 || { echo "Unsupported HTTPS interval was accepted" >&2; exit 1; }
+[[ "$(ts_https_cron_expr 1)" = '17 * * * *' ]] || { echo "Hourly HTTPS cron expression is wrong" >&2; exit 1; }
+[[ "$(ts_https_cron_expr 6)" = '17 */6 * * *' ]] || { echo "Six-hour HTTPS cron expression is wrong" >&2; exit 1; }
+[[ "$(ts_https_cron_expr 24)" = '17 3 * * *' ]] || { echo "Daily HTTPS cron expression is wrong" >&2; exit 1; }
 (
     # shellcheck disable=SC2329 # test stub used indirectly by ts_https_fetch_epoch
     curl() { printf 'HTTP/2 200\r\nDate: Sat, 25 Jul 2026 12:00:00 GMT\r\n\r\n'; }

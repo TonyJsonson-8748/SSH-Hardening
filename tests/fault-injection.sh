@@ -492,6 +492,101 @@ grep -Fq "$FORK_REPO" "$ROOT/README.md" "$ROOT/build.sh" "$ROOT/src/modules/self
     ! ts_sync_https fallback >/dev/null 2>&1 || { echo "HTTPS time sync accepted zero valid sources" >&2; exit 1; }
 )
 
+# HTTPS scheduling must render, activate, replace, and remove a systemd timer safely.
+(
+    SCHEDULE_DIR="$TMP/https-systemd"
+    mkdir -p "$SCHEDULE_DIR/data"
+    VPS_DATA_DIR="$SCHEDULE_DIR/data"
+    LOCAL_SCRIPT="$ROOT/SSH-Hardening.sh"
+    TS_HTTPS_SERVICE_FILE="$SCHEDULE_DIR/vps-tools-https-time.service"
+    TS_HTTPS_TIMER_FILE="$SCHEDULE_DIR/vps-tools-https-time.timer"
+    TS_HTTPS_INTERVAL_FILE="$SCHEDULE_DIR/data/interval"
+    TS_HTTPS_STATE_FILE="$SCHEDULE_DIR/data/state"
+    TS_HTTPS_LOCK_FILE="$SCHEDULE_DIR/data/lock"
+    SYSTEMCTL_LOG="$SCHEDULE_DIR/systemctl.log"
+    systemd_available() { return 0; }
+    systemctl() {
+        printf '%s\n' "$*" >> "$SYSTEMCTL_LOG"
+        [ "${1:-}" = is-active ] && return 0
+        return 0
+    }
+    ts_https_scheduled_run() { return 0; }
+    ts_https_schedule_enable 3 >/dev/null || { echo "HTTPS systemd schedule creation failed" >&2; exit 1; }
+    grep -q '^OnUnitActiveSec=3h$' "$TS_HTTPS_TIMER_FILE" || { echo "HTTPS systemd interval is wrong" >&2; exit 1; }
+    grep -Fq "ExecStart=$LOCAL_SCRIPT --https-time-sync-run" "$TS_HTTPS_SERVICE_FILE" || { echo "HTTPS systemd command is wrong" >&2; exit 1; }
+    grep -q '^3$' "$TS_HTTPS_INTERVAL_FILE" || { echo "HTTPS systemd interval state is missing" >&2; exit 1; }
+    [ "$(ts_https_schedule_backend)" = systemd ] || { echo "HTTPS systemd schedule status is wrong" >&2; exit 1; }
+    ts_https_schedule_disable >/dev/null
+    [ ! -e "$TS_HTTPS_TIMER_FILE" ] && [ ! -e "$TS_HTTPS_SERVICE_FILE" ] || { echo "HTTPS systemd schedule was not removed" >&2; exit 1; }
+)
+
+# Non-systemd systems must use root crontab without deleting unrelated entries.
+(
+    SCHEDULE_DIR="$TMP/https-cron"
+    mkdir -p "$SCHEDULE_DIR/data"
+    VPS_DATA_DIR="$SCHEDULE_DIR/data"
+    LOCAL_SCRIPT="$ROOT/SSH-Hardening.sh"
+    TS_HTTPS_SERVICE_FILE="$SCHEDULE_DIR/vps-tools-https-time.service"
+    TS_HTTPS_TIMER_FILE="$SCHEDULE_DIR/vps-tools-https-time.timer"
+    TS_HTTPS_INTERVAL_FILE="$SCHEDULE_DIR/data/interval"
+    TS_HTTPS_STATE_FILE="$SCHEDULE_DIR/data/state"
+    TS_HTTPS_LOCK_FILE="$SCHEDULE_DIR/data/lock"
+    CRONTAB_DATA="$SCHEDULE_DIR/crontab"
+    printf '5 4 * * * /usr/local/bin/unrelated\n' > "$CRONTAB_DATA"
+    systemd_available() { return 1; }
+    systemctl() { return 1; }
+    crontab() {
+        if [ "${1:-}" = -l ]; then
+            cat "$CRONTAB_DATA"
+        else
+            cp "$1" "$CRONTAB_DATA"
+        fi
+    }
+    ts_https_cron_daemon_enable() { return 0; }
+    ts_https_scheduled_run() { return 0; }
+    ts_https_schedule_enable 12 >/dev/null || { echo "HTTPS cron schedule creation failed" >&2; exit 1; }
+    grep -Fq '17 */12 * * *' "$CRONTAB_DATA" || { echo "HTTPS cron interval is wrong" >&2; exit 1; }
+    grep -Fq "$TS_HTTPS_CRON_MARKER" "$CRONTAB_DATA" || { echo "HTTPS cron marker is missing" >&2; exit 1; }
+    grep -Fq '/usr/local/bin/unrelated' "$CRONTAB_DATA" || { echo "HTTPS cron replaced an unrelated entry" >&2; exit 1; }
+    [ "$(ts_https_schedule_backend)" = cron ] || { echo "HTTPS cron schedule status is wrong" >&2; exit 1; }
+    ts_https_schedule_disable >/dev/null
+    ! grep -Fq "$TS_HTTPS_CRON_MARKER" "$CRONTAB_DATA" || { echo "HTTPS cron schedule was not removed" >&2; exit 1; }
+    grep -Fq '/usr/local/bin/unrelated' "$CRONTAB_DATA" || { echo "HTTPS cron removal deleted an unrelated entry" >&2; exit 1; }
+    ts_https_cron_daemon_enable() { return 1; }
+    ! ts_https_schedule_enable_cron 6 >/dev/null 2>&1 || { echo "HTTPS cron accepted a stopped daemon" >&2; exit 1; }
+    ! grep -Fq "$TS_HTTPS_CRON_MARKER" "$CRONTAB_DATA" || { echo "HTTPS cron daemon failure left a managed entry" >&2; exit 1; }
+)
+
+# Scheduled failures must be persisted for the status screen.
+(
+    VPS_DATA_DIR="$TMP/https-state"
+    TS_HTTPS_STATE_FILE="$VPS_DATA_DIR/state"
+    TS_HTTPS_LOCK_FILE="$VPS_DATA_DIR/lock"
+    ts_sync_https() { return 1; }
+    logger() { :; }
+    ! ts_https_scheduled_run >/dev/null 2>&1 || { echo "HTTPS scheduled failure was hidden" >&2; exit 1; }
+    grep -Fq $'\t失败\tHTTPS' "$TS_HTTPS_STATE_FILE" || { echo "HTTPS scheduled failure state is missing" >&2; exit 1; }
+)
+
+# Interactive scheduled runs must release the flock descriptor before returning.
+(
+    VPS_DATA_DIR="$TMP/https-flock"
+    TS_HTTPS_STATE_FILE="$VPS_DATA_DIR/state"
+    TS_HTTPS_LOCK_FILE="$VPS_DATA_DIR/lock"
+    FLOCK_RELEASED="$VPS_DATA_DIR/flock.released"
+    mkdir -p "$VPS_DATA_DIR"
+    ts_sync_https() { return 0; }
+    logger() { :; }
+    flock() {
+        [ "${1:-}" != -u ] || : > "$FLOCK_RELEASED"
+        return 0
+    }
+    ts_https_scheduled_run >/dev/null \
+        || { echo "HTTPS scheduled run failed while testing lock release" >&2; exit 1; }
+    [ -f "$FLOCK_RELEASED" ] \
+        || { echo "HTTPS scheduled run did not release the flock descriptor" >&2; exit 1; }
+)
+
 # Offline bundle creation must package a local script and offline install must place it at the target path.
 LOCAL_SCRIPT="$TMP/local-script"
 cat > "$LOCAL_SCRIPT" <<'EOF'
