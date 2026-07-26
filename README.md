@@ -1,4 +1,4 @@
-# VPS 开荒脚本 V3.11.0
+# VPS 开荒脚本 V3.11.2
 
 > **银趴火山帮** 出品 · SSH · BBR · DDNS · Caddy · Firewall · NFT 转发
 
@@ -12,6 +12,41 @@
 
 ```bash
 bash <(curl -fsSL https://raw.githubusercontent.com/chnnic/SSH-Hardening/refs/heads/main/SSH-Hardening.sh)
+```
+
+### 离线安装包
+
+适合不能访问 GitHub 的中国内地 VPS。先在一台可以访问 GitHub 的电脑或跳板机下载：
+
+```bash
+curl -fLO https://github.com/chnnic/SSH-Hardening/releases/download/v3.11.2/vps-tools-offline-V3.11.2.tar.gz
+curl -fLO https://github.com/chnnic/SSH-Hardening/releases/download/v3.11.2/vps-tools-offline-V3.11.2.tar.gz.sha256
+sha256sum -c vps-tools-offline-V3.11.2.tar.gz.sha256
+```
+
+再通过 `scp`、SFTP 或 WinSCP 将两个文件传到 VPS。Linux/macOS 示例：
+
+```bash
+scp vps-tools-offline-V3.11.2.tar.gz* root@你的VPS地址:/root/
+```
+
+登录 VPS 后离线安装：
+
+```bash
+cd /root
+sha256sum -c vps-tools-offline-V3.11.2.tar.gz.sha256
+tar -xzf vps-tools-offline-V3.11.2.tar.gz
+cd vps-tools-offline-V3.11.2
+bash install.sh
+v
+```
+
+安装阶段不会访问网络。安装包包含完整脚本、内部 SHA256 和独立安装器；不会覆盖其他程序已经占用的 `v` / `V` 命令。安装第三方软件、DDNS、自更新等功能仍需要相应网络连接。
+
+开发者也可以从仓库源码自行构建同样的安装包：
+
+```bash
+./build-offline-package.sh
 ```
 
 ## 命令行合集
@@ -74,7 +109,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/chnnic/SSH-Hardening/refs/he
 ╚═╝╚═╝     ╚═╝╚═╝     ╚═╝  ╚═╝╚═╝  ╚═╝   ╚═╝        ╚═════╝ ╚═╝     ╚══════╝
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  VPS TOOLS  ·  V3.11.0
+  VPS TOOLS  ·  V3.11.2
   VPS 开荒脚本 · 银趴火山帮
 ────────────────────────────────────────────────────────────────
   SSH · BBR · DDNS · Caddy · Firewall · NFT · Monitor
@@ -408,9 +443,9 @@ IP 真实变化时推送通知，实时读取 `/root/.cf_tg`，兼容 crontab �
 | 一键同步+北京时区 | 两步合一 |
 | 其他时区 | 含常用时区参考 |
 | 开启 NTP 自动同步 | timesyncd / chrony 自动选择 |
-| HTTPS 时间同步 | 使用 TCP/443，适合 UDP/123 被封锁；至少两个来源达成时间共识才校时 |
+| HTTPS 时间同步 | 使用 TCP/443，适合 UDP/123 被封锁；支持立即同步及每 1/3/6/12/24 小时自动同步 |
 
-HTTPS 同步保持证书验证开启，不使用 `curl -k`；依次探测 Cloudflare、阿里云、Microsoft、GitHub、Google，最多采纳 3 个有效来源，并拒绝相差超过 10 秒的结果。它是单次校时，不能替代持续运行的 NTP；如果系统时间偏差大到 TLS 证书无法验证，需要先通过 VPS 控制台粗略校时。
+HTTPS 同步保持证书验证开启，不使用 `curl -k`；依次探测 Cloudflare、阿里云、Microsoft、GitHub、Google，最多采纳 3 个有效来源，并拒绝相差超过 10 秒的结果。自动同步优先使用 systemd timer，无 systemd 时回退 root crontab，默认推荐每 6 小时；如果系统时间偏差大到 TLS 证书无法验证，需要先通过 VPS 控制台粗略校时。
 
 ---
 
@@ -611,6 +646,8 @@ tests/smoke.sh
 
 | 版本 | 主要变更 |
 |------|---------|
+| **V3.11.2** | HTTPS 时间同步新增自动定时管理，支持每 1/3/6/12/24 小时执行；优先使用 systemd timer、无 systemd 时回退 root crontab，记录最近结果并使用进程锁防止任务重叠 |
+| **V3.11.1** | 新增自包含离线安装包构建器和 GitHub Release 附件：归档包含完整脚本、SHA256、独立安装器与说明文档，可通过 SCP/SFTP/WinSCP 传入无法访问 GitHub 的 VPS 安装 |
 | **V3.11.0** | 时间菜单新增 HTTPS 时间同步，使用 TCP/443 适配 UDP/123 被封锁的 VPS；从 Cloudflare、阿里云、Microsoft、GitHub、Google 获取经 TLS 验证的 `Date` 响应，至少两个来源在 10 秒内达成共识才设置系统时间，并作为普通强制同步的最终兜底 |
 | **V3.10.9** | 修复未配置公钥时首页和 SSH 工具集显示 `0` 后又换行显示第二个 `0`：保留 `grep -c` 的零计数输出，空文件或文件不存在时统一返回单个 `0` |
 | **V3.10.8** | 修复 Caddy 站点列表在 Tab 缩进或嵌套 `reverse_proxy` / `header_up` / `transport` 块下误把内部指令当作站点、真实后端显示不完整及站点计数错误；查看、删除与计数统一按顶层配置块解析，并正确保留多域名站点标题 |

@@ -13,13 +13,13 @@ jobs:
         uses: actions/checkout@v5
 
       - name: Check shell syntax
-        run: bash -n SSH-Hardening.sh
+        run: bash -n SSH-Hardening.sh build-offline-package.sh tests/offline-package.sh
 
       - name: Verify generated release
         run: ./build.sh --check
 
       - name: Run ShellCheck
-        run: shellcheck --severity=warning -x SSH-Hardening.sh
+        run: shellcheck --severity=warning -x SSH-Hardening.sh build-offline-package.sh tests/offline-package.sh
 
       - name: Verify release checksum
         run: sha256sum -c SSH-Hardening.sh.sha256
@@ -29,3 +29,6 @@ jobs:
 
       - name: Run fault injection tests
         run: tests/fault-injection.sh
+
+      - name: Test offline package
+        run: tests/offline-package.sh
