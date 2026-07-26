@@ -8,7 +8,7 @@ export VPS_TOOLS_TEST_MODE=1
 # shellcheck source=/dev/null
 source "$ROOT/SSH-Hardening.sh"
 
-for fn in systemd_available show_cli_help main_menu ssh_tools_menu ssh_key_count show_keys add_key delete_key set_login_mode ssh_account_record ssh_key_target_allowed ssh_expand_authorized_keys_path ssh_authorized_keys_paths_for_user ssh_authorized_keys_path_for_user ssh_public_key_line_valid ssh_public_key_line_fields ssh_key_inventory ssh_key_inventory_line_matches ssh_key_file_restore ssh_key_delete_safety_arm ssh_key_delete_confirm_new_session ssh_strict_auth_methods_allow_pubkey ssh_strict_effective_policy_ok ssh_strict_access_policy_allows ssh_strict_find_candidates ssh_strict_candidate_valid ssh_authentication_route ssh_login_route_for_user ssh_login_candidates ssh_login_candidates_have_admin ssh_user_has_full_sudo_access ssh_user_can_admin revoke_user_ssh_login user_management_menu user_require_root user_name_valid user_create_account user_grant_admin user_promote_admin user_revoke_admin user_revoke_admin_rights user_is_admin_account user_has_sudo_access user_change_password user_password_target_allowed user_delete_account user_delete_system_account user_home_safe_to_remove user_home_is_shared fail2ban_menu f2b_effective_ssh_port f2b_sync_ssh_port bbr_menu firewall_menu dns_menu timesync_menu \
+for fn in systemd_available show_cli_help main_menu ssh_tools_menu ssh_key_count show_keys add_key delete_key generate_key set_login_mode ssh_account_record ssh_key_target_allowed ssh_expand_authorized_keys_path ssh_authorized_keys_paths_for_user ssh_authorized_keys_path_for_user ssh_public_key_line_valid ssh_public_key_line_fields ssh_public_key_target_resolve ssh_public_key_install ssh_key_inventory ssh_key_inventory_line_matches ssh_key_file_restore ssh_key_delete_safety_arm ssh_key_delete_confirm_new_session ssh_strict_auth_methods_allow_pubkey ssh_strict_effective_policy_ok ssh_strict_access_policy_allows ssh_strict_find_candidates ssh_strict_candidate_valid ssh_authentication_route ssh_login_route_for_user ssh_login_candidates ssh_login_candidates_have_admin ssh_user_has_full_sudo_access ssh_user_can_admin revoke_user_ssh_login user_management_menu user_require_root user_name_valid user_create_account user_grant_admin user_promote_admin user_revoke_admin user_revoke_admin_rights user_is_admin_account user_has_sudo_access user_change_password user_password_target_allowed user_delete_account user_delete_system_account user_home_safe_to_remove user_home_is_shared fail2ban_menu f2b_effective_ssh_port f2b_sync_ssh_port bbr_menu firewall_menu dns_menu timesync_menu \
     ts_https_date_epoch ts_epoch_utc ts_https_fetch_epoch ts_https_consensus ts_sync_https \
     ts_https_interval_normalize ts_https_interval_current ts_https_cron_expr ts_https_cron_without_managed \
     ts_https_schedule_backend ts_https_schedule_last_result ts_https_schedule_summary ts_https_runner_valid ts_https_runner_path_valid ts_https_ensure_runner ts_https_scheduled_run ts_https_schedule_enable_systemd ts_https_schedule_enable_cron ts_https_cron_daemon_enable ts_https_schedule_remove_cron ts_https_schedule_enable ts_https_schedule_disable ts_https_schedule_menu \
@@ -196,6 +196,106 @@ EOF
     ADD_CANCEL_OUTPUT=$(add_key <<< "")
     [[ "$ADD_CANCEL_OUTPUT" == *"已取消，未添加公钥"* ]] \
         || { echo "Blank target did not cancel SSH key addition" >&2; exit 1; }
+)
+
+(
+    INSTALL_HOME="$TMP/install-generated-key-home"
+    mkdir -p "$INSTALL_HOME"
+    SSH_PASSWD_FILE="$TMP/install-generated-key-passwd"
+    printf '%s\n' "tony:x:1000:1000::${INSTALL_HOME}:/bin/bash" > "$SSH_PASSWD_FILE"
+    SSHD_CONFIG="$TMP/install-generated-key-sshd"
+    printf '%s\n' 'Port 22' > "$SSHD_CONFIG"
+    ssh_effective_config_dump() {
+        printf '%s\n' 'authorizedkeysfile .ssh/authorized_keys'
+    }
+    ssh_public_key_line_valid() {
+        case "$1" in
+            'ssh-ed25519 GENERATED_KEY_DATA'|'ssh-ed25519 GENERATED_KEY_DATA generated@test')
+                return 0
+                ;;
+            *) return 1 ;;
+        esac
+    }
+    chown() { :; }
+    info() { :; }
+    warn() { :; }
+    error() { printf '%s\n' "$*" >&2; }
+    INSTALL_AUDIT_LOG="$TMP/install-generated-key-audit"
+    audit_action() { printf '%s|%s\n' "$1" "$2" >> "$INSTALL_AUDIT_LOG"; }
+
+    ssh_public_key_target_resolve tony
+    [ "$SSH_KEY_TARGET_FILE" = "$INSTALL_HOME/.ssh/authorized_keys" ] \
+        || { echo "Generated key target did not use the selected user's AuthorizedKeysFile" >&2; exit 1; }
+    ssh_public_key_install 'ssh-ed25519 GENERATED_KEY_DATA generated@test'
+    grep -qx 'ssh-ed25519 GENERATED_KEY_DATA generated@test' "$SSH_KEY_TARGET_FILE" \
+        || { echo "Generated key was not installed for the selected user" >&2; exit 1; }
+    sed -i 's/^ssh-ed25519/no-agent-forwarding ssh-ed25519/' "$SSH_KEY_TARGET_FILE"
+    [ "$(ssh_key_file_count "$SSH_KEY_TARGET_FILE")" = 1 ] \
+        || { echo "AuthorizedKeys options caused the generated key count to be wrong" >&2; exit 1; }
+    ssh_public_key_install 'ssh-ed25519 GENERATED_KEY_DATA generated@test'
+    [ "$(wc -l < "$SSH_KEY_TARGET_FILE" | tr -d '[:space:]')" = 1 ] \
+        || { echo "Generated key installation did not prevent duplicates" >&2; exit 1; }
+    grep -q '为用户 tony 添加 SSH 公钥|SUCCESS' "$INSTALL_AUDIT_LOG" \
+        || { echo "Generated public key installation was not written to the audit log" >&2; exit 1; }
+)
+
+(
+    GENERATED_TARGET_LOG="$TMP/generated-key-targets"
+    GENERATED_INSTALL_LOG="$TMP/generated-key-installs"
+    GENERATED_AUDIT_LOG="$TMP/generated-key-audit"
+    print_header() { :; }
+    menu_item() { :; }
+    menu_div() { :; }
+    info() { :; }
+    warn() { :; }
+    error() { printf '%s\n' "$*" >&2; }
+    ssh_print_key_accounts() { :; }
+    audit_action() { printf '%s|%s\n' "$1" "$2" >> "$GENERATED_AUDIT_LOG"; }
+    ssh_public_key_target_resolve() {
+        SSH_KEY_TARGET_USER="$1"
+        SSH_KEY_TARGET_FILE="/tmp/$1-authorized_keys"
+        printf '%s\n' "$1" >> "$GENERATED_TARGET_LOG"
+    }
+    ssh_public_key_install() {
+        printf '%s|%s\n' "$SSH_KEY_TARGET_USER" "$1" >> "$GENERATED_INSTALL_LOG"
+    }
+    ssh-keygen() {
+        local KEY_OUTPUT=""
+        if [ "${1:-}" = "-t" ]; then
+            while [ "$#" -gt 0 ]; do
+                if [ "$1" = "-f" ]; then
+                    KEY_OUTPUT="$2"
+                    break
+                fi
+                shift
+            done
+            [ -n "$KEY_OUTPUT" ] || return 1
+            printf '%s\n' 'TEST PRIVATE KEY' > "$KEY_OUTPUT"
+            printf '%s\n' 'ssh-ed25519 GENERATED_KEY_DATA generated@test' > "$KEY_OUTPUT.pub"
+            return 0
+        fi
+        if [ "${1:-}" = "-lf" ]; then
+            printf '%s\n' '256 SHA256:generated generated@test (ED25519)'
+            return 0
+        fi
+        return 1
+    }
+
+    generate_key <<< $'1\ngenerated@test\n\ntony' >/dev/null
+    generate_key <<< $'1\ngenerated@test\n\n' >/dev/null
+    generate_key <<< $'1\ngenerated@test\nn' >/dev/null
+    [ "$(sed -n '1p' "$GENERATED_TARGET_LOG")" = tony ] \
+        || { echo "Generated key did not accept a selected target user" >&2; exit 1; }
+    [ "$(sed -n '2p' "$GENERATED_TARGET_LOG")" = root ] \
+        || { echo "Blank generated-key target did not default to root" >&2; exit 1; }
+    [ "$(wc -l < "$GENERATED_TARGET_LOG" | tr -d '[:space:]')" = 2 ] \
+        || { echo "Skipping generated-key installation still selected a target" >&2; exit 1; }
+    grep -q '^tony|ssh-ed25519 GENERATED_KEY_DATA generated@test$' "$GENERATED_INSTALL_LOG" \
+        || { echo "Generated key was not passed to the selected user installer" >&2; exit 1; }
+    grep -q '^root|ssh-ed25519 GENERATED_KEY_DATA generated@test$' "$GENERATED_INSTALL_LOG" \
+        || { echo "Generated key was not passed to the default root installer" >&2; exit 1; }
+    grep -q '跳过服务器公钥写入|INFO' "$GENERATED_AUDIT_LOG" \
+        || { echo "Skipped generated-key installation was not written to the audit log" >&2; exit 1; }
 )
 
 (

@@ -369,44 +369,113 @@ ssh_key_delete_confirm_new_session() {
 }
 
 ssh_key_file_count() {
-    local KEY_FILE="$1" COUNT
-    COUNT=$(grep -cE '^(ssh-rsa|ssh-ed25519|ecdsa-sha2|sk-ssh|sk-ecdsa|ssh-dss) ' \
-        "$KEY_FILE" 2>/dev/null || true)
-    case "$COUNT" in
-        ''|*[!0-9]*) printf '0\n' ;;
-        *) printf '%s\n' "$COUNT" ;;
-    esac
+    local KEY_FILE="$1" KEY_LINE COUNT=0
+    [ -f "$KEY_FILE" ] || { printf '0\n'; return; }
+    while IFS= read -r KEY_LINE; do
+        ssh_public_key_line_fields "$KEY_LINE" >/dev/null || continue
+        COUNT=$((COUNT+1))
+    done < "$KEY_FILE"
+    printf '%s\n' "$COUNT"
+}
+
+ssh_public_key_target_resolve() {
+    local USERNAME="$1" RECORD LOGIN_SHELL
+    SSH_KEY_TARGET_USER=""
+    SSH_KEY_TARGET_UID=""
+    SSH_KEY_TARGET_GID=""
+    SSH_KEY_TARGET_HOME=""
+    SSH_KEY_TARGET_FILE=""
+
+    RECORD=$(ssh_account_record "$USERNAME")
+    [ -n "$RECORD" ] || { error "用户 $USERNAME 不存在"; return 1; }
+    IFS=: read -r SSH_KEY_TARGET_USER _ SSH_KEY_TARGET_UID SSH_KEY_TARGET_GID _ \
+        SSH_KEY_TARGET_HOME LOGIN_SHELL <<< "$RECORD"
+    if ! ssh_key_target_allowed \
+        "$SSH_KEY_TARGET_USER" "$SSH_KEY_TARGET_UID" "$SSH_KEY_TARGET_HOME" "$LOGIN_SHELL"; then
+        error "用户 $USERNAME 不是可用的交互式登录账号"
+        return 1
+    fi
+    SSH_KEY_TARGET_FILE=$(ssh_authorized_keys_path_for_user \
+        "$SSHD_CONFIG" "$SSH_KEY_TARGET_USER" "$SSH_KEY_TARGET_UID" "$SSH_KEY_TARGET_HOME") || {
+        error "无法确定用户 $USERNAME 实际生效的 AuthorizedKeysFile，已拒绝写入"
+        return 1
+    }
+    if [ -L "$SSH_KEY_TARGET_FILE" ] \
+        || { [ -e "$SSH_KEY_TARGET_FILE" ] && [ ! -f "$SSH_KEY_TARGET_FILE" ]; }; then
+        error "公钥目标不是安全的普通文件：$SSH_KEY_TARGET_FILE"
+        return 1
+    fi
+}
+
+ssh_public_key_install() {
+    local PUBKEY_INPUT="$1" KEY_TYPE KEY_DATA KEY_DIR TOTAL EXISTING_LINE EXISTING_FIELDS
+    local EXISTING_TYPE EXISTING_DATA
+    [ -n "${SSH_KEY_TARGET_USER:-}" ] && [ -n "${SSH_KEY_TARGET_FILE:-}" ] || {
+        error "尚未选择有效的公钥目标用户"
+        return 1
+    }
+    if ! ssh_public_key_line_valid "$PUBKEY_INPUT"; then
+        error "公钥格式或内容无效，应使用以 ssh-ed25519、ssh-rsa 等开头的完整单行公钥"
+        return 1
+    fi
+
+    # 取类型+主体比较，忽略备注差异，避免重复加入同一把公钥。
+    read -r KEY_TYPE KEY_DATA _ <<< "$PUBKEY_INPUT"
+    if [ -f "$SSH_KEY_TARGET_FILE" ]; then
+        while IFS= read -r EXISTING_LINE; do
+            EXISTING_FIELDS=$(ssh_public_key_line_fields "$EXISTING_LINE") || continue
+            IFS=$'\t' read -r EXISTING_TYPE EXISTING_DATA _ <<< "$EXISTING_FIELDS"
+            if [ "$EXISTING_TYPE" = "$KEY_TYPE" ] && [ "$EXISTING_DATA" = "$KEY_DATA" ]; then
+                warn "该公钥已存在于用户 $SSH_KEY_TARGET_USER，跳过添加"
+                audit_action "为用户 $SSH_KEY_TARGET_USER 添加 SSH 公钥（已存在）" INFO
+                return 0
+            fi
+        done < "$SSH_KEY_TARGET_FILE"
+    fi
+
+    KEY_DIR=$(dirname "$SSH_KEY_TARGET_FILE")
+    mkdir -p "$KEY_DIR" || { error "无法创建目录 $KEY_DIR"; return 1; }
+    if [[ "$SSH_KEY_TARGET_FILE" == "${SSH_KEY_TARGET_HOME%/}/"* ]]; then
+        chown "$SSH_KEY_TARGET_UID:$SSH_KEY_TARGET_GID" "$KEY_DIR" 2>/dev/null || {
+            error "无法设置目录属主：$KEY_DIR"
+            return 1
+        }
+        chmod 700 "$KEY_DIR" || { error "无法设置目录权限：$KEY_DIR"; return 1; }
+    fi
+    touch "$SSH_KEY_TARGET_FILE" \
+        || { error "无法创建公钥文件：$SSH_KEY_TARGET_FILE"; return 1; }
+    chmod 600 "$SSH_KEY_TARGET_FILE" || { error "无法设置公钥文件权限"; return 1; }
+    if [[ "$SSH_KEY_TARGET_FILE" == "${SSH_KEY_TARGET_HOME%/}/"* ]]; then
+        chown "$SSH_KEY_TARGET_UID:$SSH_KEY_TARGET_GID" "$SSH_KEY_TARGET_FILE" || {
+            error "无法设置公钥文件属主"
+            return 1
+        }
+    else
+        chown 0:0 "$SSH_KEY_TARGET_FILE" 2>/dev/null || true
+    fi
+    if ! printf '%s\n' "$PUBKEY_INPUT" >> "$SSH_KEY_TARGET_FILE"; then
+        error "写入公钥失败"
+        return 1
+    fi
+
+    TOTAL=$(ssh_key_file_count "$SSH_KEY_TARGET_FILE")
+    info "公钥已添加到用户 $SSH_KEY_TARGET_USER！该文件当前共 $TOTAL 个公钥 ✓"
+    audit_action "为用户 $SSH_KEY_TARGET_USER 添加 SSH 公钥" SUCCESS
 }
 
 add_key() {
     print_header "添加 SSH 公钥"
 
-    local USERNAME RECORD ACCOUNT_UID ACCOUNT_GID HOME_DIR LOGIN_SHELL
-    local TARGET_KEYS KEY_DIR PUBKEY_INPUT KEY_TYPE KEY_DATA TOTAL
+    local USERNAME PUBKEY_INPUT
     ssh_print_key_accounts
 
     read -rp "  输入目标用户名（直接回车取消）: " USERNAME
     [ -n "$USERNAME" ] || { warn "已取消，未添加公钥。"; return; }
-    RECORD=$(ssh_account_record "$USERNAME")
-    [ -n "$RECORD" ] || { error "用户 $USERNAME 不存在"; return 1; }
-    IFS=: read -r _ _ ACCOUNT_UID ACCOUNT_GID _ HOME_DIR LOGIN_SHELL <<< "$RECORD"
-    if ! ssh_key_target_allowed "$USERNAME" "$ACCOUNT_UID" "$HOME_DIR" "$LOGIN_SHELL"; then
-        error "用户 $USERNAME 不是可用的交互式登录账号"
-        return 1
-    fi
-    TARGET_KEYS=$(ssh_authorized_keys_path_for_user \
-        "$SSHD_CONFIG" "$USERNAME" "$ACCOUNT_UID" "$HOME_DIR") || {
-        error "无法确定用户 $USERNAME 实际生效的 AuthorizedKeysFile，已拒绝写入"
-        return 1
-    }
-    if [ -L "$TARGET_KEYS" ] || { [ -e "$TARGET_KEYS" ] && [ ! -f "$TARGET_KEYS" ]; }; then
-        error "公钥目标不是安全的普通文件：$TARGET_KEYS"
-        return 1
-    fi
+    ssh_public_key_target_resolve "$USERNAME" || return 1
 
     echo ""
-    echo -e "  目标用户：${BOLD}${USERNAME}${NC}"
-    echo -e "  公钥文件：${BOLD}${TARGET_KEYS}${NC}"
+    echo -e "  目标用户：${BOLD}${SSH_KEY_TARGET_USER}${NC}"
+    echo -e "  公钥文件：${BOLD}${SSH_KEY_TARGET_FILE}${NC}"
     read -r -p "  粘贴一整行 SSH 公钥（直接回车取消）: " PUBKEY_INPUT
     PUBKEY_INPUT=${PUBKEY_INPUT%$'\r'}
     PUBKEY_INPUT="${PUBKEY_INPUT#"${PUBKEY_INPUT%%[![:space:]]*}"}"
@@ -414,47 +483,7 @@ add_key() {
         warn "已取消，未添加公钥。"
         return
     fi
-    if ! ssh_public_key_line_valid "$PUBKEY_INPUT"; then
-        error "公钥格式或内容无效，应粘贴以 ssh-ed25519、ssh-rsa 等开头的完整单行公钥"
-        return
-    fi
-
-    # 检查是否已存在相同公钥（取类型+主体比较，忽略备注差异）
-    read -r KEY_TYPE KEY_DATA _ <<< "$PUBKEY_INPUT"
-    if awk -v key_type="$KEY_TYPE" -v key_data="$KEY_DATA" \
-        '$1 == key_type && $2 == key_data {found=1} END {exit !found}' \
-        "$TARGET_KEYS" 2>/dev/null; then
-        warn "该公钥已存在，跳过添加（避免重复）"
-        return
-    fi
-
-    KEY_DIR=$(dirname "$TARGET_KEYS")
-    mkdir -p "$KEY_DIR" || { error "无法创建目录 $KEY_DIR"; return 1; }
-    if [[ "$TARGET_KEYS" == "${HOME_DIR%/}/"* ]]; then
-        chown "$ACCOUNT_UID:$ACCOUNT_GID" "$KEY_DIR" 2>/dev/null || {
-            error "无法设置目录属主：$KEY_DIR"
-            return 1
-        }
-        chmod 700 "$KEY_DIR" || { error "无法设置目录权限：$KEY_DIR"; return 1; }
-    fi
-    touch "$TARGET_KEYS" || { error "无法创建公钥文件：$TARGET_KEYS"; return 1; }
-    chmod 600 "$TARGET_KEYS" || { error "无法设置公钥文件权限"; return 1; }
-    if [[ "$TARGET_KEYS" == "${HOME_DIR%/}/"* ]]; then
-        chown "$ACCOUNT_UID:$ACCOUNT_GID" "$TARGET_KEYS" || {
-            error "无法设置公钥文件属主"
-            return 1
-        }
-    else
-        chown 0:0 "$TARGET_KEYS" 2>/dev/null || true
-    fi
-    if ! printf '%s\n' "$PUBKEY_INPUT" >> "$TARGET_KEYS"; then
-        error "写入公钥失败"
-        return 1
-    fi
-
-    TOTAL=$(ssh_key_file_count "$TARGET_KEYS")
-    info "公钥已添加到用户 $USERNAME！该文件当前共 $TOTAL 个公钥 ✓"
-    audit_action "为用户 $USERNAME 添加 SSH 公钥" SUCCESS
+    ssh_public_key_install "$PUBKEY_INPUT"
 }
 
 delete_key() {
@@ -700,6 +729,7 @@ generate_key() {
     PUBKEY=$(cat "${KEY_FILE}.pub")
     PRIVKEY=$(cat "$KEY_FILE")
     FINGER=$(ssh-keygen -lf "${KEY_FILE}.pub" 2>/dev/null | awk '{print $2}')
+    audit_action "生成 SSH $KEY_TYPE 密钥对（指纹 ${FINGER:-N/A}）" SUCCESS
 
     print_header "密钥生成完成 — 请复制保存"
 
@@ -723,23 +753,38 @@ generate_key() {
     menu_div
     echo ""
 
-    read -rp "  是否将公钥添加到本服务器的 root 用户？(Y/n，默认Y): " ADD_CONFIRM
+    read -rp "  是否将公钥添加到本服务器用户？(Y/n，默认Y): " ADD_CONFIRM
     [ -z "${ADD_CONFIRM}" ] && ADD_CONFIRM="y"
     if echo "${ADD_CONFIRM}" | grep -qiE '^y(es)?$'; then
-        mkdir -p "$(dirname "$AUTH_KEYS")"; chmod 700 "$(dirname "$AUTH_KEYS")"
-        local KEY_BODY
-        KEY_BODY=$(echo "$PUBKEY" | awk '{print $1, $2}')
-        if grep -qF "$KEY_BODY" "$AUTH_KEYS" 2>/dev/null; then
-            warn "该公钥已存在于 root，跳过添加"
-        else
-            echo "$PUBKEY" >> "$AUTH_KEYS"; chmod 600 "$AUTH_KEYS"
-            local TOTAL
-            TOTAL=$(ssh_key_count)
-            echo ""
-            info "公钥已添加到 root！当前共 $TOTAL 个公钥 ✓"
-        fi
+        ssh_print_key_accounts
+        local TARGET_USERNAME RETRY_TARGET
+        while true; do
+            read -rp "  输入目标用户名（默认 root，输入 0 则不添加）: " TARGET_USERNAME
+            TARGET_USERNAME="${TARGET_USERNAME:-root}"
+            if [ "$TARGET_USERNAME" = "0" ]; then
+                warn "已跳过，生成的公钥未添加到任何用户。"
+                audit_action "生成 SSH $KEY_TYPE 密钥对后跳过服务器公钥写入" INFO
+                break
+            fi
+            if ssh_public_key_target_resolve "$TARGET_USERNAME"; then
+                echo ""
+                echo -e "  目标用户：${BOLD}${SSH_KEY_TARGET_USER}${NC}"
+                echo -e "  公钥文件：${BOLD}${SSH_KEY_TARGET_FILE}${NC}"
+                if ssh_public_key_install "$PUBKEY"; then
+                    break
+                fi
+                audit_action "生成 SSH $KEY_TYPE 密钥对后为用户 $TARGET_USERNAME 写入公钥失败" FAILED
+            fi
+            read -rp "  目标不可用或写入失败，是否重新选择？(y/N，默认N): " RETRY_TARGET
+            if ! echo "${RETRY_TARGET:-n}" | grep -qiE '^y(es)?$'; then
+                warn "已停止添加，生成的公钥未写入任何用户。"
+                audit_action "生成 SSH $KEY_TYPE 密钥对后未完成服务器公钥写入" FAILED
+                break
+            fi
+        done
     else
-        warn "已跳过，公钥未添加到 root。"
+        warn "已跳过，生成的公钥未添加到任何用户。"
+        audit_action "生成 SSH $KEY_TYPE 密钥对后跳过服务器公钥写入" INFO
     fi
 
     rm -rf "$TMP_DIR"
