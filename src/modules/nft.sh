@@ -9,8 +9,8 @@ NFT_RULES_FILE="${NFT_RULES_FILE:-$NFT_STATE_DIR/rules.db}"
 NFT_ACCESS_FILE="${NFT_ACCESS_FILE:-$NFT_STATE_DIR/access.conf}"
 NFT_RENDER_VERSION="1"
 NFT_TRACK_TIMEOUT="${NFT_TRACK_TIMEOUT:-30m}"
-NFT_DDNS_TIMER_FILE="/etc/systemd/system/nftpf-ddns.timer"
-NFT_DDNS_SERVICE_FILE="/etc/systemd/system/nftpf-ddns.service"
+NFT_DDNS_TIMER_FILE="${NFT_DDNS_TIMER_FILE:-/etc/systemd/system/nftpf-ddns.timer}"
+NFT_DDNS_SERVICE_FILE="${NFT_DDNS_SERVICE_FILE:-/etc/systemd/system/nftpf-ddns.service}"
 
 # ── 基础工具 ──────────────────────────────────────────────
 nft_ensure_state_dir() {
@@ -824,16 +824,204 @@ nft_ddns_timer_status() {
     fi
 }
 
+nft_ddns_interval_valid() {
+    local INTERVAL="$1" NUMBER UNIT FACTOR SECONDS
+    [[ "$INTERVAL" =~ ^([0-9]+)([smh])$ ]] || return 1
+    NUMBER="${BASH_REMATCH[1]}"
+    UNIT="${BASH_REMATCH[2]}"
+    while [ "${#NUMBER}" -gt 1 ] && [ "${NUMBER#0}" != "$NUMBER" ]; do
+        NUMBER="${NUMBER#0}"
+    done
+    case "$UNIT" in
+        s) [ "${#NUMBER}" -le 5 ] || return 1; FACTOR=1 ;;
+        m) [ "${#NUMBER}" -le 4 ] || return 1; FACTOR=60 ;;
+        h) [ "${#NUMBER}" -le 2 ] || return 1; FACTOR=3600 ;;
+        *) return 1 ;;
+    esac
+    NUMBER=$((10#$NUMBER))
+    SECONDS=$((NUMBER * FACTOR))
+    [ "$SECONDS" -ge 10 ] && [ "$SECONDS" -le 86400 ]
+}
+
+nft_ddns_unit_snapshot() {
+    local UNIT_FILE="$1" BACKUP LINK_TARGET
+    NFT_DDNS_SNAPSHOT_KIND=absent
+    NFT_DDNS_SNAPSHOT_PATH=""
+    if [ -L "$UNIT_FILE" ]; then
+        [ ! -d "$UNIT_FILE" ] || return 1
+        BACKUP=$(mktemp "${UNIT_FILE}.backup.XXXXXX") || return 1
+        rm -f "$BACKUP" || return 1
+        LINK_TARGET=$(readlink "$UNIT_FILE" 2>/dev/null) || return 1
+        if ! ln -s "$LINK_TARGET" "$BACKUP"; then
+            rm -f "$BACKUP"
+            return 1
+        fi
+        NFT_DDNS_SNAPSHOT_KIND=symlink
+        NFT_DDNS_SNAPSHOT_PATH="$BACKUP"
+    elif [ -f "$UNIT_FILE" ]; then
+        BACKUP=$(mktemp "${UNIT_FILE}.backup.XXXXXX") || return 1
+        if ! cp -p "$UNIT_FILE" "$BACKUP"; then
+            rm -f "$BACKUP"
+            return 1
+        fi
+        NFT_DDNS_SNAPSHOT_KIND=regular
+        NFT_DDNS_SNAPSHOT_PATH="$BACKUP"
+    elif [ -e "$UNIT_FILE" ]; then
+        return 1
+    fi
+}
+
+nft_ddns_atomic_replace() {
+    local SOURCE="$1" DEST="$2" MV_HELP
+    MV_HELP=$(mv --help 2>&1 || true)
+    if printf '%s\n' "$MV_HELP" | grep -q -- '--no-target-directory'; then
+        mv -fT -- "$SOURCE" "$DEST"
+        return
+    fi
+    [ ! -d "$DEST" ] || return 1
+    mv -f -- "$SOURCE" "$DEST"
+}
+
+nft_ddns_unit_restore() {
+    local KIND="$1" BACKUP="$2" UNIT_FILE="$3" LINK_TARGET=""
+    case "$KIND" in
+        absent)
+            rm -f "$UNIT_FILE" || return 1
+            [ ! -e "$UNIT_FILE" ] && [ ! -L "$UNIT_FILE" ]
+            ;;
+        regular)
+            [ -f "$BACKUP" ] && [ ! -L "$BACKUP" ] || return 1
+            nft_ddns_atomic_replace "$BACKUP" "$UNIT_FILE" || return 1
+            [ -f "$UNIT_FILE" ] && [ ! -L "$UNIT_FILE" ]
+            ;;
+        symlink)
+            [ -L "$BACKUP" ] || return 1
+            [ ! -d "$BACKUP" ] || return 1
+            LINK_TARGET=$(readlink "$BACKUP" 2>/dev/null) || return 1
+            nft_ddns_atomic_replace "$BACKUP" "$UNIT_FILE" || return 1
+            [ -L "$UNIT_FILE" ] \
+                && [ "$(readlink "$UNIT_FILE" 2>/dev/null)" = "$LINK_TARGET" ]
+            ;;
+        *) return 1 ;;
+    esac
+}
+
+nft_ddns_units_restore() {
+    local SERVICE_KIND="$1" SERVICE_BACKUP="$2" TIMER_KIND="$3" TIMER_BACKUP="$4"
+    local RC=0
+    nft_ddns_unit_restore "$SERVICE_KIND" "$SERVICE_BACKUP" "$NFT_DDNS_SERVICE_FILE" || RC=1
+    nft_ddns_unit_restore "$TIMER_KIND" "$TIMER_BACKUP" "$NFT_DDNS_TIMER_FILE" || RC=1
+    return "$RC"
+}
+
+nft_ddns_timer_restore_state() {
+    local WAS_ENABLED_STATE="$1" WAS_ACTIVE="$2"
+    local RC=0
+    case "$WAS_ENABLED_STATE" in
+        enabled)
+            systemctl enable nftpf-ddns.timer >/dev/null 2>&1 || RC=1
+            ;;
+        enabled-runtime)
+            systemctl enable --runtime nftpf-ddns.timer >/dev/null 2>&1 || RC=1
+            ;;
+    esac
+    if [ "$WAS_ACTIVE" = yes ]; then
+        systemctl start nftpf-ddns.timer >/dev/null 2>&1 || RC=1
+    fi
+    return "$RC"
+}
+
+nft_ddns_timer_capture_state() {
+    local ENABLED_OUTPUT="" ACTIVE_OUTPUT=""
+    if ENABLED_OUTPUT=$(LC_ALL=C systemctl is-enabled nftpf-ddns.timer 2>/dev/null); then
+        :
+    else
+        # is-enabled intentionally returns non-zero for disabled/static/missing
+        # units, so the textual state remains the authoritative result.
+        :
+    fi
+    case "$ENABLED_OUTPUT" in
+        enabled|enabled-runtime|disabled|static|indirect|not-found)
+            ;;
+        *)
+            error "无法可靠读取 nftpf-ddns.timer 的启用状态，拒绝覆盖 unit"
+            return 1
+            ;;
+    esac
+
+    if ACTIVE_OUTPUT=$(LC_ALL=C systemctl is-active nftpf-ddns.timer 2>/dev/null); then
+        :
+    else
+        # inactive and a missing unit normally return non-zero with a stable
+        # textual state; transport/permission errors produce no accepted state.
+        :
+    fi
+    case "$ACTIVE_OUTPUT" in
+        active) NFT_DDNS_WAS_ACTIVE=yes ;;
+        inactive) NFT_DDNS_WAS_ACTIVE=no ;;
+        unknown)
+            [ "$ENABLED_OUTPUT" = not-found ] || {
+                error "nftpf-ddns.timer 的运行状态未知，拒绝覆盖 unit"
+                return 1
+            }
+            NFT_DDNS_WAS_ACTIVE=no
+            ;;
+        failed)
+            error "nftpf-ddns.timer 当前处于 failed 状态，请先人工处理再替换"
+            return 1
+            ;;
+        *)
+            error "无法可靠读取 nftpf-ddns.timer 的运行状态，拒绝覆盖 unit"
+            return 1
+            ;;
+    esac
+    NFT_DDNS_WAS_ENABLED_STATE="$ENABLED_OUTPUT"
+}
+
+nft_ddns_timer_rollback() {
+    local SERVICE_KIND="$1" SERVICE_BACKUP="$2" TIMER_KIND="$3" TIMER_BACKUP="$4"
+    local WAS_ENABLED_STATE="$5" WAS_ACTIVE="$6" RC=0
+    systemctl disable --now nftpf-ddns.timer >/dev/null 2>&1 || RC=1
+    nft_ddns_units_restore "$SERVICE_KIND" "$SERVICE_BACKUP" "$TIMER_KIND" "$TIMER_BACKUP" || RC=1
+    systemctl daemon-reload >/dev/null 2>&1 || RC=1
+    nft_ddns_timer_restore_state "$WAS_ENABLED_STATE" "$WAS_ACTIVE" || RC=1
+    return "$RC"
+}
+
 nft_ddns_timer_enable() {
     print_header "启用 DDNS 自动刷新"
-    if ! command -v systemctl &>/dev/null; then
+    local interval service_tmp="" timer_tmp="" service_backup="" timer_backup=""
+    local service_kind=absent timer_kind=absent was_enabled_state=disabled was_active=no
+    if ! systemd_available; then
         error "需要 systemd 才能启用自动刷新"
         return 1
     fi
     read -rp "  刷新间隔（10s-24h，默认 5m）: " interval
     [ -z "$interval" ] && interval="5m"
+    nft_ddns_interval_valid "$interval" || {
+        error "无效刷新间隔，请使用 10s-86400s、1m-1440m 或 1h-24h"
+        return 1
+    }
+    command -v self_ensure_local_runner >/dev/null 2>&1 || {
+        error "缺少本地后台任务安装组件"
+        return 1
+    }
+    self_ensure_local_runner '--nft-refresh-ddns)' || return 1
 
-    cat > "$NFT_DDNS_SERVICE_FILE" <<EOF
+    nft_ddns_timer_capture_state || return 1
+    was_enabled_state="$NFT_DDNS_WAS_ENABLED_STATE"
+    was_active="$NFT_DDNS_WAS_ACTIVE"
+    mkdir -p "$(dirname "$NFT_DDNS_SERVICE_FILE")" "$(dirname "$NFT_DDNS_TIMER_FILE")" \
+        || { error "无法创建 systemd unit 目录"; return 1; }
+    service_tmp=$(mktemp "${NFT_DDNS_SERVICE_FILE}.tmp.XXXXXX") \
+        || { error "无法创建 NFT DDNS service 临时文件"; return 1; }
+    timer_tmp=$(mktemp "${NFT_DDNS_TIMER_FILE}.tmp.XXXXXX") || {
+        rm -f "$service_tmp"
+        error "无法创建 NFT DDNS timer 临时文件"
+        return 1
+    }
+
+    if ! cat > "$service_tmp" <<EOF
 [Unit]
 Description=NFT Port Forward DDNS refresh
 After=network-online.target
@@ -842,8 +1030,12 @@ After=network-online.target
 Type=oneshot
 ExecStart=$LOCAL_SCRIPT --nft-refresh-ddns
 EOF
-
-    cat > "$NFT_DDNS_TIMER_FILE" <<EOF
+    then
+        rm -f "$service_tmp" "$timer_tmp"
+        error "无法写入 NFT DDNS service"
+        return 1
+    fi
+    if ! cat > "$timer_tmp" <<EOF
 [Unit]
 Description=NFT Port Forward DDNS auto refresh
 
@@ -856,18 +1048,103 @@ Unit=nftpf-ddns.service
 [Install]
 WantedBy=timers.target
 EOF
+    then
+        rm -f "$service_tmp" "$timer_tmp"
+        error "无法写入 NFT DDNS timer"
+        return 1
+    fi
+    chmod 644 "$service_tmp" "$timer_tmp" 2>/dev/null || {
+        rm -f "$service_tmp" "$timer_tmp"
+        error "无法设置 NFT DDNS unit 权限"
+        return 1
+    }
 
-    systemctl daemon-reload
-    systemctl enable --now nftpf-ddns.timer &>/dev/null && info "DDNS 自动刷新已启用（每 ${interval}）✓" \
-        || error "启用失败"
+    nft_ddns_unit_snapshot "$NFT_DDNS_SERVICE_FILE" || {
+        rm -f "$service_tmp" "$timer_tmp"
+        error "无法安全备份现有 NFT DDNS service（仅支持普通文件或软链接）"
+        return 1
+    }
+    service_kind="$NFT_DDNS_SNAPSHOT_KIND"
+    service_backup="$NFT_DDNS_SNAPSHOT_PATH"
+    nft_ddns_unit_snapshot "$NFT_DDNS_TIMER_FILE" || {
+        rm -f "$service_tmp" "$timer_tmp"
+        [ -z "$service_backup" ] || rm -f "$service_backup"
+        error "无法安全备份现有 NFT DDNS timer（仅支持普通文件或软链接）"
+        return 1
+    }
+    timer_kind="$NFT_DDNS_SNAPSHOT_KIND"
+    timer_backup="$NFT_DDNS_SNAPSHOT_PATH"
+
+    if ! nft_ddns_atomic_replace "$service_tmp" "$NFT_DDNS_SERVICE_FILE" \
+        || ! nft_ddns_atomic_replace "$timer_tmp" "$NFT_DDNS_TIMER_FILE"; then
+        rm -f "$service_tmp" "$timer_tmp"
+        if nft_ddns_timer_rollback "$service_kind" "$service_backup" \
+            "$timer_kind" "$timer_backup" "$was_enabled_state" "$was_active"; then
+            error "无法原子安装 NFT DDNS unit，已恢复原 unit 与运行状态"
+        else
+            error "无法原子安装 NFT DDNS unit，且回滚不完整，请立即检查 systemd unit 与 timer 状态"
+        fi
+        return 1
+    fi
+    if ! systemctl daemon-reload >/dev/null 2>&1; then
+        if nft_ddns_timer_rollback "$service_kind" "$service_backup" \
+            "$timer_kind" "$timer_backup" "$was_enabled_state" "$was_active"; then
+            error "systemd 重新加载失败，已恢复原 unit 与运行状态"
+        else
+            error "systemd 重新加载失败，且回滚不完整，请立即检查 systemd unit 与 timer 状态"
+        fi
+        return 1
+    fi
+    if ! systemctl enable --now nftpf-ddns.timer >/dev/null 2>&1 \
+        || ! systemctl is-active --quiet nftpf-ddns.timer 2>/dev/null; then
+        if nft_ddns_timer_rollback "$service_kind" "$service_backup" \
+            "$timer_kind" "$timer_backup" "$was_enabled_state" "$was_active"; then
+            error "启用 NFT DDNS 自动刷新失败，已恢复原 unit 与运行状态"
+        else
+            error "启用 NFT DDNS 自动刷新失败，且回滚不完整，请立即检查 systemd unit 与 timer 状态"
+        fi
+        return 1
+    fi
+    [ -z "$service_backup" ] || rm -f "$service_backup"
+    [ -z "$timer_backup" ] || rm -f "$timer_backup"
+    info "DDNS 自动刷新已启用（每 ${interval}）✓"
+    return 0
 }
 
 nft_ddns_timer_disable() {
-    if command -v systemctl &>/dev/null; then
-        systemctl disable --now nftpf-ddns.timer &>/dev/null || true
+    local ACTIVE_STATE="" ENABLED_STATE=""
+    command -v systemctl >/dev/null 2>&1 || {
+        error "无法调用 systemctl，不能确认 DDNS timer 已停止"
+        return 1
+    }
+    if ! systemctl disable --now nftpf-ddns.timer >/dev/null 2>&1; then
+        error "停止或禁用 nftpf-ddns.timer 失败，unit 文件保持不变"
+        return 1
     fi
-    rm -f "$NFT_DDNS_TIMER_FILE" "$NFT_DDNS_SERVICE_FILE"
-    command -v systemctl &>/dev/null && systemctl daemon-reload
+    ACTIVE_STATE=$(LC_ALL=C systemctl is-active nftpf-ddns.timer 2>/dev/null) || true
+    case "$ACTIVE_STATE" in
+        inactive|failed|unknown) ;;
+        *)
+            error "无法确认 nftpf-ddns.timer 已停止，拒绝删除 unit 文件"
+            return 1
+            ;;
+    esac
+    ENABLED_STATE=$(LC_ALL=C systemctl is-enabled nftpf-ddns.timer 2>/dev/null) || true
+    case "$ENABLED_STATE" in
+        disabled|static|indirect|not-found) ;;
+        *)
+            error "无法确认 nftpf-ddns.timer 已禁用，拒绝删除 unit 文件"
+            return 1
+            ;;
+    esac
+    if ! rm -f -- "$NFT_DDNS_TIMER_FILE" "$NFT_DDNS_SERVICE_FILE"; then
+        error "DDNS timer 已停止，但删除 unit 文件失败"
+        return 1
+    fi
+    if ! systemctl daemon-reload >/dev/null 2>&1; then
+        error "DDNS timer 已停止且 unit 已删除，但 systemd 重新加载失败"
+        return 1
+    fi
     info "DDNS 自动刷新已关闭"
 }
 
@@ -970,7 +1247,7 @@ nft_access_menu() {
             1)
                 # 白名单警告：自动检测当前 SSH 来源
                 local ssh_from
-                ssh_from=$(echo "${SSH_CONNECTION:-}" | awk '{print $1}')
+                ssh_from=$(vps_tools_ssh_client_ip 2>/dev/null || true)
                 if [ -n "$ssh_from" ]; then
                     echo ""
                     echo -e "  ${YELLOW}当前 SSH 来源：${BOLD}${ssh_from}${NC}"

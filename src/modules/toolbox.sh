@@ -7,7 +7,7 @@ config_backup_allowed_roots() {
     for p in \
         etc/hostname etc/hosts \
         etc/ssh/sshd_config etc/ssh/sshd_config.d root/.ssh/authorized_keys \
-        etc/fail2ban etc/ufw etc/firewalld etc/nftables.conf etc/nftables.d/vps-tools-nftpf.nft etc/nft-port-forward \
+        etc/fail2ban etc/ufw etc/firewalld etc/iptables/rules.v4 etc/iptables/rules.v6 etc/nftables.conf etc/nftables.d/vps-tools-nftpf.nft etc/nft-port-forward \
         etc/sysctl.conf etc/sysctl.d/99-vps-bbr.conf etc/sysctl.d/99-ipv6-disable.conf \
         etc/gai.conf etc/resolv.conf etc/systemd/resolved.conf etc/systemd/resolved.conf.d \
         etc/NetworkManager/conf.d etc/NetworkManager/system-connections etc/resolvconf/resolv.conf.d \
@@ -19,6 +19,21 @@ config_backup_allowed_roots() {
     done
 }
 
+config_backup_root_is_directory() {
+    case "$1" in
+        etc/ssh/sshd_config.d|\
+        etc/fail2ban|etc/ufw|etc/firewalld|\
+        etc/systemd/resolved.conf.d|\
+        etc/NetworkManager/conf.d|etc/NetworkManager/system-connections|\
+        etc/resolvconf/resolv.conf.d|etc/caddy|etc/nft-port-forward)
+            return 0
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
 config_backup_paths() {
     local p
     while IFS= read -r p; do
@@ -27,31 +42,285 @@ config_backup_paths() {
     done < <(config_backup_allowed_roots)
 }
 
+config_archive_raw_types_valid() {
+    local FILE="$1" RAW OFFSET=0 TOTAL HEADER_NONZERO TAIL_NONZERO
+    local TYPE_BYTE SIZE_TEXT SIZE BLOCKS FOUND_END=no
+    local MAX_COMPRESSED="${CONFIG_ARCHIVE_MAX_COMPRESSED_BYTES:-67108864}"
+    local MAX_RAW="${CONFIG_ARCHIVE_MAX_RAW_BYTES:-268435456}"
+    RAW=$(mktemp) || return 1
+    if ! archive_gzip_decompress_bounded \
+        "$FILE" "$RAW" "$MAX_COMPRESSED" "$MAX_RAW"; then
+        rm -f "$RAW"
+        return 1
+    fi
+    TOTAL=$(stat -c '%s' "$RAW" 2>/dev/null) || {
+        rm -f "$RAW"
+        return 1
+    }
+    [[ "$TOTAL" =~ ^[0-9]+$ ]] && [ "$TOTAL" -ge 1024 ] \
+        && [ $((TOTAL % 512)) -eq 0 ] || {
+        rm -f "$RAW"
+        return 1
+    }
+    while [ $((OFFSET + 512)) -le "$TOTAL" ]; do
+        HEADER_NONZERO=$(dd if="$RAW" bs=512 skip=$((OFFSET / 512)) count=1 2>/dev/null \
+            | od -An -tu1 \
+            | awk '{for (i=1; i<=NF; i++) if ($i != 0) {print 1; exit}}')
+        if [ -z "$HEADER_NONZERO" ]; then
+            # A valid tar stream ends with at least two zero records.  Reject a
+            # single-zero pivot and any non-zero data after the end marker.
+            [ $((OFFSET + 1024)) -le "$TOTAL" ] || {
+                rm -f "$RAW"
+                return 1
+            }
+            TAIL_NONZERO=$(dd if="$RAW" bs=512 skip=$((OFFSET / 512)) 2>/dev/null \
+                | od -An -tu1 \
+                | awk '{for (i=1; i<=NF; i++) if ($i != 0) {print 1; exit}}')
+            [ -z "$TAIL_NONZERO" ] || {
+                rm -f "$RAW"
+                return 1
+            }
+            FOUND_END=yes
+            break
+        fi
+        TYPE_BYTE=$(dd if="$RAW" bs=1 skip=$((OFFSET + 156)) count=1 2>/dev/null \
+            | od -An -tu1 | tr -d '[:space:]')
+        SIZE_TEXT=$(dd if="$RAW" bs=1 skip=$((OFFSET + 124)) count=12 2>/dev/null \
+            | tr -d '\000[:space:]')
+        case "$TYPE_BYTE" in
+            0|48|50|53) ;;
+            *) rm -f "$RAW"; return 1 ;;
+        esac
+        case "$SIZE_TEXT" in
+            "") SIZE=0 ;;
+            *[!0-7]*) rm -f "$RAW"; return 1 ;;
+            *) SIZE=$((8#$SIZE_TEXT)) ;;
+        esac
+        BLOCKS=$(((SIZE + 511) / 512))
+        OFFSET=$((OFFSET + 512 + BLOCKS * 512))
+        [ "$OFFSET" -le "$TOTAL" ] || {
+            rm -f "$RAW"
+            return 1
+        }
+    done
+    rm -f "$RAW"
+    [ "$FOUND_END" = yes ]
+}
+
 config_archive_validate() {
-    local FILE="$1" MEMBER ROOT OK
-    tar -tzf "$FILE" >/dev/null 2>&1 || { error "备份文件损坏"; return 1; }
-    while IFS= read -r MEMBER; do
-        MEMBER=${MEMBER#./}
+    local FILE="$1" MEMBER ROOT OK ROOT_KIND DETAIL TYPE EXTRA LINK
+    local MEMBER_LIST TYPE_LIST NORMALIZED_LIST LINK_LIST
+    MEMBER_LIST=$(mktemp) || return 1
+    TYPE_LIST=$(mktemp) || { rm -f "$MEMBER_LIST"; return 1; }
+    NORMALIZED_LIST=$(mktemp) || { rm -f "$MEMBER_LIST" "$TYPE_LIST"; return 1; }
+    LINK_LIST=$(mktemp) || {
+        rm -f "$MEMBER_LIST" "$TYPE_LIST" "$NORMALIZED_LIST"
+        return 1
+    }
+    if ! config_archive_raw_types_valid "$FILE" \
+        || ! tar -tzf "$FILE" > "$MEMBER_LIST" 2>/dev/null \
+        || ! LC_ALL=C tar -tvzf "$FILE" > "$TYPE_LIST" 2>/dev/null; then
+        rm -f "$MEMBER_LIST" "$TYPE_LIST" "$NORMALIZED_LIST" "$LINK_LIST"
+        error "备份文件损坏"
+        return 1
+    fi
+    if [ ! -s "$MEMBER_LIST" ]; then
+        rm -f "$MEMBER_LIST" "$TYPE_LIST" "$NORMALIZED_LIST" "$LINK_LIST"
+        error "备份归档为空"
+        return 1
+    fi
+
+    exec 7< "$MEMBER_LIST"
+    exec 8< "$TYPE_LIST"
+    while IFS= read -r MEMBER <&7; do
+        if ! IFS= read -r DETAIL <&8; then
+            exec 7<&- 8<&-
+            rm -f "$MEMBER_LIST" "$TYPE_LIST" "$NORMALIZED_LIST" "$LINK_LIST"
+            error "无法核对归档成员类型"
+            return 1
+        fi
+        MEMBER=${MEMBER%$'\r'}
+        while [ "${MEMBER#./}" != "$MEMBER" ]; do MEMBER=${MEMBER#./}; done
         MEMBER=${MEMBER%/}
-        [ -n "$MEMBER" ] || continue
-        case "$MEMBER" in /*|../*|*/../*|*/..) error "归档包含不安全路径：$MEMBER"; return 1 ;; esac
+        [ -n "$MEMBER" ] || {
+            exec 7<&- 8<&-
+            rm -f "$MEMBER_LIST" "$TYPE_LIST" "$NORMALIZED_LIST" "$LINK_LIST"
+            error "归档包含不允许的根目录元数据"
+            return 1
+        }
+        case "$MEMBER" in
+            /*|\\*|*\\*|[A-Za-z]:/*|[A-Za-z]:\\*|..|../*|*/../*|*/..|\
+            *//*|*/./*|*/.|*/)
+                exec 7<&- 8<&-
+                rm -f "$MEMBER_LIST" "$TYPE_LIST" "$NORMALIZED_LIST" "$LINK_LIST"
+                error "归档包含不安全路径：$MEMBER"
+                return 1
+                ;;
+        esac
+
         OK=false
+        ROOT_KIND=file
         while IFS= read -r ROOT; do
-            case "$MEMBER" in "$ROOT"|"$ROOT"/*) OK=true; break ;; esac
+            if config_backup_root_is_directory "$ROOT"; then
+                case "$MEMBER" in
+                    "$ROOT") OK=true; ROOT_KIND=directory-root; break ;;
+                    "$ROOT"/*) OK=true; ROOT_KIND=directory-child; break ;;
+                esac
+            elif [ "$MEMBER" = "$ROOT" ]; then
+                OK=true
+                ROOT_KIND=file
+                break
+            fi
         done < <(config_backup_allowed_roots)
-        [ "$OK" = true ] || { error "归档包含非 VPS Tools 配置路径：$MEMBER"; return 1; }
-    done < <(tar -tzf "$FILE")
+        if [ "$OK" != true ]; then
+            exec 7<&- 8<&-
+            rm -f "$MEMBER_LIST" "$TYPE_LIST" "$NORMALIZED_LIST" "$LINK_LIST"
+            error "归档包含非 VPS Tools 配置路径：$MEMBER"
+            return 1
+        fi
+
+        TYPE=${DETAIL:0:1}
+        case "$TYPE:$ROOT_KIND" in
+            -:file|d:directory-root|-:directory-child|d:directory-child)
+                ;;
+            l:directory-child)
+                printf '%s\n' "$MEMBER" >> "$LINK_LIST" || {
+                    exec 7<&- 8<&-
+                    rm -f "$MEMBER_LIST" "$TYPE_LIST" "$NORMALIZED_LIST" "$LINK_LIST"
+                    return 1
+                }
+                ;;
+            l:file)
+                if [ "$MEMBER" != "etc/resolv.conf" ]; then
+                    exec 7<&- 8<&-
+                    rm -f "$MEMBER_LIST" "$TYPE_LIST" "$NORMALIZED_LIST" "$LINK_LIST"
+                    error "归档中的配置文件类型不安全：$MEMBER"
+                    return 1
+                fi
+                printf '%s\n' "$MEMBER" >> "$LINK_LIST" || {
+                    exec 7<&- 8<&-
+                    rm -f "$MEMBER_LIST" "$TYPE_LIST" "$NORMALIZED_LIST" "$LINK_LIST"
+                    return 1
+                }
+                ;;
+            *)
+                exec 7<&- 8<&-
+                rm -f "$MEMBER_LIST" "$TYPE_LIST" "$NORMALIZED_LIST" "$LINK_LIST"
+                error "归档包含链接、设备或其他特殊成员：$MEMBER"
+                return 1
+                ;;
+        esac
+        printf '%s\n' "$MEMBER" >> "$NORMALIZED_LIST" || {
+            exec 7<&- 8<&-
+            rm -f "$MEMBER_LIST" "$TYPE_LIST" "$NORMALIZED_LIST" "$LINK_LIST"
+            return 1
+        }
+    done
+    if IFS= read -r EXTRA <&8; then
+        exec 7<&- 8<&-
+        rm -f "$MEMBER_LIST" "$TYPE_LIST" "$NORMALIZED_LIST" "$LINK_LIST"
+        error "归档成员清单与类型清单不一致"
+        return 1
+    fi
+    exec 7<&- 8<&-
+
+    if [ "$(sort "$NORMALIZED_LIST" | uniq -d | wc -l | tr -d ' ')" -gt 0 ]; then
+        rm -f "$MEMBER_LIST" "$TYPE_LIST" "$NORMALIZED_LIST" "$LINK_LIST"
+        error "归档包含重复成员"
+        return 1
+    fi
+    while IFS= read -r LINK; do
+        [ -n "$LINK" ] || continue
+        if awk -v link="$LINK" '$0 != link && index($0, link "/") == 1 {found=1} END {exit !found}' \
+            "$NORMALIZED_LIST"; then
+            rm -f "$MEMBER_LIST" "$TYPE_LIST" "$NORMALIZED_LIST" "$LINK_LIST"
+            error "归档试图通过符号链接写入子路径：$LINK"
+            return 1
+        fi
+    done < "$LINK_LIST"
+    rm -f "$MEMBER_LIST" "$TYPE_LIST" "$NORMALIZED_LIST" "$LINK_LIST"
+    return 0
+}
+
+config_path_identity() {
+    stat -c '%d:%i' -- "$1" 2>/dev/null
+}
+
+config_roots_match() {
+    local ROOT="$1" LEFT_ROOT="$2" RIGHT_ROOT="$3"
+    local LEFT_TAR="" RIGHT_TAR="" RESULT=1
+    LEFT_TAR=$(mktemp) || LEFT_TAR=""
+    RIGHT_TAR=$(mktemp) || RIGHT_TAR=""
+    if [ -n "$LEFT_TAR" ] && [ -n "$RIGHT_TAR" ] \
+        && tar "${TAR_COMPARE_ARGS[@]}" -cf "$LEFT_TAR" \
+            -C "$LEFT_ROOT" "$ROOT" 2>/dev/null \
+        && tar "${TAR_COMPARE_ARGS[@]}" -cf "$RIGHT_TAR" \
+            -C "$RIGHT_ROOT" "$ROOT" 2>/dev/null \
+        && cmp -s "$LEFT_TAR" "$RIGHT_TAR"; then
+        RESULT=0
+    fi
+    [ -z "$LEFT_TAR" ] || rm -f -- "$LEFT_TAR"
+    [ -z "$RIGHT_TAR" ] || rm -f -- "$RIGHT_TAR"
+    return "$RESULT"
 }
 
 config_archive_extract() {
-    local FILE="$1" STAGE LINK REL TARGET ROOT SRC DEST RESTORE_ROOT
+    local FILE="$1" STAGE LINK REL TARGET ROOT SRC DEST OLD RESTORE_ROOT ENTRY META OWNER MODE EXPECTED_OWNER=0
+    local NEW HAD_OLD INDEX=0 COMMITTED=0 COMMIT_FAILED=no TXN_ID
+    local DEST_ID NEW_ID CURRENT_ID INSTALLED_ID
+    local IMPORT_ROOTS="" TARGET_ROOTS="" TARGET_SNAPSHOT=""
+    local CURRENT_TARGET_ROOTS="" CURRENT_TARGET_SNAPSHOT="" TAR_OPTION
+    local ORIGINAL_STAGE="" VERIFY_STAGE="" VERIFY_PATH=""
+    local ROLLBACK_FAILED=no CLEANUP_FAILED=no
+    local -a RESTORE_ROOTS=() RESTORE_DESTS=() RESTORE_OLDS=() RESTORE_NEWS=()
+    local -a RESTORE_HAD_OLD=() RESTORE_ORIGINAL_IDS=() RESTORE_NEW_IDS=()
+    local -a RESTORE_INSTALLED=() RESTORE_INSTALLED_IDS=()
+    local -a TAR_EXTRACT_ARGS=(-xzf "$FILE")
+    local -a TAR_COMPARE_ARGS=()
     RESTORE_ROOT="${CONFIG_RESTORE_ROOT:-/}"
+    if [ "${VPS_TOOLS_TEST_MODE:-0}" = 1 ]; then
+        EXPECTED_OWNER=$(id -u 2>/dev/null || printf '0')
+    fi
     STAGE=$(mktemp -d) || return 1
-    if ! tar -xzf "$FILE" -C "$STAGE" --no-same-owner 2>/dev/null; then
+    TXN_ID=${STAGE##*/}
+    if tar --help 2>&1 | grep -q -- '--no-same-owner'; then
+        TAR_EXTRACT_ARGS+=(--no-same-owner)
+    fi
+    if tar --help 2>&1 | grep -q -- '--no-same-permissions'; then
+        TAR_EXTRACT_ARGS+=(--no-same-permissions)
+    fi
+    TAR_EXTRACT_ARGS+=(-C "$STAGE")
+    if ! tar "${TAR_EXTRACT_ARGS[@]}" 2>/dev/null; then
         rm -rf "$STAGE"
         error "导入包解压失败"
         return 1
     fi
+    while IFS= read -r -d '' ENTRY; do
+        META=$(stat -c '%u:%a' -- "$ENTRY" 2>/dev/null) || {
+            rm -rf "$STAGE"
+            error "无法核对归档成员权限"
+            return 1
+        }
+        OWNER=${META%%:*}
+        MODE=${META#*:}
+        if [ "$OWNER" != "$EXPECTED_OWNER" ]; then
+            rm -rf "$STAGE"
+            error "归档成员不是 root 所有：${ENTRY#"$STAGE"/}"
+            return 1
+        fi
+        if [ ! -L "$ENTRY" ]; then
+            [[ "$MODE" =~ ^[0-7]+$ ]] || {
+                rm -rf "$STAGE"
+                error "归档成员权限无效：${ENTRY#"$STAGE"/}"
+                return 1
+            }
+            if [ $((8#$MODE & 0022)) -ne 0 ]; then
+                rm -rf "$STAGE"
+                error "归档成员允许组或其他用户写入：${ENTRY#"$STAGE"/}"
+                return 1
+            fi
+        fi
+    done < <(find "$STAGE" -mindepth 1 -print0 2>/dev/null)
     while IFS= read -r LINK; do
         REL=${LINK#"$STAGE"/}
         TARGET=$(readlink "$LINK" 2>/dev/null || true)
@@ -62,17 +331,472 @@ config_archive_extract() {
                     *) rm -rf "$STAGE"; error "归档包含不安全符号链接：$REL -> $TARGET"; return 1 ;;
                 esac
                 ;;
-            ../*|*/../*|*/..) rm -rf "$STAGE"; error "归档包含越界符号链接：$REL -> $TARGET"; return 1 ;;
+            ..|../*|*/../*|*/..)
+                case "$REL:$TARGET" in
+                    etc/resolv.conf:../run/systemd/resolve/*|etc/resolv.conf:../run/NetworkManager/*|etc/resolv.conf:../run/resolvconf/*) ;;
+                    *) rm -rf "$STAGE"; error "归档包含越界符号链接：$REL -> $TARGET"; return 1 ;;
+                esac
+                ;;
         esac
     done < <(find "$STAGE" -type l 2>/dev/null)
+    IMPORT_ROOTS=$(mktemp) || IMPORT_ROOTS=""
+    TARGET_ROOTS=$(mktemp) || TARGET_ROOTS=""
+    TARGET_SNAPSHOT=$(mktemp) || TARGET_SNAPSHOT=""
+    CURRENT_TARGET_ROOTS=$(mktemp) || CURRENT_TARGET_ROOTS=""
+    CURRENT_TARGET_SNAPSHOT=$(mktemp) || CURRENT_TARGET_SNAPSHOT=""
+    if [ -z "$IMPORT_ROOTS" ] || [ -z "$TARGET_ROOTS" ] \
+        || [ -z "$TARGET_SNAPSHOT" ] || [ -z "$CURRENT_TARGET_ROOTS" ] \
+        || [ -z "$CURRENT_TARGET_SNAPSHOT" ]; then
+        rm -f -- "$IMPORT_ROOTS" "$TARGET_ROOTS" "$TARGET_SNAPSHOT" \
+            "$CURRENT_TARGET_ROOTS" "$CURRENT_TARGET_SNAPSHOT"
+        rm -rf "$STAGE"
+        error "无法创建配置导入事务快照"
+        return 1
+    fi
+    : > "$IMPORT_ROOTS"
+    : > "$TARGET_ROOTS"
     while IFS= read -r ROOT; do
         SRC="$STAGE/$ROOT"
-        DEST="${RESTORE_ROOT%/}/$ROOT"
         [ -e "$SRC" ] || [ -L "$SRC" ] || continue
-        mkdir -p "$(dirname "$DEST")" || { rm -rf "$STAGE"; return 1; }
-        cp -a "$SRC" "$(dirname "$DEST")/" || { rm -rf "$STAGE"; error "恢复路径失败：$ROOT"; return 1; }
+        printf '%s\n' "$ROOT" >> "$IMPORT_ROOTS" || {
+            rm -f -- "$IMPORT_ROOTS" "$TARGET_ROOTS" "$TARGET_SNAPSHOT" \
+                "$CURRENT_TARGET_ROOTS" "$CURRENT_TARGET_SNAPSHOT"
+            rm -rf "$STAGE"
+            return 1
+        }
+        DEST="${RESTORE_ROOT%/}/$ROOT"
+        if [ -e "$DEST" ] || [ -L "$DEST" ]; then
+            printf '%s\n' "$ROOT" >> "$TARGET_ROOTS" || {
+                rm -f -- "$IMPORT_ROOTS" "$TARGET_ROOTS" "$TARGET_SNAPSHOT" \
+                    "$CURRENT_TARGET_ROOTS" "$CURRENT_TARGET_SNAPSHOT"
+                rm -rf "$STAGE"
+                return 1
+            }
+        fi
     done < <(config_backup_allowed_roots)
+    while IFS= read -r TAR_OPTION; do
+        TAR_COMPARE_ARGS+=("$TAR_OPTION")
+    done < <(safety_tar_metadata_options)
+    if ! tar "${TAR_COMPARE_ARGS[@]}" -cf "$TARGET_SNAPSHOT" \
+        -C "$RESTORE_ROOT" -T "$TARGET_ROOTS" 2>/dev/null; then
+        rm -f -- "$IMPORT_ROOTS" "$TARGET_ROOTS" "$TARGET_SNAPSHOT" \
+            "$CURRENT_TARGET_ROOTS" "$CURRENT_TARGET_SNAPSHOT"
+        rm -rf "$STAGE"
+        error "无法创建导入前配置快照"
+        return 1
+    fi
+    while IFS= read -r ROOT; do
+        SRC="$STAGE/$ROOT"
+        # Imported archives may intentionally contain only a subset of the
+        # allowlist. Replace roots that are present exactly, but never delete
+        # unrelated roots merely because the package omitted them.
+        [ -e "$SRC" ] || [ -L "$SRC" ] || continue
+        DEST="${RESTORE_ROOT%/}/$ROOT"
+        case "$DEST" in
+            "${RESTORE_ROOT%/}/"*) ;;
+            *)
+                rm -f -- "$IMPORT_ROOTS" "$TARGET_ROOTS" "$TARGET_SNAPSHOT" \
+                    "$CURRENT_TARGET_ROOTS" "$CURRENT_TARGET_SNAPSHOT"
+                rm -rf "$STAGE"
+                error "恢复目标越界：$ROOT"
+                return 1
+                ;;
+        esac
+        OLD="${DEST}.vps-tools-restore-old.${TXN_ID}.${INDEX}"
+        NEW="${DEST}.vps-tools-restore-new.${TXN_ID}.${INDEX}"
+        if [ -e "$OLD" ] || [ -L "$OLD" ] || [ -e "$NEW" ] || [ -L "$NEW" ]; then
+            rm -rf "$STAGE"
+            rm -f -- "$IMPORT_ROOTS" "$TARGET_ROOTS" "$TARGET_SNAPSHOT" \
+                "$CURRENT_TARGET_ROOTS" "$CURRENT_TARGET_SNAPSHOT"
+            error "恢复暂存路径已存在，拒绝覆盖：$ROOT"
+            return 1
+        fi
+        if ! mkdir -p "$(dirname "$DEST")" \
+            || ! cp -a -- "$SRC" "$NEW"; then
+            rm -rf -- "$NEW" 2>/dev/null || true
+            for NEW in "${RESTORE_NEWS[@]}"; do
+                rm -rf -- "$NEW" 2>/dev/null || true
+            done
+            rm -rf "$STAGE"
+            rm -f -- "$IMPORT_ROOTS" "$TARGET_ROOTS" "$TARGET_SNAPSHOT" \
+                "$CURRENT_TARGET_ROOTS" "$CURRENT_TARGET_SNAPSHOT"
+            error "无法准备恢复候选：$ROOT"
+            return 1
+        fi
+        HAD_OLD=no
+        DEST_ID=""
+        if [ -e "$DEST" ] || [ -L "$DEST" ]; then
+            HAD_OLD=yes
+            DEST_ID=$(config_path_identity "$DEST") || {
+                rm -rf -- "$NEW" "$STAGE"
+                for ENTRY in "${RESTORE_NEWS[@]}"; do
+                    rm -rf -- "$ENTRY" 2>/dev/null || true
+                done
+                rm -f -- "$IMPORT_ROOTS" "$TARGET_ROOTS" "$TARGET_SNAPSHOT" \
+                    "$CURRENT_TARGET_ROOTS" "$CURRENT_TARGET_SNAPSHOT"
+                error "无法记录现有恢复目标身份：$ROOT"
+                return 1
+            }
+        fi
+        NEW_ID=$(config_path_identity "$NEW") || {
+            rm -rf -- "$NEW" "$STAGE"
+            for ENTRY in "${RESTORE_NEWS[@]}"; do
+                rm -rf -- "$ENTRY" 2>/dev/null || true
+            done
+            rm -f -- "$IMPORT_ROOTS" "$TARGET_ROOTS" "$TARGET_SNAPSHOT" \
+                "$CURRENT_TARGET_ROOTS" "$CURRENT_TARGET_SNAPSHOT"
+            error "无法记录恢复候选身份：$ROOT"
+            return 1
+        }
+        RESTORE_ROOTS+=("$ROOT")
+        RESTORE_DESTS+=("$DEST")
+        RESTORE_OLDS+=("$OLD")
+        RESTORE_NEWS+=("$NEW")
+        RESTORE_HAD_OLD+=("$HAD_OLD")
+        RESTORE_ORIGINAL_IDS+=("$DEST_ID")
+        RESTORE_NEW_IDS+=("$NEW_ID")
+        RESTORE_INSTALLED+=(no)
+        RESTORE_INSTALLED_IDS+=("")
+        INDEX=$((INDEX + 1))
+    done < "$IMPORT_ROOTS"
+
+    : > "$CURRENT_TARGET_ROOTS"
+    while IFS= read -r ROOT; do
+        DEST="${RESTORE_ROOT%/}/$ROOT"
+        [ -e "$DEST" ] || [ -L "$DEST" ] || continue
+        printf '%s\n' "$ROOT" >> "$CURRENT_TARGET_ROOTS" || {
+            COMMIT_FAILED=yes
+            break
+        }
+    done < "$IMPORT_ROOTS"
+    if [ "$COMMIT_FAILED" = no ] \
+        && { ! tar "${TAR_COMPARE_ARGS[@]}" -cf "$CURRENT_TARGET_SNAPSHOT" \
+                -C "$RESTORE_ROOT" -T "$CURRENT_TARGET_ROOTS" 2>/dev/null \
+            || ! cmp -s "$TARGET_ROOTS" "$CURRENT_TARGET_ROOTS" \
+            || ! cmp -s "$TARGET_SNAPSHOT" "$CURRENT_TARGET_SNAPSHOT"; }; then
+        error "恢复目标在候选准备期间发生变化，已拒绝覆盖并发修改"
+        COMMIT_FAILED=yes
+    fi
+    if [ "$COMMIT_FAILED" = no ]; then
+        ORIGINAL_STAGE=$(mktemp -d) || ORIGINAL_STAGE=""
+        VERIFY_STAGE=$(mktemp -d) || VERIFY_STAGE=""
+        if [ -z "$ORIGINAL_STAGE" ] || [ -z "$VERIFY_STAGE" ] \
+            || ! tar "${TAR_COMPARE_ARGS[@]}" -xf "$TARGET_SNAPSHOT" \
+                -C "$ORIGINAL_STAGE" 2>/dev/null; then
+            error "无法准备恢复目标的提交校验快照"
+            COMMIT_FAILED=yes
+        fi
+    fi
+
+    for ((INDEX=0; INDEX<${#RESTORE_ROOTS[@]}; INDEX++)); do
+        [ "$COMMIT_FAILED" = no ] || break
+        DEST=${RESTORE_DESTS[$INDEX]}
+        OLD=${RESTORE_OLDS[$INDEX]}
+        NEW=${RESTORE_NEWS[$INDEX]}
+        HAD_OLD=${RESTORE_HAD_OLD[$INDEX]}
+        if [ "$HAD_OLD" = yes ]; then
+            CURRENT_ID=$(config_path_identity "$DEST") || CURRENT_ID=""
+            if [ "$CURRENT_ID" != "${RESTORE_ORIGINAL_IDS[$INDEX]}" ] \
+                || ! mv -- "$DEST" "$OLD"; then
+                error "恢复目标在提交前已变化：${RESTORE_ROOTS[$INDEX]}"
+                COMMIT_FAILED=yes
+                break
+            fi
+            CURRENT_ID=$(config_path_identity "$OLD") || CURRENT_ID=""
+            if [ "$CURRENT_ID" != "${RESTORE_ORIGINAL_IDS[$INDEX]}" ]; then
+                [ -e "$DEST" ] || [ -L "$DEST" ] \
+                    || mv -- "$OLD" "$DEST" 2>/dev/null || true
+                error "无法确认旧配置暂存身份：${RESTORE_ROOTS[$INDEX]}"
+                COMMIT_FAILED=yes
+                break
+            fi
+            VERIFY_PATH="$VERIFY_STAGE/${RESTORE_ROOTS[$INDEX]}"
+            if ! mkdir -p "$(dirname "$VERIFY_PATH")" 2>/dev/null \
+                || ! cp -a "$OLD" "$VERIFY_PATH" 2>/dev/null \
+                || ! config_roots_match \
+                    "${RESTORE_ROOTS[$INDEX]}" "$ORIGINAL_STAGE" "$VERIFY_STAGE"; then
+                rm -rf -- "$VERIFY_PATH" 2>/dev/null || true
+                [ -e "$DEST" ] || [ -L "$DEST" ] \
+                    || mv -- "$OLD" "$DEST" 2>/dev/null || true
+                error "旧配置内容在提交瞬间发生变化：${RESTORE_ROOTS[$INDEX]}"
+                COMMIT_FAILED=yes
+                break
+            fi
+            rm -rf -- "$VERIFY_PATH" 2>/dev/null || true
+        elif [ -e "$DEST" ] || [ -L "$DEST" ]; then
+            error "原本不存在的恢复目标在提交前被创建：${RESTORE_ROOTS[$INDEX]}"
+            COMMIT_FAILED=yes
+            break
+        fi
+        COMMITTED=$((INDEX + 1))
+        if [ -e "$DEST" ] || [ -L "$DEST" ] || ! mv -- "$NEW" "$DEST"; then
+            error "无法提交恢复候选：${RESTORE_ROOTS[$INDEX]}"
+            COMMIT_FAILED=yes
+            break
+        fi
+        INSTALLED_ID=$(config_path_identity "$DEST") || INSTALLED_ID=""
+        if [ "$INSTALLED_ID" != "${RESTORE_NEW_IDS[$INDEX]}" ]; then
+            error "恢复候选提交后身份不一致：${RESTORE_ROOTS[$INDEX]}"
+            COMMIT_FAILED=yes
+            break
+        fi
+        RESTORE_INSTALLED[$INDEX]=yes
+        RESTORE_INSTALLED_IDS[$INDEX]="$INSTALLED_ID"
+    done
+
+    if [ "$COMMIT_FAILED" = yes ] \
+        || [ "$COMMITTED" -ne "${#RESTORE_ROOTS[@]}" ]; then
+        for ((INDEX=COMMITTED-1; INDEX>=0; INDEX--)); do
+            DEST=${RESTORE_DESTS[$INDEX]}
+            OLD=${RESTORE_OLDS[$INDEX]}
+            HAD_OLD=${RESTORE_HAD_OLD[$INDEX]}
+            if [ "${RESTORE_INSTALLED[$INDEX]:-no}" = yes ]; then
+                CURRENT_ID=$(config_path_identity "$DEST") || CURRENT_ID=""
+                if [ "$CURRENT_ID" = "${RESTORE_INSTALLED_IDS[$INDEX]}" ] \
+                    && config_roots_match \
+                        "${RESTORE_ROOTS[$INDEX]}" "$STAGE" "$RESTORE_ROOT"; then
+                    rm -rf -- "$DEST" 2>/dev/null || ROLLBACK_FAILED=yes
+                else
+                    ROLLBACK_FAILED=yes
+                    continue
+                fi
+            elif [ -e "$DEST" ] || [ -L "$DEST" ]; then
+                ROLLBACK_FAILED=yes
+                continue
+            fi
+            if [ "$HAD_OLD" = yes ]; then
+                mv -- "$OLD" "$DEST" 2>/dev/null || ROLLBACK_FAILED=yes
+            fi
+        done
+        for NEW in "${RESTORE_NEWS[@]}"; do
+            rm -rf -- "$NEW" 2>/dev/null || true
+        done
+        rm -rf "$STAGE"
+        rm -rf -- "$ORIGINAL_STAGE" "$VERIFY_STAGE"
+        rm -f -- "$IMPORT_ROOTS" "$TARGET_ROOTS" "$TARGET_SNAPSHOT" \
+            "$CURRENT_TARGET_ROOTS" "$CURRENT_TARGET_SNAPSHOT"
+        [ "$ROLLBACK_FAILED" = no ] \
+            || error "配置恢复提交失败，且部分旧配置未能完整复原"
+        return 1
+    fi
+
+    for OLD in "${RESTORE_OLDS[@]}"; do
+        [ -e "$OLD" ] || [ -L "$OLD" ] || continue
+        rm -rf -- "$OLD" 2>/dev/null || CLEANUP_FAILED=yes
+    done
     rm -rf "$STAGE"
+    rm -rf -- "$ORIGINAL_STAGE" "$VERIFY_STAGE"
+    rm -f -- "$IMPORT_ROOTS" "$TARGET_ROOTS" "$TARGET_SNAPSHOT" \
+        "$CURRENT_TARGET_ROOTS" "$CURRENT_TARGET_SNAPSHOT"
+    [ "$CLEANUP_FAILED" = no ] || warn "配置已完整恢复，但部分旧配置暂存文件清理失败"
+}
+
+safety_roots_for_label() {
+    case "$1" in
+        ssh_login|ssh_revoke_login|ssh_strict_login)
+            printf '%s\n' etc/ssh/sshd_config
+            ;;
+        ssh_port)
+            printf '%s\n' \
+                etc/ssh/sshd_config \
+                etc/fail2ban \
+                etc/ufw \
+                etc/firewalld \
+                etc/iptables/rules.v4 \
+                etc/iptables/rules.v6
+            ;;
+        dns)
+            printf '%s\n' \
+                etc/resolv.conf \
+                etc/systemd/resolved.conf \
+                etc/systemd/resolved.conf.d \
+                etc/NetworkManager/conf.d \
+                etc/NetworkManager/system-connections \
+                etc/resolvconf/resolv.conf.d
+            ;;
+        dns_manual)
+            printf '%s\n' etc/resolv.conf
+            ;;
+        prefer_v4|prefer_v6)
+            printf '%s\n' etc/gai.conf
+            ;;
+        disable_v6|enable_v6)
+            printf '%s\n' etc/sysctl.d/99-ipv6-disable.conf
+            ;;
+        ufw|firewall_install_ufw)
+            printf '%s\n' etc/ufw
+            ;;
+        firewalld|firewall_install_firewalld)
+            printf '%s\n' etc/firewalld
+            ;;
+        config_restore)
+            config_backup_allowed_roots
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+safety_snapshot_restore_paths() {
+    local OUTPUT="$1" LABEL="$2" ROOT
+    : > "$OUTPUT" || return 1
+    while IFS= read -r ROOT; do
+        [ -n "$ROOT" ] || continue
+        printf '%s\n' "$ROOT" >> "$OUTPUT" || return 1
+    done < <(safety_roots_for_label "$LABEL") || return 1
+    [ -s "$OUTPUT" ] || return 1
+    chmod 600 "$OUTPUT" 2>/dev/null || true
+}
+
+safety_snapshot_sysctl_state() {
+    local OUTPUT="$1" LABEL="$2" KEY VALUE
+    : > "$OUTPUT" || return 1
+    command -v sysctl >/dev/null 2>&1 || return 0
+    case "$LABEL" in
+        disable_v6|enable_v6)
+            set -- \
+                net.ipv6.conf.all.disable_ipv6 \
+                net.ipv6.conf.default.disable_ipv6 \
+                net.ipv6.conf.lo.disable_ipv6
+            ;;
+        prefer_v4)
+            set -- net.ipv4.conf.all.promote_secondaries
+            ;;
+        config_restore)
+            set -- \
+                net.ipv6.conf.all.disable_ipv6 \
+                net.ipv6.conf.default.disable_ipv6 \
+                net.ipv6.conf.lo.disable_ipv6 \
+                net.ipv4.conf.all.promote_secondaries
+            ;;
+        *)
+            set --
+            ;;
+    esac
+    for KEY in "$@"; do
+        VALUE=$(sysctl -n "$KEY" 2>/dev/null) || continue
+        case "$VALUE" in ''|*[!0-9-]*) continue ;; esac
+        printf '%s=%s\n' "$KEY" "$VALUE" >> "$OUTPUT" || return 1
+    done
+    chmod 600 "$OUTPUT" 2>/dev/null || true
+}
+
+safety_snapshot_iptables_state() {
+    local OUTPUT="$1" LABEL="$2"
+    SAFETY_IPTABLES_SNAPSHOT_AVAILABLE=no
+    : > "$OUTPUT" || return 1
+    case "$LABEL" in
+        ssh_port|ufw|firewalld|firewall_install_ufw|\
+        firewall_install_firewalld|config_restore) ;;
+        *) return 0 ;;
+    esac
+    if command -v iptables-save >/dev/null 2>&1; then
+        if iptables-save > "$OUTPUT" 2>/dev/null; then
+            SAFETY_IPTABLES_SNAPSHOT_AVAILABLE=yes
+        else
+            : > "$OUTPUT"
+        fi
+    fi
+    chmod 600 "$OUTPUT" 2>/dev/null || true
+    return 0
+}
+
+safety_snapshot_ip6tables_state() {
+    local OUTPUT="$1" LABEL="$2"
+    SAFETY_IP6TABLES_SNAPSHOT_AVAILABLE=no
+    : > "$OUTPUT" || return 1
+    case "$LABEL" in
+        ssh_port|ufw|firewalld|firewall_install_ufw|\
+        firewall_install_firewalld|config_restore) ;;
+        *) return 0 ;;
+    esac
+    if command -v ip6tables-save >/dev/null 2>&1; then
+        if ip6tables-save > "$OUTPUT" 2>/dev/null; then
+            SAFETY_IP6TABLES_SNAPSHOT_AVAILABLE=yes
+        else
+            : > "$OUTPUT"
+        fi
+    fi
+    chmod 600 "$OUTPUT" 2>/dev/null || true
+    return 0
+}
+
+safety_tar_metadata_options() {
+    local HELP
+    HELP=$(LC_ALL=C tar --help 2>/dev/null) || return 0
+    printf '%s\n' "$HELP" | grep -q -- '--acls' && printf '%s\n' --acls
+    printf '%s\n' "$HELP" | grep -q -- '--xattrs' && printf '%s\n' --xattrs
+    printf '%s\n' "$HELP" | grep -q -- '--selinux' && printf '%s\n' --selinux
+}
+
+safety_snapshot_create() {
+    local OUTPUT="$1" ROOTS_FILE="$2" LIST ROOT
+    local SOURCE_ROOT="${SAFETY_SNAPSHOT_ROOT:-${SAFETY_RESTORE_ROOT:-/}}"
+    local TAR_EXTRA=() TAR_OPTION
+    LIST=$(mktemp) || return 1
+    : > "$LIST" || { rm -f "$LIST"; return 1; }
+    while IFS= read -r ROOT; do
+        case "$ROOT" in
+            etc/*|root/*|var/spool/cron/*) ;;
+            *) rm -f "$LIST" "$OUTPUT"; return 1 ;;
+        esac
+        [ -e "${SOURCE_ROOT%/}/$ROOT" ] || [ -L "${SOURCE_ROOT%/}/$ROOT" ] || continue
+        printf '%s\n' "$ROOT" >> "$LIST" || {
+            rm -f "$LIST" "$OUTPUT"
+            return 1
+        }
+    done < "$ROOTS_FILE"
+    while IFS= read -r TAR_OPTION; do
+        [ -n "$TAR_OPTION" ] && TAR_EXTRA+=("$TAR_OPTION")
+    done < <(safety_tar_metadata_options)
+    if ! tar "${TAR_EXTRA[@]}" -czf "$OUTPUT" \
+        -C "$SOURCE_ROOT" -T "$LIST" 2>/dev/null; then
+        rm -f "$LIST" "$OUTPUT"
+        return 1
+    fi
+    rm -f "$LIST"
+    chmod 600 "$OUTPUT" 2>/dev/null || true
+}
+
+safety_applied_snapshot_create() {
+    local OUTPUT="$1" PRESENT_FILE="$2" ROOTS_FILE="$3"
+    local ROOT SOURCE_ROOT="${SAFETY_RESTORE_ROOT:-/}"
+    local TAR_EXTRA=() TAR_OPTION
+    : > "$PRESENT_FILE" || return 1
+    while IFS= read -r ROOT; do
+        case "$ROOT" in
+            etc/*|root/*|var/spool/cron/*) ;;
+            *) return 1 ;;
+        esac
+        [ -e "${SOURCE_ROOT%/}/$ROOT" ] || [ -L "${SOURCE_ROOT%/}/$ROOT" ] \
+            || continue
+        printf '%s\n' "$ROOT" >> "$PRESENT_FILE" || return 1
+    done < "$ROOTS_FILE"
+    while IFS= read -r TAR_OPTION; do
+        [ -n "$TAR_OPTION" ] && TAR_EXTRA+=("$TAR_OPTION")
+    done < <(safety_tar_metadata_options)
+    tar "${TAR_EXTRA[@]}" -cf "$OUTPUT" \
+        -C "$SOURCE_ROOT" -T "$PRESENT_FILE" 2>/dev/null \
+        || return 1
+    chmod 600 "$OUTPUT" "$PRESENT_FILE" 2>/dev/null || true
+}
+
+safety_artifact_remove() {
+    local FILE="${1:-}"
+    [ -n "$FILE" ] || return 0
+    case "$FILE" in
+        "${VPS_DATA_DIR}"/rollback_*.sh|\
+        "${VPS_DATA_DIR}"/rollback_*.roots|\
+        "${VPS_DATA_DIR}"/rollback_*.sysctl|\
+        "${VPS_DATA_DIR}"/rollback_*.iptables|\
+        "${VPS_DATA_DIR}"/rollback_*.ip6tables|\
+        "${VPS_DATA_DIR}"/rollback_*.applied.tar|\
+        "${VPS_DATA_DIR}"/rollback_*.applied.roots|\
+        "${VPS_DATA_DIR}"/rollback_*.tar.gz)
+            rm -f -- "$FILE" 2>/dev/null || true
+            ;;
+    esac
 }
 
 config_backup_prune() {
@@ -88,79 +812,355 @@ config_backup_prune() {
     audit_action "自动清理 $REMOVE_COUNT 个旧配置备份" SUCCESS
 }
 
-safety_load_pending() {
-    local STATE_FILE="${SAFETY_STATE_FILE:-${VPS_DATA_DIR}/rollback.active}"
-    local PID="" SCRIPT="" CMDLINE=""
-    if [ -f "$STATE_FILE" ]; then
-        IFS='|' read -r PID SCRIPT < "$STATE_FILE" || true
-        if [[ "$PID" =~ ^[0-9]+$ ]] && [ -f "$SCRIPT" ] && kill -0 "$PID" 2>/dev/null; then
-            if [ -r "/proc/${PID}/cmdline" ]; then
-                CMDLINE=$(tr '\0' ' ' < "/proc/${PID}/cmdline" 2>/dev/null || true)
-                case "$CMDLINE" in
-                    *"$SCRIPT"*) ;;
-                    *) PID="" ;;
-                esac
-            fi
-        else
-            PID=""
-        fi
-        if [ -n "$PID" ]; then
-            SAFETY_PID="$PID"
-            SAFETY_SCRIPT="$SCRIPT"
-            return 0
-        fi
-        case "$SCRIPT" in
-            "${VPS_DATA_DIR}"/rollback_*.sh) rm -f "$SCRIPT" 2>/dev/null || true ;;
-        esac
-        rm -f "$STATE_FILE" 2>/dev/null || true
-    fi
-    if [ -n "${SAFETY_PID:-}" ] && [ -f "${SAFETY_SCRIPT:-}" ] \
-        && kill -0 "$SAFETY_PID" 2>/dev/null; then
+safety_state_write_atomic() {
+    local STATE_FILE="$1" PID="$2" SCRIPT="$3" ROOTS_FILE="$4"
+    local SYSCTL_FILE="$5" SNAPSHOT="$6" STATUS="$7" STATE_TMP
+    STATE_TMP=$(mktemp "${STATE_FILE}.tmp.XXXXXX") || return 1
+    if printf '%s|%s|%s|%s|%s|%s\n' \
+        "$PID" "$SCRIPT" "$ROOTS_FILE" "$SYSCTL_FILE" "$SNAPSHOT" "$STATUS" \
+        > "$STATE_TMP" \
+        && chmod 600 "$STATE_TMP" 2>/dev/null \
+        && mv -f -- "$STATE_TMP" "$STATE_FILE"; then
         return 0
     fi
-    SAFETY_PID="" SAFETY_SCRIPT=""
+    rm -f -- "$STATE_TMP"
     return 1
+}
+
+safety_load_pending() {
+    local STATE_FILE="${SAFETY_STATE_FILE:-${VPS_DATA_DIR}/rollback.active}"
+    local PID="" SCRIPT="" ROOTS_FILE="" SYSCTL_FILE="" SNAPSHOT="" STATUS=""
+    if [ -f "$STATE_FILE" ]; then
+        IFS='|' read -r PID SCRIPT ROOTS_FILE SYSCTL_FILE SNAPSHOT STATUS < "$STATE_FILE" || true
+        [ -n "$STATUS" ] || STATUS=armed
+        SAFETY_PID="$PID"
+        SAFETY_SCRIPT="$SCRIPT"
+        SAFETY_ROOTS_FILE="$ROOTS_FILE"
+        SAFETY_SYSCTL_FILE="$SYSCTL_FILE"
+        SAFETY_SNAPSHOT="$SNAPSHOT"
+        SAFETY_IPTABLES_FILE="${SCRIPT%.sh}.iptables"
+        SAFETY_IP6TABLES_FILE="${SCRIPT%.sh}.ip6tables"
+        SAFETY_APPLIED_SNAPSHOT="${SCRIPT%.sh}.applied.tar"
+        SAFETY_APPLIED_ROOTS="${SCRIPT%.sh}.applied.roots"
+        SAFETY_STATUS="$STATUS"
+        if [ "$STATUS" = failed ]; then
+            return 0
+        fi
+        if safety_worker_identity_valid "$PID" "$SCRIPT"; then
+            return 0
+        fi
+        PID=""
+        if [ -n "$SNAPSHOT" ] && [ -f "$SNAPSHOT" ]; then
+            SAFETY_PID=""
+            if safety_state_write_atomic \
+                "$STATE_FILE" "" "$SCRIPT" "$ROOTS_FILE" "$SYSCTL_FILE" \
+                "$SNAPSHOT" failed; then
+                SAFETY_STATUS=failed
+                error "检测到异常终止的防断联任务，已原子保留失败状态和快照：$SNAPSHOT"
+            else
+                SAFETY_STATUS=armed
+                error "检测到异常终止的防断联任务，但无法写入失败状态；原状态和快照均未清理：$SNAPSHOT"
+            fi
+            return 0
+        fi
+        safety_artifact_remove "$SCRIPT"
+        safety_artifact_remove "$ROOTS_FILE"
+        safety_artifact_remove "$SYSCTL_FILE"
+        safety_artifact_remove "${SCRIPT%.sh}.iptables"
+        safety_artifact_remove "${SCRIPT%.sh}.ip6tables"
+        safety_artifact_remove "${SCRIPT%.sh}.applied.tar"
+        safety_artifact_remove "${SCRIPT%.sh}.applied.roots"
+        safety_artifact_remove "$SNAPSHOT"
+        rm -f "$STATE_FILE" 2>/dev/null || true
+    fi
+    if safety_worker_identity_valid \
+        "${SAFETY_PID:-}" "${SAFETY_SCRIPT:-}"; then
+        return 0
+    fi
+    safety_artifact_remove "${SAFETY_SCRIPT:-}"
+    safety_artifact_remove "${SAFETY_ROOTS_FILE:-}"
+    safety_artifact_remove "${SAFETY_SYSCTL_FILE:-}"
+    safety_artifact_remove "${SAFETY_IPTABLES_FILE:-}"
+    safety_artifact_remove "${SAFETY_IP6TABLES_FILE:-}"
+    safety_artifact_remove "${SAFETY_APPLIED_SNAPSHOT:-}"
+    safety_artifact_remove "${SAFETY_APPLIED_ROOTS:-}"
+    safety_artifact_remove "${SAFETY_SNAPSHOT:-}"
+    SAFETY_PID="" SAFETY_SCRIPT="" SAFETY_ROOTS_FILE="" SAFETY_SYSCTL_FILE=""
+    SAFETY_IPTABLES_FILE="" SAFETY_IP6TABLES_FILE=""
+    SAFETY_APPLIED_SNAPSHOT="" SAFETY_APPLIED_ROOTS=""
+    SAFETY_SNAPSHOT="" SAFETY_STATUS=""
+    return 1
+}
+
+safety_process_start_token() {
+    local PROCESS_PID="$1" PROCESS_STAT="" PROCESS_REST="" TOKEN=""
+    [[ "$PROCESS_PID" =~ ^[1-9][0-9]*$ ]] || return 1
+    if [ -r "/proc/${PROCESS_PID}/stat" ]; then
+        IFS= read -r PROCESS_STAT < "/proc/${PROCESS_PID}/stat" || return 1
+        PROCESS_REST=${PROCESS_STAT##*) }
+        TOKEN=$(printf '%s\n' "$PROCESS_REST" | awk '{print $20}') || return 1
+    elif command -v ps >/dev/null 2>&1; then
+        TOKEN=$(LC_ALL=C ps -p "$PROCESS_PID" -o lstart= 2>/dev/null) || return 1
+        TOKEN=$(printf '%s\n' "$TOKEN" | awk '{$1=$1; print}')
+    fi
+    [ -n "$TOKEN" ] || return 1
+    printf '%s\n' "$TOKEN"
+}
+
+safety_lock_owner_valid() {
+    local OWNER="$1" OWNER_PID OWNER_TOKEN CURRENT_TOKEN
+    case "$OWNER" in *'|'*) ;; *) return 1 ;; esac
+    OWNER_PID=${OWNER%%|*}
+    OWNER_TOKEN=${OWNER#*|}
+    [[ "$OWNER_PID" =~ ^[1-9][0-9]*$ ]] && [ -n "$OWNER_TOKEN" ] \
+        && kill -0 "$OWNER_PID" 2>/dev/null || return 1
+    CURRENT_TOKEN=$(safety_process_start_token "$OWNER_PID") || return 1
+    [ "$CURRENT_TOKEN" = "$OWNER_TOKEN" ]
 }
 
 safety_lock_acquire() {
     local STATE_FILE="${SAFETY_STATE_FILE:-${VPS_DATA_DIR}/rollback.active}"
-    local LOCK_DIR="${STATE_FILE}.lock" LOCK_PID=""
+    local LOCK_DIR="${STATE_FILE}.lock" LOCK_OWNER="" LOCK_OWNER_AFTER=""
+    local SELF_TOKEN="" SELF_OWNER=""
     if ! mkdir "$LOCK_DIR" 2>/dev/null; then
-        LOCK_PID=$(cat "$LOCK_DIR/pid" 2>/dev/null || true)
-        if [[ "$LOCK_PID" =~ ^[0-9]+$ ]] && kill -0 "$LOCK_PID" 2>/dev/null; then
+        LOCK_OWNER=$(cat "$LOCK_DIR/pid" 2>/dev/null || true)
+        if safety_lock_owner_valid "$LOCK_OWNER"; then
             return 1
         fi
+        # A new owner may have created the directory but not written its PID
+        # yet. Recheck before treating a PID-less/dead lock as stale.
+        sleep 1
+        LOCK_OWNER_AFTER=$(cat "$LOCK_DIR/pid" 2>/dev/null || true)
+        if safety_lock_owner_valid "$LOCK_OWNER_AFTER"; then
+            return 1
+        fi
+        [ "$LOCK_OWNER" = "$LOCK_OWNER_AFTER" ] || return 1
         rm -f "$LOCK_DIR/pid" 2>/dev/null || return 1
         rmdir "$LOCK_DIR" 2>/dev/null || return 1
         mkdir "$LOCK_DIR" 2>/dev/null || return 1
     fi
-    if ! printf '%s\n' "$$" > "$LOCK_DIR/pid"; then
+    SELF_TOKEN=$(safety_process_start_token "$$") || SELF_TOKEN=""
+    SELF_OWNER="$$|$SELF_TOKEN"
+    if [ -z "$SELF_TOKEN" ] || ! printf '%s\n' "$SELF_OWNER" > "$LOCK_DIR/pid"; then
         rm -f "$LOCK_DIR/pid" 2>/dev/null || true
         rmdir "$LOCK_DIR" 2>/dev/null || true
         return 1
     fi
     SAFETY_LOCK_DIR="$LOCK_DIR"
+    SAFETY_LOCK_OWNER="$SELF_OWNER"
 }
 
 safety_lock_release() {
-    local LOCK_DIR="${SAFETY_LOCK_DIR:-}" LOCK_PID=""
+    local LOCK_DIR="${SAFETY_LOCK_DIR:-}" LOCK_OWNER=""
     [ -n "$LOCK_DIR" ] || return 0
-    LOCK_PID=$(cat "$LOCK_DIR/pid" 2>/dev/null || true)
-    if [ "$LOCK_PID" = "$$" ]; then
+    LOCK_OWNER=$(cat "$LOCK_DIR/pid" 2>/dev/null || true)
+    if [ "$LOCK_OWNER" = "${SAFETY_LOCK_OWNER:-}" ]; then
         rm -f "$LOCK_DIR/pid" 2>/dev/null || true
         rmdir "$LOCK_DIR" 2>/dev/null || true
     fi
     SAFETY_LOCK_DIR=""
+    SAFETY_LOCK_OWNER=""
+}
+
+safety_worker_identity_valid() {
+    local WORKER_PID="$1" WORKER_SCRIPT="$2" CMDLINE=""
+    [[ "$WORKER_PID" =~ ^[1-9][0-9]*$ ]] && [ -f "$WORKER_SCRIPT" ] \
+        && kill -0 "$WORKER_PID" 2>/dev/null || return 1
+    if [ -r "/proc/${WORKER_PID}/cmdline" ]; then
+        CMDLINE=$(tr '\0' ' ' < "/proc/${WORKER_PID}/cmdline" 2>/dev/null) \
+            || return 1
+    elif command -v ps >/dev/null 2>&1; then
+        CMDLINE=$(ps -p "$WORKER_PID" -o args= 2>/dev/null) || return 1
+    else
+        return 1
+    fi
+    case "$CMDLINE" in *"$WORKER_SCRIPT"*) return 0 ;; *) return 1 ;; esac
+}
+
+safety_mark_applied() {
+    local STATE_FILE="${SAFETY_STATE_FILE:-${VPS_DATA_DIR}/rollback.active}"
+    local APPLIED_SNAPSHOT APPLIED_ROOTS SNAP_TMP ROOTS_TMP
+    local EXPECTED_PID="${SAFETY_PID:-}" EXPECTED_SCRIPT="${SAFETY_SCRIPT:-}"
+    local EXPECTED_ROOTS="${SAFETY_ROOTS_FILE:-}"
+    local EXPECTED_SYSCTL="${SAFETY_SYSCTL_FILE:-}"
+    local EXPECTED_SNAPSHOT="${SAFETY_SNAPSHOT:-}"
+    local STATE_PID STATE_SCRIPT STATE_ROOTS STATE_SYSCTL STATE_SNAPSHOT STATE_STATUS
+    [[ "$EXPECTED_PID" =~ ^[1-9][0-9]*$ ]] && [ -n "$EXPECTED_SCRIPT" ] \
+        || return 1
+    if ! safety_lock_acquire; then
+        error "自动回滚正在执行，无法记录本次变更的提交状态"
+        return 1
+    fi
+    if ! IFS='|' read -r STATE_PID STATE_SCRIPT STATE_ROOTS STATE_SYSCTL \
+        STATE_SNAPSHOT STATE_STATUS < "$STATE_FILE" 2>/dev/null \
+        || [ "$STATE_PID" != "$EXPECTED_PID" ] \
+        || [ "$STATE_SCRIPT" != "$EXPECTED_SCRIPT" ] \
+        || [ "$STATE_ROOTS" != "$EXPECTED_ROOTS" ] \
+        || [ "$STATE_SYSCTL" != "$EXPECTED_SYSCTL" ] \
+        || [ "$STATE_SNAPSHOT" != "$EXPECTED_SNAPSHOT" ] \
+        || ! safety_worker_identity_valid "$STATE_PID" "$STATE_SCRIPT"; then
+        safety_lock_release
+        error "防断联任务已超时、已被替换或身份不匹配"
+        return 1
+    fi
+    APPLIED_SNAPSHOT="${EXPECTED_SCRIPT%.sh}.applied.tar"
+    APPLIED_ROOTS="${EXPECTED_SCRIPT%.sh}.applied.roots"
+    if [ "$STATE_STATUS" = applied ]; then
+        if [ -f "$APPLIED_SNAPSHOT" ] && [ -f "$APPLIED_ROOTS" ]; then
+            SAFETY_APPLIED_SNAPSHOT="$APPLIED_SNAPSHOT"
+            SAFETY_APPLIED_ROOTS="$APPLIED_ROOTS"
+            safety_lock_release
+            return 0
+        fi
+        safety_lock_release
+        error "防断联任务的提交快照不完整"
+        return 1
+    fi
+    if [ "$STATE_STATUS" != armed ] \
+        || [ -z "$EXPECTED_ROOTS" ] || [ ! -f "$EXPECTED_ROOTS" ]; then
+        safety_lock_release
+        error "防断联任务状态不允许记录提交快照"
+        return 1
+    fi
+    SNAP_TMP=$(mktemp "${APPLIED_SNAPSHOT}.tmp.XXXXXX") || SNAP_TMP=""
+    ROOTS_TMP=$(mktemp "${APPLIED_ROOTS}.tmp.XXXXXX") || ROOTS_TMP=""
+    if [ -z "$SNAP_TMP" ] || [ -z "$ROOTS_TMP" ] \
+        || ! safety_applied_snapshot_create \
+            "$SNAP_TMP" "$ROOTS_TMP" "$EXPECTED_ROOTS" \
+        || ! mv -f -- "$ROOTS_TMP" "$APPLIED_ROOTS" \
+        || ! mv -f -- "$SNAP_TMP" "$APPLIED_SNAPSHOT" \
+        || ! safety_state_write_atomic \
+            "$STATE_FILE" "$STATE_PID" "$STATE_SCRIPT" \
+            "$EXPECTED_ROOTS" "$EXPECTED_SYSCTL" \
+            "$EXPECTED_SNAPSHOT" applied; then
+        [ -z "$SNAP_TMP" ] || rm -f -- "$SNAP_TMP"
+        [ -z "$ROOTS_TMP" ] || rm -f -- "$ROOTS_TMP"
+        safety_artifact_remove "$APPLIED_SNAPSHOT"
+        safety_artifact_remove "$APPLIED_ROOTS"
+        safety_lock_release
+        error "无法记录变更后的并发保护快照，自动回滚仍保持待命"
+        return 1
+    fi
+    SAFETY_APPLIED_SNAPSHOT="$APPLIED_SNAPSHOT"
+    SAFETY_APPLIED_ROOTS="$APPLIED_ROOTS"
+    SAFETY_STATUS=applied
+    safety_lock_release
+    return 0
 }
 
 cancel_safety_timer() {
     local STATE_FILE="${SAFETY_STATE_FILE:-${VPS_DATA_DIR}/rollback.active}"
-    safety_load_pending || return 0
-    kill "$SAFETY_PID" 2>/dev/null || true
-    wait "$SAFETY_PID" 2>/dev/null || true
-    rm -f "${SAFETY_SCRIPT:-}"
-    rm -f "$STATE_FILE" 2>/dev/null || true
-    SAFETY_PID="" SAFETY_SCRIPT=""
+    local EXPECTED_PID="${1:-}" EXPECTED_SCRIPT="${2:-}" EXPECTED_ROOTS="${3:-}"
+    local EXPECTED_SYSCTL="${4:-}" EXPECTED_SNAPSHOT="${5:-}" EXPECT_EXACT=no
+    local ATTEMPT ARTIFACT FAILED=no
+    [ "$#" -lt 5 ] || EXPECT_EXACT=yes
+    if ! safety_lock_acquire; then
+        error "自动回滚已开始执行或正由其他进程处理，不能安全取消"
+        return 1
+    fi
+    if ! safety_load_pending; then
+        safety_lock_release
+        [ "$EXPECT_EXACT" = no ] || {
+            error "待取消的防断联任务已不存在"
+            return 1
+        }
+        return 0
+    fi
+    if [ "$EXPECT_EXACT" = yes ] \
+        && { [ "${SAFETY_PID:-}" != "$EXPECTED_PID" ] \
+            || [ "${SAFETY_SCRIPT:-}" != "$EXPECTED_SCRIPT" ] \
+            || [ "${SAFETY_ROOTS_FILE:-}" != "$EXPECTED_ROOTS" ] \
+            || [ "${SAFETY_SYSCTL_FILE:-}" != "$EXPECTED_SYSCTL" ] \
+            || [ "${SAFETY_SNAPSHOT:-}" != "$EXPECTED_SNAPSHOT" ]; }; then
+        safety_lock_release
+        error "当前防断联任务与待取消事务不一致，拒绝取消其他任务"
+        return 1
+    fi
+    case "${SAFETY_STATUS:-armed}" in
+        armed|applied|cancelled) ;;
+        restoring)
+            safety_lock_release
+            error "自动回滚已经开始，不能在恢复过程中取消"
+            return 1
+            ;;
+        failed)
+            safety_lock_release
+            error "自动回滚此前执行失败，快照和状态已保留，不能当作成功取消"
+            return 1
+            ;;
+        *)
+            safety_lock_release
+            error "自动回滚状态未知，拒绝清理恢复材料"
+            return 1
+            ;;
+    esac
+    if [[ "${SAFETY_PID:-}" =~ ^[1-9][0-9]*$ ]]; then
+        kill "$SAFETY_PID" 2>/dev/null || true
+        wait "$SAFETY_PID" 2>/dev/null || true
+        for ATTEMPT in 1 2 3 4 5; do
+            kill -0 "$SAFETY_PID" 2>/dev/null || break
+            sleep 0.05
+        done
+        if kill -0 "$SAFETY_PID" 2>/dev/null; then
+            safety_lock_release
+            error "自动回滚进程未能停止，已保留状态和快照"
+            return 1
+        fi
+    fi
+    safety_artifact_remove "${SAFETY_SCRIPT:-}"
+    safety_artifact_remove "${SAFETY_ROOTS_FILE:-}"
+    safety_artifact_remove "${SAFETY_SYSCTL_FILE:-}"
+    safety_artifact_remove "${SAFETY_IPTABLES_FILE:-}"
+    safety_artifact_remove "${SAFETY_IP6TABLES_FILE:-}"
+    safety_artifact_remove "${SAFETY_APPLIED_SNAPSHOT:-}"
+    safety_artifact_remove "${SAFETY_APPLIED_ROOTS:-}"
+    case "${SAFETY_SNAPSHOT:-}" in
+        "${VPS_DATA_DIR}"/rollback_*.tar.gz)
+            safety_artifact_remove "$SAFETY_SNAPSHOT"
+            ;;
+    esac
+    for ARTIFACT in \
+        "${SAFETY_SCRIPT:-}" "${SAFETY_ROOTS_FILE:-}" \
+        "${SAFETY_SYSCTL_FILE:-}" "${SAFETY_IPTABLES_FILE:-}" \
+        "${SAFETY_IP6TABLES_FILE:-}" "${SAFETY_APPLIED_SNAPSHOT:-}" \
+        "${SAFETY_APPLIED_ROOTS:-}"; do
+        [ -z "$ARTIFACT" ] \
+            || { [ ! -e "$ARTIFACT" ] && [ ! -L "$ARTIFACT" ]; } \
+            || FAILED=yes
+    done
+    case "${SAFETY_SNAPSHOT:-}" in
+        "${VPS_DATA_DIR}"/rollback_*.tar.gz)
+            { [ ! -e "$SAFETY_SNAPSHOT" ] && [ ! -L "$SAFETY_SNAPSHOT" ]; } \
+                || FAILED=yes
+            ;;
+    esac
+    if ! rm -f -- "$STATE_FILE" 2>/dev/null \
+        || [ -e "$STATE_FILE" ] || [ -L "$STATE_FILE" ]; then
+        FAILED=yes
+    fi
+    if [ "$FAILED" = yes ]; then
+        safety_lock_release
+        error "自动回滚进程已停止，但状态或恢复材料未能完整清理"
+        return 1
+    fi
+    SAFETY_PID="" SAFETY_SCRIPT="" SAFETY_ROOTS_FILE="" SAFETY_SYSCTL_FILE=""
+    SAFETY_IPTABLES_FILE="" SAFETY_IP6TABLES_FILE=""
+    SAFETY_APPLIED_SNAPSHOT="" SAFETY_APPLIED_ROOTS=""
+    SAFETY_SNAPSHOT="" SAFETY_STATUS=""
+    safety_lock_release
+    return 0
+}
+
+safety_cancel_current_transaction() {
+    local EXPECTED_PID="${SAFETY_PID:-}" EXPECTED_SCRIPT="${SAFETY_SCRIPT:-}"
+    local EXPECTED_ROOTS="${SAFETY_ROOTS_FILE:-}"
+    local EXPECTED_SYSCTL="${SAFETY_SYSCTL_FILE:-}"
+    local EXPECTED_SNAPSHOT="${SAFETY_SNAPSHOT:-}"
+    [[ "$EXPECTED_PID" =~ ^[1-9][0-9]*$ ]] && [ -n "$EXPECTED_SCRIPT" ] \
+        || return 1
+    cancel_safety_timer \
+        "$EXPECTED_PID" "$EXPECTED_SCRIPT" "$EXPECTED_ROOTS" \
+        "$EXPECTED_SYSCTL" "$EXPECTED_SNAPSHOT"
 }
 
 confirm_change_preview() {
@@ -190,49 +1190,231 @@ confirm_file_diff() {
     echo "$CONFIRM" | grep -qiE '^y(es)?$'
 }
 
+config_archive_create_compatible() {
+    local OUTPUT="$1" ROOT="$2" LIST="$3" HELP
+    HELP=$(LC_ALL=C tar --help 2>/dev/null || true)
+    if printf '%s\n' "$HELP" | grep -q -- '--format'; then
+        tar --format=ustar -czf "$OUTPUT" -C "$ROOT" -T "$LIST" 2>/dev/null
+    else
+        tar -czf "$OUTPUT" -C "$ROOT" -T "$LIST" 2>/dev/null
+    fi
+}
+
 config_backup_create() {
-    local LABEL="${1:-manual}" QUIET="${2:-false}" TS FILE LIST
+    local LABEL="${1:-manual}" QUIET="${2:-false}" TS FILE LIST TEMP_FILE SAFE_LABEL
     TS=$(date +%Y%m%d_%H%M%S)
-    mkdir -p "$VPS_BACKUP_DIR"
+    SAFE_LABEL=$(printf '%s' "$LABEL" | tr -c 'A-Za-z0-9._-' '_')
+    [ -n "$SAFE_LABEL" ] || SAFE_LABEL=manual
+    mkdir -p "$VPS_BACKUP_DIR" || {
+        [ "$QUIET" = true ] || error "无法创建配置备份目录"
+        return 1
+    }
     chmod 700 "$VPS_DATA_DIR" "$VPS_BACKUP_DIR" 2>/dev/null || true
-    FILE="$VPS_BACKUP_DIR/${TS}_${LABEL}.tar.gz"
-    LIST=$(mktemp)
-    config_backup_paths > "$LIST"
-    if [ ! -s "$LIST" ] || ! tar -czf "$FILE" -C / -T "$LIST" 2>/dev/null; then
-        rm -f "$LIST" "$FILE"
+    FILE="$VPS_BACKUP_DIR/${TS}_${SAFE_LABEL}_$$_${RANDOM}.tar.gz"
+    TEMP_FILE=$(mktemp "$VPS_BACKUP_DIR/.config-backup.XXXXXX") || {
+        [ "$QUIET" = true ] || error "无法创建配置备份临时文件"
+        return 1
+    }
+    LIST=$(mktemp) || {
+        [ "$QUIET" = true ] || error "无法创建配置备份清单"
+        rm -f -- "$TEMP_FILE"
+        return 1
+    }
+    if ! config_backup_paths > "$LIST"; then
+        rm -f "$LIST" "$TEMP_FILE"
+        [ "$QUIET" = true ] || error "无法生成配置备份清单"
+        return 1
+    fi
+    if [ ! -s "$LIST" ] \
+        || ! config_archive_create_compatible "$TEMP_FILE" / "$LIST"; then
+        rm -f "$LIST" "$TEMP_FILE"
         [ "$QUIET" = true ] || error "配置备份失败"
         return 1
     fi
     rm -f "$LIST"
-    chmod 600 "$FILE"
+    if ! config_archive_validate "$TEMP_FILE" >/dev/null 2>&1; then
+        rm -f "$TEMP_FILE"
+        [ "$QUIET" = true ] || error "当前配置包含无法安全恢复的链接或特殊文件，备份已取消"
+        return 1
+    fi
+    if ! chmod 600 "$TEMP_FILE" \
+        || [ -e "$FILE" ] || ! mv -- "$TEMP_FILE" "$FILE"; then
+        rm -f "$TEMP_FILE"
+        [ "$QUIET" = true ] || error "无法保护配置备份权限"
+        return 1
+    fi
     audit_action "创建配置备份 $(basename "$FILE")" SUCCESS
     config_backup_prune
     if [ "$QUIET" = true ]; then printf '%s\n' "$FILE"; else info "配置已备份：$FILE"; fi
 }
 
+config_archive_stage() {
+    local SOURCE="$1" RESULT_VAR="$2" STAGE_DIR STAGED SIZE
+    local MAX_COMPRESSED="${CONFIG_ARCHIVE_MAX_COMPRESSED_BYTES:-67108864}"
+    case "$MAX_COMPRESSED" in
+        ''|*[!0-9]*) MAX_COMPRESSED=67108864 ;;
+    esac
+    [ "$MAX_COMPRESSED" -ge 1 ] 2>/dev/null || MAX_COMPRESSED=67108864
+    [ -f "$SOURCE" ] || return 1
+    STAGE_DIR=$(mktemp -d "${TMPDIR:-/tmp}/vps-config-restore.XXXXXX") || return 1
+    STAGED="$STAGE_DIR/archive.tar.gz"
+    if ! (umask 077; head -c "$((MAX_COMPRESSED + 1))" -- "$SOURCE" > "$STAGED"); then
+        rm -f -- "$STAGED"
+        rmdir -- "$STAGE_DIR" 2>/dev/null || true
+        return 1
+    fi
+    SIZE=$(stat -c '%s' "$STAGED" 2>/dev/null) || {
+        rm -f -- "$STAGED"
+        rmdir -- "$STAGE_DIR" 2>/dev/null || true
+        return 1
+    }
+    if [ "$SIZE" -gt "$MAX_COMPRESSED" ]; then
+        rm -f -- "$STAGED"
+        rmdir -- "$STAGE_DIR" 2>/dev/null || true
+        return 1
+    fi
+    chmod 600 "$STAGED" 2>/dev/null || {
+        rm -f -- "$STAGED"
+        rmdir -- "$STAGE_DIR" 2>/dev/null || true
+        return 1
+    }
+    printf -v "$RESULT_VAR" '%s' "$STAGED"
+}
+
+config_archive_stage_cleanup() {
+    local STAGED="${1:-}" STAGE_DIR
+    [ -n "$STAGED" ] || return 0
+    STAGE_DIR=$(dirname -- "$STAGED") || return 1
+    rm -f -- "$STAGED" 2>/dev/null || true
+    rmdir -- "$STAGE_DIR" 2>/dev/null || true
+}
+
 config_backup_restore() {
-    local FILE="$1"
-    [ -f "$FILE" ] || { error "备份不存在"; return 1; }
-    config_archive_validate "$FILE" || return 1
+    local SOURCE_FILE="$1" FILE="" DISPLAY_NAME APPLY_FAILED=no
+    local APPLY_FIREWALL_BACKEND=none UFW_STATUS="" IPTABLES_STATUS=""
+    [ -f "$SOURCE_FILE" ] || { error "备份不存在"; return 1; }
+    DISPLAY_NAME=$(basename -- "$SOURCE_FILE")
+    if ! config_archive_stage "$SOURCE_FILE" FILE; then
+        error "无法安全暂存配置备份，文件可能过大、已损坏或无法读取"
+        return 1
+    fi
+    if ! config_archive_validate "$FILE"; then
+        config_archive_stage_cleanup "$FILE"
+        return 1
+    fi
     warn "恢复将覆盖当前配置，并重启相关服务。"
     read -rp "  输入 RESTORE 确认恢复: " CONFIRM
-    [ "$CONFIRM" = "RESTORE" ] || { warn "已取消"; return; }
-    config_backup_create before_restore true >/dev/null || return 1
-    safety_arm config_restore || return 1
-    if ! config_archive_extract "$FILE"; then
-        error "恢复失败，已保留恢复前快照"
-        audit_action "恢复配置 $(basename "$FILE")" FAILED
+    if [ "$CONFIRM" != "RESTORE" ]; then
+        config_archive_stage_cleanup "$FILE"
+        warn "已取消"
+        return
+    fi
+    if ! config_backup_create before_restore true >/dev/null; then
+        config_archive_stage_cleanup "$FILE"
         return 1
     fi
+    if ! safety_arm config_restore; then
+        config_archive_stage_cleanup "$FILE"
+        return 1
+    fi
+    if ! config_archive_extract "$FILE"; then
+        config_archive_stage_cleanup "$FILE"
+        error "恢复失败，已保留恢复前快照"
+        audit_action "恢复配置 $DISPLAY_NAME" FAILED
+        return 1
+    fi
+    config_archive_stage_cleanup "$FILE"
     if command -v sshd >/dev/null 2>&1 && ! sshd -t 2>/dev/null; then
         error "恢复后的 SSH 配置语法错误，请从 before_restore 快照恢复"
-        audit_action "恢复配置 $(basename "$FILE") SSH校验失败" FAILED
+        audit_action "恢复配置 $DISPLAY_NAME SSH校验失败" FAILED
         return 1
     fi
-    restart_ssh 2>/dev/null || true
-    command -v systemctl >/dev/null 2>&1 && systemctl restart systemd-resolved 2>/dev/null || true
-    command -v nft >/dev/null 2>&1 && [ -f /etc/nftables.conf ] && nft -f /etc/nftables.conf 2>/dev/null || true
-    audit_action "恢复配置 $(basename "$FILE")" SUCCESS
+    if command -v sshd >/dev/null 2>&1 && ! restart_ssh >/dev/null 2>&1; then
+        error "配置文件已恢复，但 SSH 服务重载/重启失败"
+        APPLY_FAILED=yes
+    fi
+    if command -v ufw >/dev/null 2>&1; then
+        UFW_STATUS=$(LC_ALL=C ufw status 2>/dev/null) || {
+            error "配置文件已恢复，但无法可靠读取 UFW 状态"
+            APPLY_FAILED=yes
+        }
+        case "$UFW_STATUS" in
+            *"Status: active"*) APPLY_FIREWALL_BACKEND=ufw ;;
+            *"Status: inactive"*) ;;
+            "")
+                [ "$APPLY_FAILED" = yes ] || {
+                    error "配置文件已恢复，但 UFW 返回空状态"
+                    APPLY_FAILED=yes
+                }
+                ;;
+            *)
+                error "配置文件已恢复，但 UFW 返回未知状态"
+                APPLY_FAILED=yes
+                ;;
+        esac
+    fi
+    if [ "$APPLY_FIREWALL_BACKEND" = none ] && svc_is_active firewalld; then
+        APPLY_FIREWALL_BACKEND=firewalld
+    elif [ "$APPLY_FIREWALL_BACKEND" = none ] && svc_is_active nftables; then
+        APPLY_FIREWALL_BACKEND=nftables
+    elif [ "$APPLY_FIREWALL_BACKEND" = none ] \
+        && command -v iptables >/dev/null 2>&1; then
+        if IPTABLES_STATUS=$(iptables -S INPUT 2>/dev/null); then
+            [ -z "$IPTABLES_STATUS" ] || APPLY_FIREWALL_BACKEND=iptables
+        else
+            error "配置文件已恢复，但无法可靠读取 iptables 状态"
+            APPLY_FAILED=yes
+        fi
+    fi
+    case "$APPLY_FIREWALL_BACKEND" in
+        ufw)
+            if ! ufw reload >/dev/null 2>&1; then
+                error "配置文件已恢复，但 UFW 重载失败"
+                APPLY_FAILED=yes
+            fi
+            ;;
+        firewalld)
+            if ! firewall-cmd --reload >/dev/null 2>&1; then
+                error "配置文件已恢复，但 firewalld 重载失败"
+                APPLY_FAILED=yes
+            fi
+            ;;
+        nftables)
+            if ! { systemctl restart nftables >/dev/null 2>&1 \
+                || { command -v nft >/dev/null 2>&1 \
+                    && [ -f /etc/nftables.conf ] \
+                    && nft -f /etc/nftables.conf >/dev/null 2>&1; }; }; then
+                error "配置文件已恢复，但 nftables 配置加载失败"
+                APPLY_FAILED=yes
+            fi
+            ;;
+        iptables)
+            if [ -f /etc/iptables/rules.v4 ] \
+                && command -v iptables-restore >/dev/null 2>&1; then
+                if ! iptables-restore < /etc/iptables/rules.v4 >/dev/null 2>&1; then
+                    error "配置文件已恢复，但 iptables 运行规则加载失败"
+                    APPLY_FAILED=yes
+                fi
+            fi
+            ;;
+    esac
+    if svc_is_active fail2ban \
+        && ! { systemctl restart fail2ban >/dev/null 2>&1 \
+            || service fail2ban restart >/dev/null 2>&1; }; then
+        error "配置文件已恢复，但 Fail2ban 重启失败"
+        APPLY_FAILED=yes
+    fi
+    if svc_is_active systemd-resolved \
+        && ! systemctl restart systemd-resolved >/dev/null 2>&1; then
+        error "配置文件已恢复，但 systemd-resolved 重启失败"
+        APPLY_FAILED=yes
+    fi
+    if [ "$APPLY_FAILED" = yes ]; then
+        audit_action "恢复配置 $DISPLAY_NAME 服务应用不完整" FAILED
+        error "关键服务未完整应用恢复配置，防断联自动回滚保持运行"
+        return 1
+    fi
+    audit_action "恢复配置 $DISPLAY_NAME" SUCCESS
     info "配置恢复完成"
     safety_confirm
 }
@@ -298,7 +1480,6 @@ config_export_archive() {
 config_import_archive() {
     local FILE="$1"
     [ -f "$FILE" ] || { error "导入包不存在"; return 1; }
-    config_archive_validate "$FILE" || return 1
     config_backup_restore "$FILE"
 }
 
@@ -333,9 +1514,86 @@ config_transfer_menu() {
     done
 }
 
+safety_failed_task_clear() {
+    local STATE_FILE="${SAFETY_STATE_FILE:-${VPS_DATA_DIR}/rollback.active}"
+    local CONFIRM ARCHIVE="" ARCHIVED=no
+    if ! safety_lock_acquire; then
+        error "防断联任务正在由其他进程处理，请稍后重试"
+        return 1
+    fi
+    if ! safety_load_pending || [ "${SAFETY_STATUS:-}" != failed ]; then
+        safety_lock_release
+        warn "当前没有标记为失败的防断联任务"
+        return 0
+    fi
+
+    warn "检测到失败的防断联任务。解除阻塞不会再次自动应用快照。"
+    echo -e "  状态文件：${BOLD}${STATE_FILE}${NC}"
+    [ -z "${SAFETY_SNAPSHOT:-}" ] \
+        || echo -e "  恢复快照/备份：${BOLD}${SAFETY_SNAPSHOT}${NC}"
+    read -rp "  已人工核对并决定解除阻塞时，输入 CLEAR: " CONFIRM
+    if [ "$CONFIRM" != CLEAR ]; then
+        safety_lock_release
+        warn "已取消，失败状态和恢复材料均保留"
+        return 0
+    fi
+
+    case "${SAFETY_SNAPSHOT:-}" in
+        "${VPS_DATA_DIR}"/rollback_*.tar.gz)
+            if [ -f "$SAFETY_SNAPSHOT" ]; then
+                mkdir -p "$VPS_BACKUP_DIR" 2>/dev/null || true
+                ARCHIVE="$VPS_BACKUP_DIR/$(date +%Y%m%d_%H%M%S)_failed-safety_$$_${RANDOM}.tar.gz"
+                if cp -p -- "$SAFETY_SNAPSHOT" "$ARCHIVE" 2>/dev/null \
+                    && config_archive_validate "$ARCHIVE" >/dev/null 2>&1 \
+                    && chmod 600 "$ARCHIVE" 2>/dev/null; then
+                    ARCHIVED=yes
+                else
+                    rm -f -- "$ARCHIVE" 2>/dev/null || true
+                    ARCHIVE=""
+                    warn "快照无法归档为可恢复配置包，原文件将保留：$SAFETY_SNAPSHOT"
+                fi
+            fi
+            ;;
+        "")
+            ;;
+        *)
+            [ ! -e "$SAFETY_SNAPSHOT" ] \
+                || info "独立操作备份将保留：$SAFETY_SNAPSHOT"
+            ;;
+    esac
+
+    safety_artifact_remove "${SAFETY_SCRIPT:-}"
+    safety_artifact_remove "${SAFETY_ROOTS_FILE:-}"
+    safety_artifact_remove "${SAFETY_SYSCTL_FILE:-}"
+    safety_artifact_remove "${SAFETY_IPTABLES_FILE:-}"
+    safety_artifact_remove "${SAFETY_IP6TABLES_FILE:-}"
+    safety_artifact_remove "${SAFETY_APPLIED_SNAPSHOT:-}"
+    safety_artifact_remove "${SAFETY_APPLIED_ROOTS:-}"
+    if [ "$ARCHIVED" = yes ]; then
+        safety_artifact_remove "${SAFETY_SNAPSHOT:-}"
+    fi
+    if ! rm -f -- "$STATE_FILE"; then
+        safety_lock_release
+        error "无法清理失败状态，任务仍保持阻塞"
+        return 1
+    fi
+    SAFETY_PID="" SAFETY_SCRIPT="" SAFETY_ROOTS_FILE="" SAFETY_SYSCTL_FILE=""
+    SAFETY_IPTABLES_FILE="" SAFETY_IP6TABLES_FILE=""
+    SAFETY_APPLIED_SNAPSHOT="" SAFETY_APPLIED_ROOTS=""
+    SAFETY_SNAPSHOT="" SAFETY_STATUS=""
+    safety_lock_release
+    if [ -n "$ARCHIVE" ]; then
+        audit_action "人工解除失败的防断联任务，快照归档为 $(basename "$ARCHIVE")" SUCCESS
+        info "失败快照已归档：$ARCHIVE"
+    else
+        audit_action "人工解除失败的防断联任务" SUCCESS
+    fi
+    info "失败状态已解除，后续防断联任务可再次启动"
+}
+
 rollback_center_menu() {
     while true; do
-        local BACKUP_COUNT VERSION_COUNT LATEST_BACKUP LATEST_VERSION
+        local BACKUP_COUNT VERSION_COUNT LATEST_BACKUP LATEST_VERSION SAFETY_STATE_STATUS=""
         BACKUP_COUNT=$(find "$VPS_BACKUP_DIR" -maxdepth 1 -type f -name '*.tar.gz' 2>/dev/null | wc -l | tr -d ' ')
         VERSION_COUNT=$(find "$VPS_VERSION_DIR" -maxdepth 1 -type f -name '*.sh' 2>/dev/null | wc -l | tr -d ' ')
         LATEST_BACKUP=$(find "$VPS_BACKUP_DIR" -maxdepth 1 -type f -name '*.tar.gz' 2>/dev/null | sort -r | head -1)
@@ -345,17 +1603,25 @@ rollback_center_menu() {
         [ -n "$LATEST_VERSION" ] && LATEST_VERSION="${LATEST_VERSION##*/}" || LATEST_VERSION="无"
         echo -e "  备份包：${BOLD}${BACKUP_COUNT:-0}${NC}   最新配置：${BOLD}${LATEST_BACKUP}${NC}"
         echo -e "  版本包：${BOLD}${VERSION_COUNT:-0}${NC}   最新脚本：${BOLD}${LATEST_VERSION}${NC}"
+        if [ -f "${SAFETY_STATE_FILE:-${VPS_DATA_DIR}/rollback.active}" ]; then
+            IFS='|' read -r _ _ _ _ _ SAFETY_STATE_STATUS \
+                < "${SAFETY_STATE_FILE:-${VPS_DATA_DIR}/rollback.active}" || true
+            [ -n "$SAFETY_STATE_STATUS" ] || SAFETY_STATE_STATUS=armed
+        fi
+        echo -e "  防断联任务：${BOLD}${SAFETY_STATE_STATUS:-无}${NC}"
         echo ""; menu_div
         menu_item "1" "配置备份与恢复" "$GREEN"
         menu_item "2" "配置导出 / 导入" "$CYAN"
         menu_item "3" "脚本版本回滚" "$YELLOW"
+        menu_item "4" "处理失败的防断联任务" "$RED"
         menu_item "0" "返回上级" "$RED"
         menu_div; echo ""
-        read -rp "$(ui_prompt '选择操作 [0-3]: ')" CH
+        read -rp "$(ui_prompt '选择操作 [0-4]: ')" CH
         case "$CH" in
             1) config_backup_menu ;;
             2) config_transfer_menu ;;
             3) self_rollback ;;
+            4) safety_failed_task_clear ;;
             0) return ;;
             *) warn "无效选项"; sleep 1 ;;
         esac
@@ -1059,11 +2325,23 @@ monitor_alert_daily_report_check() {
 }
 
 monitor_alert_cron_command() {
-    printf '%s --monitor-alert >> /var/log/vps-monitor.log 2>&1' "${SVC_PATH:-${LOCAL_SCRIPT:-$0}}"
+    local RUNNER="${SVC_PATH:-${LOCAL_SCRIPT:-$0}}"
+    printf '%q --monitor-alert >> /var/log/vps-monitor.log 2>&1' "$RUNNER"
+}
+
+monitor_alert_release_lock() {
+    local LOCK_DIR="${MONITOR_ALERT_LOCK_DIR:-}" LOCK_PID=""
+    [ -n "$LOCK_DIR" ] || return 0
+    LOCK_PID=$(cat "$LOCK_DIR/pid" 2>/dev/null || true)
+    if [ "$LOCK_PID" = "$$" ]; then
+        rm -f "$LOCK_DIR/pid" 2>/dev/null || true
+        rmdir "$LOCK_DIR" 2>/dev/null || true
+    fi
+    MONITOR_ALERT_LOCK_DIR=""
 }
 
 monitor_alert_acquire_lock() {
-    local LOCK_FILE LOCK_PARENT LOCK_PID
+    local LOCK_FILE LOCK_PARENT LOCK_PID="" LOCK_PID_AFTER=""
     LOCK_FILE=$(monitor_alert_lock_file)
     LOCK_PARENT=$(dirname "$LOCK_FILE")
     mkdir -p "$LOCK_PARENT" 2>/dev/null || return 1
@@ -1075,14 +2353,25 @@ monitor_alert_acquire_lock() {
     MONITOR_ALERT_LOCK_DIR="${LOCK_FILE}.d"
     if ! mkdir "$MONITOR_ALERT_LOCK_DIR" 2>/dev/null; then
         LOCK_PID=$(cat "$MONITOR_ALERT_LOCK_DIR/pid" 2>/dev/null || true)
-        if [ -n "$LOCK_PID" ] && kill -0 "$LOCK_PID" 2>/dev/null; then
+        if [[ "$LOCK_PID" =~ ^[0-9]+$ ]] && kill -0 "$LOCK_PID" 2>/dev/null; then
             return 1
         fi
-        rm -rf "$MONITOR_ALERT_LOCK_DIR" 2>/dev/null || return 1
+        sleep 1
+        LOCK_PID_AFTER=$(cat "$MONITOR_ALERT_LOCK_DIR/pid" 2>/dev/null || true)
+        if [[ "$LOCK_PID_AFTER" =~ ^[0-9]+$ ]] && kill -0 "$LOCK_PID_AFTER" 2>/dev/null; then
+            return 1
+        fi
+        [ "$LOCK_PID" = "$LOCK_PID_AFTER" ] || return 1
+        rm -f "$MONITOR_ALERT_LOCK_DIR/pid" 2>/dev/null || return 1
+        rmdir "$MONITOR_ALERT_LOCK_DIR" 2>/dev/null || return 1
         mkdir "$MONITOR_ALERT_LOCK_DIR" 2>/dev/null || return 1
     fi
-    printf '%s\n' "$$" > "$MONITOR_ALERT_LOCK_DIR/pid" || { rm -rf "$MONITOR_ALERT_LOCK_DIR"; return 1; }
-    trap 'rm -rf "$MONITOR_ALERT_LOCK_DIR" 2>/dev/null || true' EXIT
+    if ! printf '%s\n' "$$" > "$MONITOR_ALERT_LOCK_DIR/pid"; then
+        rm -f "$MONITOR_ALERT_LOCK_DIR/pid" 2>/dev/null || true
+        rmdir "$MONITOR_ALERT_LOCK_DIR" 2>/dev/null || true
+        return 1
+    fi
+    trap monitor_alert_release_lock EXIT
 }
 
 monitor_alert_daily_cron_expr() {
@@ -1094,39 +2383,153 @@ monitor_alert_daily_cron_expr() {
 }
 
 monitor_alert_cron_without_managed() {
-    grep -Fv \
-        -e "$MONITOR_CRON_MARKER" \
-        -e "$MONITOR_DAILY_CRON_MARKER" \
-        -e "# vps-monitor-alert" \
-        -e "# vps-monitor-daily-report"
+    awk -v monitor="$MONITOR_CRON_MARKER" \
+        -v daily="$MONITOR_DAILY_CRON_MARKER" '
+        index($0, monitor) == 0 \
+            && index($0, daily) == 0 \
+            && index($0, "# vps-monitor-alert") == 0 \
+            && index($0, "# vps-monitor-daily-report") == 0 {
+                print
+            }
+    '
+}
+
+monitor_alert_restore_crontab() {
+    local BACKUP="$1" HAD_CRONTAB="$2"
+    if [ "$HAD_CRONTAB" = yes ]; then
+        crontab "$BACKUP" >/dev/null 2>&1
+    else
+        crontab -r >/dev/null 2>&1 || {
+            # Several cron implementations return non-zero when no table
+            # exists, which is already the desired restored state.
+            ! crontab -l >/dev/null 2>&1
+        }
+    fi
 }
 
 monitor_alert_install_cron() {
-    local CMD DAILY_EXPR
+    local CMD DAILY_EXPR RUNNER="${SVC_PATH:-${LOCAL_SCRIPT:-}}"
+    local CRON_BACKUP="" CRON_NEW="" CRON_ERROR="" CRON_ERROR_TEXT="" HAD_CRONTAB=no
+    if [ -n "${SVC_PATH:-}" ]; then
+        [ -x "$SVC_PATH" ] || { error "定时监控执行脚本不可用：$SVC_PATH"; return 1; }
+    elif command -v self_ensure_local_runner >/dev/null 2>&1; then
+        self_ensure_local_runner '--monitor-alert)' \
+            || { error "无法准备定时监控执行脚本"; return 1; }
+    elif [ -z "$RUNNER" ] || [ ! -x "$RUNNER" ]; then
+        error "定时监控执行脚本不存在，请先安装本地脚本"
+        return 1
+    fi
     command -v crontab >/dev/null 2>&1 || ddns_ensure_cron >/dev/null 2>&1 || true
     command -v crontab >/dev/null 2>&1 || { warn "未检测到 crontab，无法安装定时监控"; return 1; }
+    CRON_BACKUP=$(mktemp) || { error "无法创建 crontab 备份"; return 1; }
+    CRON_NEW=$(mktemp) || {
+        rm -f "$CRON_BACKUP"
+        error "无法创建 crontab 候选文件"
+        return 1
+    }
+    CRON_ERROR=$(mktemp) || {
+        rm -f "$CRON_BACKUP" "$CRON_NEW"
+        error "无法创建 crontab 错误日志"
+        return 1
+    }
+    if LC_ALL=C crontab -l > "$CRON_BACKUP" 2> "$CRON_ERROR"; then
+        HAD_CRONTAB=yes
+    else
+        CRON_ERROR_TEXT=$(tr '[:upper:]' '[:lower:]' < "$CRON_ERROR" 2>/dev/null || true)
+        case "$CRON_ERROR_TEXT" in
+            *"no crontab for"*)
+                : > "$CRON_BACKUP"
+                ;;
+            *)
+                rm -f "$CRON_BACKUP" "$CRON_NEW" "$CRON_ERROR"
+                error "无法读取现有 crontab，已拒绝覆盖"
+                return 1
+                ;;
+        esac
+    fi
+    rm -f "$CRON_ERROR"
     CMD=$(monitor_alert_cron_command)
+    if ! monitor_alert_cron_without_managed < "$CRON_BACKUP" > "$CRON_NEW"; then
+        rm -f "$CRON_BACKUP" "$CRON_NEW"
+        error "无法生成监控 crontab 候选"
+        return 1
+    fi
+    printf '*/10 * * * * %s %s\n' "$CMD" "$MONITOR_CRON_MARKER" >> "$CRON_NEW" || {
+        rm -f "$CRON_BACKUP" "$CRON_NEW"
+        error "无法写入监控 crontab 候选"
+        return 1
+    }
     if [ "${MON_DAILY_REPORT_ENABLED:-no}" = "yes" ]; then
         DAILY_EXPR=$(monitor_alert_daily_cron_expr "${MON_DAILY_REPORT_TIME:-08:00}")
-        if ! (crontab -l 2>/dev/null | monitor_alert_cron_without_managed; \
-            echo "*/10 * * * * ${CMD} ${MONITOR_CRON_MARKER}"; \
-            echo "${DAILY_EXPR} ${CMD} ${MONITOR_DAILY_CRON_MARKER}") | crontab -; then
-            error "写入监控 crontab 失败"
+        printf '%s %s %s\n' "$DAILY_EXPR" "$CMD" "$MONITOR_DAILY_CRON_MARKER" >> "$CRON_NEW" || {
+            rm -f "$CRON_BACKUP" "$CRON_NEW"
+            error "无法写入日报 crontab 候选"
             return 1
-        fi
-    else
-        if ! (crontab -l 2>/dev/null | monitor_alert_cron_without_managed; \
-            echo "*/10 * * * * ${CMD} ${MONITOR_CRON_MARKER}") | crontab -; then
-            error "写入监控 crontab 失败"
-            return 1
-        fi
+        }
     fi
-    ddns_start_cron_service >/dev/null 2>&1 || warn "cron 服务未能自动启动，请检查服务状态"
+    if ! crontab "$CRON_NEW"; then
+        if monitor_alert_restore_crontab "$CRON_BACKUP" "$HAD_CRONTAB"; then
+            error "写入监控 crontab 失败，已恢复原 crontab"
+        else
+            error "写入监控 crontab 失败，且原 crontab 恢复失败，请立即检查"
+        fi
+        rm -f "$CRON_BACKUP" "$CRON_NEW"
+        return 1
+    fi
+    if ! ddns_start_cron_service >/dev/null 2>&1; then
+        if monitor_alert_restore_crontab "$CRON_BACKUP" "$HAD_CRONTAB"; then
+            error "cron 服务未能启动，已恢复原 crontab"
+        else
+            error "cron 服务未能启动，且原 crontab 恢复失败，请立即检查"
+        fi
+        rm -f "$CRON_BACKUP" "$CRON_NEW"
+        return 1
+    fi
+    rm -f "$CRON_BACKUP" "$CRON_NEW"
+    return 0
 }
 
 monitor_alert_remove_cron() {
+    local CRON_BACKUP CRON_NEW CRON_ERROR CRON_ERROR_TEXT HAD_CRONTAB=no
     command -v crontab >/dev/null 2>&1 || return 0
-    (crontab -l 2>/dev/null | monitor_alert_cron_without_managed) | crontab -
+    CRON_BACKUP=$(mktemp) || return 1
+    CRON_NEW=$(mktemp) || { rm -f "$CRON_BACKUP"; return 1; }
+    CRON_ERROR=$(mktemp) || {
+        rm -f "$CRON_BACKUP" "$CRON_NEW"
+        return 1
+    }
+    if LC_ALL=C crontab -l > "$CRON_BACKUP" 2> "$CRON_ERROR"; then
+        HAD_CRONTAB=yes
+    else
+        CRON_ERROR_TEXT=$(tr '[:upper:]' '[:lower:]' < "$CRON_ERROR" 2>/dev/null || true)
+        case "$CRON_ERROR_TEXT" in
+            *"no crontab for"*)
+                rm -f "$CRON_BACKUP" "$CRON_NEW" "$CRON_ERROR"
+                return 0
+                ;;
+            *)
+                rm -f "$CRON_BACKUP" "$CRON_NEW" "$CRON_ERROR"
+                error "无法读取现有 crontab，已拒绝覆盖"
+                return 1
+                ;;
+        esac
+    fi
+    rm -f "$CRON_ERROR"
+    if ! monitor_alert_cron_without_managed < "$CRON_BACKUP" > "$CRON_NEW"; then
+        rm -f "$CRON_BACKUP" "$CRON_NEW"
+        return 1
+    fi
+    if cmp -s "$CRON_BACKUP" "$CRON_NEW"; then
+        rm -f "$CRON_BACKUP" "$CRON_NEW"
+        return 0
+    fi
+    if ! crontab "$CRON_NEW"; then
+        monitor_alert_restore_crontab "$CRON_BACKUP" "$HAD_CRONTAB" >/dev/null 2>&1 || true
+        rm -f "$CRON_BACKUP" "$CRON_NEW"
+        error "移除监控 crontab 失败，已尝试恢复原配置"
+        return 1
+    fi
+    rm -f "$CRON_BACKUP" "$CRON_NEW"
 }
 
 monitor_alert_cron_status() {
@@ -2292,7 +3695,10 @@ monitor_alert_daily_menu() {
                     MON_DAILY_REPORT_TIME="$NORMAL_TIME"
                 fi
                 monitor_alert_save_cfg
-                [ "$MON_ENABLED" = yes ] && monitor_alert_install_cron
+                if [ "$MON_ENABLED" = yes ] && ! monitor_alert_install_cron; then
+                    error "日报时间已保存，但定时任务更新失败"
+                    continue
+                fi
                 info "日报时间已保存"
                 ;;
             3)
@@ -2301,7 +3707,11 @@ monitor_alert_daily_menu() {
             4)
                 MON_DAILY_REPORT_ENABLED=no
                 monitor_alert_save_cfg
-                if [ "$MON_ENABLED" = yes ]; then monitor_alert_install_cron; else monitor_alert_remove_cron; fi
+                if [ "$MON_ENABLED" = yes ]; then
+                    monitor_alert_install_cron || { error "日报已关闭，但定时任务更新失败"; continue; }
+                else
+                    monitor_alert_remove_cron
+                fi
                 info "每日日报已关闭"
                 ;;
             0) return ;;
@@ -2496,7 +3906,10 @@ monitor_alert_quick_setup_menu() {
                 MON_DAILY_REPORT_TIME="$NORMAL_TIME"
                 MON_DAILY_REPORT_ENABLED=yes
                 monitor_alert_save_cfg
-                [ "$MON_ENABLED" = yes ] && monitor_alert_install_cron
+                if [ "$MON_ENABLED" = yes ] && ! monitor_alert_install_cron; then
+                    error "日报时间已保存，但定时任务更新失败"
+                    continue
+                fi
                 info "日报时间已保存"
                 ;;
             4)
@@ -2706,14 +4119,19 @@ EOF
                         monitor_alert_save_cfg
                         MON_ENABLED=yes
                         monitor_alert_save_cfg
-                        monitor_alert_install_cron
-                        info "每日日报已启用"
+                        if monitor_alert_install_cron; then
+                            info "每日日报已启用"
+                        else
+                            MON_ENABLED=no
+                            monitor_alert_save_cfg
+                            error "每日日报定时任务安装失败"
+                        fi
                         ;;
                     2)
                         MON_DAILY_REPORT_ENABLED=no
                         monitor_alert_save_cfg
                         if [ "$MON_ENABLED" = yes ]; then
-                            monitor_alert_install_cron
+                            monitor_alert_install_cron || { error "日报已关闭，但定时任务更新失败"; continue; }
                         else
                             monitor_alert_remove_cron
                         fi
@@ -2728,7 +4146,10 @@ EOF
                             MON_DAILY_REPORT_TIME="$NORMAL_TIME"
                         fi
                         monitor_alert_save_cfg
-                        [ "$MON_ENABLED" = yes ] && monitor_alert_install_cron
+                        if [ "$MON_ENABLED" = yes ] && ! monitor_alert_install_cron; then
+                            error "日报时间已保存，但定时任务更新失败"
+                            continue
+                        fi
                         info "日报时间已保存"
                         ;;
                     4)
@@ -2916,11 +4337,15 @@ EOF
             ui_pause
             ;;
         9)
-            MON_ENABLED=yes
-            monitor_alert_save_cfg
-            monitor_alert_install_cron
-            ddns_ensure_cron >/dev/null 2>&1 || true
-            info "已启用定时告警"
+            if monitor_alert_install_cron; then
+                MON_ENABLED=yes
+                monitor_alert_save_cfg
+                info "已启用定时告警"
+            else
+                MON_ENABLED=no
+                monitor_alert_save_cfg
+                error "定时告警启用失败"
+            fi
             ;;
         10)
             MON_ENABLED=no
@@ -2934,8 +4359,23 @@ EOF
 }
 
 safety_arm() {
-    local LABEL="$1" SNAP SCRIPT UFW_STATE="inactive" FIREWALLD_STATE="inactive"
+    local LABEL="$1" SNAP SCRIPT ROOTS_FILE SYSCTL_FILE IPTABLES_FILE IP6TABLES_FILE
+    local BASE ROLLBACK_DELAY LOCK_DIR
+    local SNAP_Q SCRIPT_Q ROOTS_Q SYSCTL_Q IPTABLES_Q IP6TABLES_Q
+    local STATE_Q LABEL_Q LOCK_Q RESTORE_Q
+    local UFW_STATE="inactive" FIREWALLD_STATE="inactive" NFTABLES_STATE="inactive"
+    local FIREWALL_BACKEND="none" FIREWALL_ACTIVE_COUNT=0 UFW_STATUS=""
+    local FIREWALLD_ENABLED_STATE="unavailable" NFTABLES_ENABLED_STATE="unavailable"
+    local RC_UPDATE_STATE=""
+    local PROFILE_FIREWALL=no PROFILE_RESTART_SSH=no
+    local PROFILE_RESTART_FAIL2BAN=no PROFILE_RESTART_DNS=no
+    local TAR_ACLS=no TAR_XATTRS=no TAR_SELINUX=no TAR_OPTION
+    local STATE_TMP="" READY=no ATTEMPT
     local STATE_FILE="${SAFETY_STATE_FILE:-${VPS_DATA_DIR}/rollback.active}"
+    local RESTORE_ROOT="${SAFETY_RESTORE_ROOT:-/}"
+    ROLLBACK_DELAY="${SAFETY_ROLLBACK_DELAY:-180}"
+    case "$ROLLBACK_DELAY" in ''|*[!0-9]*) ROLLBACK_DELAY=180 ;; esac
+    [ "$ROLLBACK_DELAY" -ge 1 ] 2>/dev/null || ROLLBACK_DELAY=180
     mkdir -p "$VPS_DATA_DIR" 2>/dev/null || return 1
     chmod 700 "$VPS_DATA_DIR" 2>/dev/null || true
     if ! safety_lock_acquire; then
@@ -2947,78 +4387,1027 @@ safety_arm() {
         error "已有防断联回滚任务正在计时，请先确认上一项变更或等待其完成"
         return 1
     fi
-    SNAP=$(config_backup_create "safety_${LABEL}" true) || {
+    BASE="$VPS_DATA_DIR/rollback_$$_$(date +%s)_${RANDOM}"
+    SNAP="${BASE}.tar.gz"
+    SCRIPT="${BASE}.sh"
+    ROOTS_FILE="${BASE}.roots"
+    SYSCTL_FILE="${BASE}.sysctl"
+    IPTABLES_FILE="${BASE}.iptables"
+    IP6TABLES_FILE="${BASE}.ip6tables"
+    LOCK_DIR="${STATE_FILE}.lock"
+    SAFETY_IPTABLES_SNAPSHOT_AVAILABLE=unknown
+    SAFETY_IP6TABLES_SNAPSHOT_AVAILABLE=unknown
+    case "$LABEL" in
+        ssh_login|ssh_revoke_login|ssh_strict_login)
+            PROFILE_RESTART_SSH=yes
+            ;;
+        ssh_port)
+            PROFILE_FIREWALL=yes
+            PROFILE_RESTART_SSH=yes
+            PROFILE_RESTART_FAIL2BAN=yes
+            ;;
+        dns|dns_manual)
+            PROFILE_RESTART_DNS=yes
+            ;;
+        ufw|firewalld|firewall_install_ufw|firewall_install_firewalld)
+            PROFILE_FIREWALL=yes
+            ;;
+        config_restore)
+            PROFILE_FIREWALL=yes
+            PROFILE_RESTART_SSH=yes
+            PROFILE_RESTART_FAIL2BAN=yes
+            PROFILE_RESTART_DNS=yes
+            ;;
+    esac
+    while IFS= read -r TAR_OPTION; do
+        case "$TAR_OPTION" in
+            --acls) TAR_ACLS=yes ;;
+            --xattrs) TAR_XATTRS=yes ;;
+            --selinux) TAR_SELINUX=yes ;;
+        esac
+    done < <(safety_tar_metadata_options)
+    if ! safety_snapshot_restore_paths "$ROOTS_FILE" "$LABEL" \
+        || ! safety_snapshot_create "$SNAP" "$ROOTS_FILE" \
+        || ! safety_snapshot_sysctl_state "$SYSCTL_FILE" "$LABEL" \
+        || ! safety_snapshot_iptables_state "$IPTABLES_FILE" "$LABEL" \
+        || ! safety_snapshot_ip6tables_state "$IP6TABLES_FILE" "$LABEL"; then
+        safety_artifact_remove "$SNAP"
+        safety_artifact_remove "$ROOTS_FILE"
+        safety_artifact_remove "$SYSCTL_FILE"
+        safety_artifact_remove "$IPTABLES_FILE"
+        safety_artifact_remove "$IP6TABLES_FILE"
         safety_lock_release
+        error "无法保存防断联运行状态"
         return 1
-    }
-    command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q 'Status: active' && UFW_STATE="active"
+    fi
+    if [ "$PROFILE_FIREWALL" = yes ] \
+        && [ "${SAFETY_IPTABLES_SNAPSHOT_AVAILABLE:-unknown}" = no ] \
+        && command -v iptables-save >/dev/null 2>&1; then
+        safety_artifact_remove "$SNAP"
+        safety_artifact_remove "$ROOTS_FILE"
+        safety_artifact_remove "$SYSCTL_FILE"
+        safety_artifact_remove "$IPTABLES_FILE"
+        safety_artifact_remove "$IP6TABLES_FILE"
+        safety_lock_release
+        error "无法读取 iptables 运行状态，拒绝启动不完整的防断联保护"
+        return 1
+    fi
+    if [ "$PROFILE_FIREWALL" = yes ] \
+        && [ "${SAFETY_IP6TABLES_SNAPSHOT_AVAILABLE:-unknown}" = no ] \
+        && command -v ip6tables-save >/dev/null 2>&1; then
+        safety_artifact_remove "$SNAP"
+        safety_artifact_remove "$ROOTS_FILE"
+        safety_artifact_remove "$SYSCTL_FILE"
+        safety_artifact_remove "$IPTABLES_FILE"
+        safety_artifact_remove "$IP6TABLES_FILE"
+        safety_lock_release
+        error "无法读取 ip6tables 运行状态，拒绝启动不完整的防断联保护"
+        return 1
+    fi
+    if [ "$PROFILE_FIREWALL" = yes ]; then
+    if command -v ufw >/dev/null 2>&1; then
+        UFW_STATUS=$(LC_ALL=C ufw status 2>/dev/null) || {
+            safety_artifact_remove "$SNAP"
+            safety_artifact_remove "$ROOTS_FILE"
+            safety_artifact_remove "$SYSCTL_FILE"
+            safety_artifact_remove "$IPTABLES_FILE"
+            safety_artifact_remove "$IP6TABLES_FILE"
+            safety_lock_release
+            error "无法可靠读取 UFW 状态，拒绝启动不完整的防断联保护"
+            return 1
+        }
+        case "$UFW_STATUS" in
+            *"Status: active"*) UFW_STATE=active ;;
+            *"Status: inactive"*) ;;
+            *)
+                safety_artifact_remove "$SNAP"
+                safety_artifact_remove "$ROOTS_FILE"
+                safety_artifact_remove "$SYSCTL_FILE"
+                safety_artifact_remove "$IPTABLES_FILE"
+                safety_artifact_remove "$IP6TABLES_FILE"
+                safety_lock_release
+                error "UFW 返回未知状态，拒绝启动不完整的防断联保护"
+                return 1
+                ;;
+        esac
+    fi
     svc_is_active firewalld && FIREWALLD_STATE="active"
-    SCRIPT="$VPS_DATA_DIR/rollback_$$_$(date +%s)_${RANDOM}.sh"
-    mkdir -p "$VPS_DATA_DIR"
+    svc_is_active nftables && NFTABLES_STATE="active"
+    if systemd_available; then
+        FIREWALLD_ENABLED_STATE=$(LC_ALL=C systemctl is-enabled firewalld.service 2>/dev/null) \
+            || true
+        NFTABLES_ENABLED_STATE=$(LC_ALL=C systemctl is-enabled nftables.service 2>/dev/null) \
+            || true
+        case "$FIREWALLD_ENABLED_STATE" in
+            enabled|enabled-runtime|disabled|static|indirect|masked|masked-runtime|not-found) ;;
+            *) FIREWALLD_ENABLED_STATE=unavailable ;;
+        esac
+        case "$NFTABLES_ENABLED_STATE" in
+            enabled|enabled-runtime|disabled|static|indirect|masked|masked-runtime|not-found) ;;
+            *) NFTABLES_ENABLED_STATE=unavailable ;;
+        esac
+    elif command -v rc-update >/dev/null 2>&1; then
+        RC_UPDATE_STATE=$(rc-update show 2>/dev/null) || {
+            safety_artifact_remove "$SNAP"
+            safety_artifact_remove "$ROOTS_FILE"
+            safety_artifact_remove "$SYSCTL_FILE"
+            safety_artifact_remove "$IPTABLES_FILE"
+            safety_artifact_remove "$IP6TABLES_FILE"
+            safety_lock_release
+            error "无法可靠读取 OpenRC 服务启用状态，拒绝启动不完整的防断联保护"
+            return 1
+        }
+        if [ -e /etc/init.d/firewalld ]; then
+            FIREWALLD_ENABLED_STATE=$(printf '%s\n' "$RC_UPDATE_STATE" \
+                | awk '$1 == "firewalld" {
+                    for (i=3; i<=NF; i++) {
+                        if ($i == "|") continue
+                        out=out (out == "" ? "" : ",") $i
+                    }
+                } END {print "openrc:" (out == "" ? "none" : out)}')
+        else
+            FIREWALLD_ENABLED_STATE=not-found
+        fi
+        if [ -e /etc/init.d/nftables ]; then
+            NFTABLES_ENABLED_STATE=$(printf '%s\n' "$RC_UPDATE_STATE" \
+                | awk '$1 == "nftables" {
+                    for (i=3; i<=NF; i++) {
+                        if ($i == "|") continue
+                        out=out (out == "" ? "" : ",") $i
+                    }
+                } END {print "openrc:" (out == "" ? "none" : out)}')
+        else
+            NFTABLES_ENABLED_STATE=not-found
+        fi
+    fi
+    [ "$UFW_STATE" != active ] || FIREWALL_ACTIVE_COUNT=$((FIREWALL_ACTIVE_COUNT + 1))
+    [ "$FIREWALLD_STATE" != active ] || FIREWALL_ACTIVE_COUNT=$((FIREWALL_ACTIVE_COUNT + 1))
+    [ "$NFTABLES_STATE" != active ] || FIREWALL_ACTIVE_COUNT=$((FIREWALL_ACTIVE_COUNT + 1))
+    if [ "$FIREWALL_ACTIVE_COUNT" -gt 1 ]; then
+        safety_artifact_remove "$SNAP"
+        safety_artifact_remove "$ROOTS_FILE"
+        safety_artifact_remove "$SYSCTL_FILE"
+        safety_artifact_remove "$IPTABLES_FILE"
+        safety_artifact_remove "$IP6TABLES_FILE"
+        safety_lock_release
+        error "检测到多个同时活跃的防火墙服务，无法生成无歧义的自动回滚"
+        return 1
+    fi
+    if [ "$UFW_STATE" = active ]; then
+        FIREWALL_BACKEND=ufw
+    elif [ "$FIREWALLD_STATE" = active ]; then
+        FIREWALL_BACKEND=firewalld
+    elif [ "$NFTABLES_STATE" = active ]; then
+        FIREWALL_BACKEND=nftables
+    elif [ -s "$IPTABLES_FILE" ] || [ -s "$IP6TABLES_FILE" ]; then
+        FIREWALL_BACKEND=iptables
+    fi
+    fi
+    printf -v SNAP_Q '%q' "$SNAP"
+    printf -v SCRIPT_Q '%q' "$SCRIPT"
+    printf -v ROOTS_Q '%q' "$ROOTS_FILE"
+    printf -v SYSCTL_Q '%q' "$SYSCTL_FILE"
+    printf -v IPTABLES_Q '%q' "$IPTABLES_FILE"
+    printf -v IP6TABLES_Q '%q' "$IP6TABLES_FILE"
+    printf -v STATE_Q '%q' "$STATE_FILE"
+    printf -v LABEL_Q '%q' "$LABEL"
+    printf -v LOCK_Q '%q' "$LOCK_DIR"
+    printf -v RESTORE_Q '%q' "$RESTORE_ROOT"
     if ! cat > "$SCRIPT" <<ROLLBACK_EOF
 #!/bin/bash
-sleep 180
-tar -xzf '$SNAP' -C / >/dev/null 2>&1
-tar -tzf '$SNAP' 2>/dev/null | grep -qx 'etc/sysctl.d/99-ipv6-disable.conf' || rm -f /etc/sysctl.d/99-ipv6-disable.conf
-sshd -t >/dev/null 2>&1 && (systemctl restart ssh 2>/dev/null || systemctl restart sshd 2>/dev/null || service ssh restart 2>/dev/null || service sshd restart 2>/dev/null)
-if command -v fail2ban-client >/dev/null 2>&1; then
-    systemctl restart fail2ban >/dev/null 2>&1 || service fail2ban restart >/dev/null 2>&1 || true
+SNAP=$SNAP_Q
+SCRIPT=$SCRIPT_Q
+ROOTS_FILE=$ROOTS_Q
+SYSCTL_FILE=$SYSCTL_Q
+IPTABLES_FILE=$IPTABLES_Q
+IP6TABLES_FILE=$IP6TABLES_Q
+STATE_FILE=$STATE_Q
+LABEL=$LABEL_Q
+LOCK_DIR=$LOCK_Q
+RESTORE_ROOT=$RESTORE_Q
+FIREWALL_BACKEND='$FIREWALL_BACKEND'
+UFW_ORIGINAL_STATE='$UFW_STATE'
+FIREWALLD_ORIGINAL_STATE='$FIREWALLD_STATE'
+NFTABLES_ORIGINAL_STATE='$NFTABLES_STATE'
+FIREWALLD_ENABLED_STATE='$FIREWALLD_ENABLED_STATE'
+NFTABLES_ENABLED_STATE='$NFTABLES_ENABLED_STATE'
+PROFILE_FIREWALL='$PROFILE_FIREWALL'
+PROFILE_RESTART_SSH='$PROFILE_RESTART_SSH'
+PROFILE_RESTART_FAIL2BAN='$PROFILE_RESTART_FAIL2BAN'
+PROFILE_RESTART_DNS='$PROFILE_RESTART_DNS'
+TAR_ACLS='$TAR_ACLS'
+TAR_XATTRS='$TAR_XATTRS'
+TAR_SELINUX='$TAR_SELINUX'
+APPLIED_SNAPSHOT="\${SCRIPT%.sh}.applied.tar"
+APPLIED_ROOTS="\${SCRIPT%.sh}.applied.roots"
+FAILED=no
+RESTORE_ROOTS=()
+RESTORE_DESTS=()
+RESTORE_OLDS=()
+RESTORE_NEWS=()
+RESTORE_HAD_OLD=()
+RESTORE_ORIGINAL_IDS=()
+RESTORE_INSTALLED=()
+RESTORE_INSTALLED_ID=()
+RESTORE_COUNT=0
+COMMITTED_COUNT=0
+RUNTIME_STARTED=no
+ROLLBACK_LOCK_OWNER=""
+APPLIED_STAGE=""
+VERIFY_STAGE=""
+TAR_EXTRA=()
+[ "\$TAR_ACLS" = yes ] && TAR_EXTRA+=(--acls)
+[ "\$TAR_XATTRS" = yes ] && TAR_EXTRA+=(--xattrs)
+[ "\$TAR_SELINUX" = yes ] && TAR_EXTRA+=(--selinux)
+rollback_systemd_available() {
+    command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]
+}
+rollback_service_start() {
+    local SERVICE_NAME="\$1"
+    if rollback_systemd_available; then
+        systemctl start "\$SERVICE_NAME" >/dev/null 2>&1
+    elif command -v rc-service >/dev/null 2>&1; then
+        rc-service "\$SERVICE_NAME" start >/dev/null 2>&1
+    elif command -v service >/dev/null 2>&1; then
+        service "\$SERVICE_NAME" start >/dev/null 2>&1
+    else
+        return 1
+    fi
+}
+rollback_service_stop() {
+    local SERVICE_NAME="\$1"
+    if rollback_systemd_available; then
+        systemctl stop "\$SERVICE_NAME" >/dev/null 2>&1
+    elif command -v rc-service >/dev/null 2>&1; then
+        rc-service "\$SERVICE_NAME" stop >/dev/null 2>&1
+    elif command -v service >/dev/null 2>&1; then
+        service "\$SERVICE_NAME" stop >/dev/null 2>&1
+    else
+        return 1
+    fi
+}
+rollback_service_restart() {
+    local SERVICE_NAME="\$1"
+    if rollback_systemd_available; then
+        systemctl restart "\$SERVICE_NAME" >/dev/null 2>&1
+    elif command -v rc-service >/dev/null 2>&1; then
+        rc-service "\$SERVICE_NAME" restart >/dev/null 2>&1
+    elif command -v service >/dev/null 2>&1; then
+        service "\$SERVICE_NAME" restart >/dev/null 2>&1
+    else
+        return 1
+    fi
+}
+rollback_service_restart_if_present() {
+    local SERVICE_NAME="\$1" UNIT_FILES=""
+    if rollback_systemd_available; then
+        UNIT_FILES=\$(systemctl list-unit-files "\${SERVICE_NAME}.service" \
+            --no-legend 2>/dev/null) || return 1
+        printf '%s\n' "\$UNIT_FILES" \
+            | awk -v unit="\${SERVICE_NAME}.service" \
+                '\$1 == unit {found=1} END {exit !found}' || return 0
+    elif [ ! -e "/etc/init.d/\$SERVICE_NAME" ]; then
+        return 0
+    fi
+    rollback_service_restart "\$SERVICE_NAME"
+}
+rollback_process_start_token() {
+    local PROCESS_PID="\$1" PROCESS_STAT="" PROCESS_REST="" TOKEN=""
+    [[ "\$PROCESS_PID" =~ ^[1-9][0-9]*$ ]] || return 1
+    if [ -r "/proc/\${PROCESS_PID}/stat" ]; then
+        IFS= read -r PROCESS_STAT < "/proc/\${PROCESS_PID}/stat" || return 1
+        PROCESS_REST=\${PROCESS_STAT##*) }
+        TOKEN=\$(printf '%s\n' "\$PROCESS_REST" | awk '{print \$20}') || return 1
+    elif command -v ps >/dev/null 2>&1; then
+        TOKEN=\$(LC_ALL=C ps -p "\$PROCESS_PID" -o lstart= 2>/dev/null) || return 1
+        TOKEN=\$(printf '%s\n' "\$TOKEN" | awk '{\$1=\$1; print}')
+    fi
+    [ -n "\$TOKEN" ] || return 1
+    printf '%s\n' "\$TOKEN"
+}
+rollback_lock_owner_valid() {
+    local OWNER="\$1" OWNER_PID OWNER_TOKEN CURRENT_TOKEN
+    case "\$OWNER" in *'|'*) ;; *) return 1 ;; esac
+    OWNER_PID=\${OWNER%%|*}
+    OWNER_TOKEN=\${OWNER#*|}
+    [[ "\$OWNER_PID" =~ ^[1-9][0-9]*$ ]] && [ -n "\$OWNER_TOKEN" ] \
+        && kill -0 "\$OWNER_PID" 2>/dev/null || return 1
+    CURRENT_TOKEN=\$(rollback_process_start_token "\$OWNER_PID") || return 1
+    [ "\$CURRENT_TOKEN" = "\$OWNER_TOKEN" ]
+}
+release_rollback_lock() {
+    if [ -f "\$LOCK_DIR/pid" ] \
+        && [ "\$(cat "\$LOCK_DIR/pid" 2>/dev/null)" = "\$ROLLBACK_LOCK_OWNER" ]; then
+        rm -f "\$LOCK_DIR/pid" >/dev/null 2>&1 || true
+        rmdir "\$LOCK_DIR" >/dev/null 2>&1 || true
+    fi
+}
+acquire_rollback_lock() {
+    local LOCK_OWNER="" LOCK_OWNER_AFTER="" SELF_TOKEN=""
+    while true; do
+        if mkdir "\$LOCK_DIR" 2>/dev/null; then
+            SELF_TOKEN=\$(rollback_process_start_token "\$\$") || SELF_TOKEN=""
+            ROLLBACK_LOCK_OWNER="\$\$|\$SELF_TOKEN"
+            if [ -n "\$SELF_TOKEN" ] \
+                && printf '%s\n' "\$ROLLBACK_LOCK_OWNER" > "\$LOCK_DIR/pid" 2>/dev/null; then
+                return 0
+            fi
+            rm -f "\$LOCK_DIR/pid" >/dev/null 2>&1 || true
+            rmdir "\$LOCK_DIR" >/dev/null 2>&1 || true
+            sleep 1
+            continue
+        fi
+        LOCK_OWNER=\$(cat "\$LOCK_DIR/pid" 2>/dev/null || true)
+        if rollback_lock_owner_valid "\$LOCK_OWNER"; then
+            sleep 1
+            continue
+        fi
+        # Do not remove a lock in the tiny interval between mkdir and PID write.
+        sleep 1
+        LOCK_OWNER_AFTER=\$(cat "\$LOCK_DIR/pid" 2>/dev/null || true)
+        if rollback_lock_owner_valid "\$LOCK_OWNER_AFTER"; then
+            continue
+        fi
+        if [ "\$LOCK_OWNER" = "\$LOCK_OWNER_AFTER" ]; then
+            rm -f "\$LOCK_DIR/pid" >/dev/null 2>&1 || true
+            rmdir "\$LOCK_DIR" >/dev/null 2>&1 || true
+        fi
+    done
+}
+write_rollback_state() {
+    local NEXT_STATUS="\$1" STATE_TMP
+    local CURRENT_PID CURRENT_SCRIPT CURRENT_ROOTS CURRENT_SYSCTL CURRENT_SNAP CURRENT_STATUS
+    IFS='|' read -r CURRENT_PID CURRENT_SCRIPT CURRENT_ROOTS CURRENT_SYSCTL \
+        CURRENT_SNAP CURRENT_STATUS < "\$STATE_FILE" 2>/dev/null || return 1
+    [ "\$CURRENT_PID" = "\$\$" ] && [ "\$CURRENT_SCRIPT" = "\$SCRIPT" ] \
+        && [ "\$CURRENT_ROOTS" = "\$ROOTS_FILE" ] \
+        && [ "\$CURRENT_SYSCTL" = "\$SYSCTL_FILE" ] \
+        && [ "\$CURRENT_SNAP" = "\$SNAP" ] || return 1
+    case "\$CURRENT_STATUS" in armed|applied|restoring) ;; *) return 1 ;; esac
+    STATE_TMP=\$(mktemp "\${STATE_FILE}.tmp.XXXXXX") || return 1
+    if printf '%s|%s|%s|%s|%s|%s\n' \
+        "\$\$" "\$SCRIPT" "\$ROOTS_FILE" "\$SYSCTL_FILE" "\$SNAP" \
+        "\$NEXT_STATUS" > "\$STATE_TMP" \
+        && chmod 600 "\$STATE_TMP" 2>/dev/null \
+        && mv -f -- "\$STATE_TMP" "\$STATE_FILE"; then
+        return 0
+    fi
+    rm -f -- "\$STATE_TMP"
+    return 1
+}
+mark_rollback_failed() {
+    write_rollback_state failed || true
+    logger -t vps-tools "自动恢复 \$LABEL 配置失败，快照已保留：\$SNAP" >/dev/null 2>&1 || true
+}
+rollback_path_identity() {
+    # Identify the directory entry itself.  Do not dereference symlinks:
+    # resolv.conf may legitimately be a dangling link during recovery.
+    stat -c '%d:%i' -- "\$1" 2>/dev/null
+}
+rollback_roots_match() {
+    local ROOT="\$1" LEFT_ROOT="\$2" RIGHT_ROOT="\$3"
+    local LEFT_TAR="" RIGHT_TAR="" RESULT=1
+    LEFT_TAR=\$(mktemp "\${TMPDIR:-/tmp}/vps-tools-compare-left.XXXXXX") \
+        || LEFT_TAR=""
+    RIGHT_TAR=\$(mktemp "\${TMPDIR:-/tmp}/vps-tools-compare-right.XXXXXX") \
+        || RIGHT_TAR=""
+    if [ -n "\$LEFT_TAR" ] && [ -n "\$RIGHT_TAR" ] \
+        && tar "\${TAR_EXTRA[@]}" -cf "\$LEFT_TAR" \
+            -C "\$LEFT_ROOT" "\$ROOT" 2>/dev/null \
+        && tar "\${TAR_EXTRA[@]}" -cf "\$RIGHT_TAR" \
+            -C "\$RIGHT_ROOT" "\$ROOT" 2>/dev/null \
+        && cmp -s "\$LEFT_TAR" "\$RIGHT_TAR"; then
+        RESULT=0
+    fi
+    [ -z "\$LEFT_TAR" ] || rm -f -- "\$LEFT_TAR"
+    [ -z "\$RIGHT_TAR" ] || rm -f -- "\$RIGHT_TAR"
+    return "\$RESULT"
+}
+cleanup_prepared_news() {
+    local INDEX=0 NEW RESULT=0
+    while [ "\$INDEX" -lt "\$RESTORE_COUNT" ]; do
+        NEW="\${RESTORE_NEWS[\$INDEX]}"
+        if { [ -e "\$NEW" ] || [ -L "\$NEW" ]; } \
+            && ! rm -rf -- "\$NEW" >/dev/null 2>&1; then
+            RESULT=1
+        fi
+        INDEX=\$((INDEX + 1))
+    done
+    return "\$RESULT"
+}
+rollback_committed_files() {
+    local INDEX DEST OLD HAD_OLD INSTALLED EXPECTED_ID CURRENT_ID RESULT=0
+    INDEX=\$((COMMITTED_COUNT - 1))
+    while [ "\$INDEX" -ge 0 ]; do
+        DEST="\${RESTORE_DESTS[\$INDEX]}"
+        OLD="\${RESTORE_OLDS[\$INDEX]}"
+        HAD_OLD="\${RESTORE_HAD_OLD[\$INDEX]:-no}"
+        INSTALLED="\${RESTORE_INSTALLED[\$INDEX]:-no}"
+        EXPECTED_ID="\${RESTORE_INSTALLED_ID[\$INDEX]:-}"
+        if [ "\$INSTALLED" = yes ]; then
+            CURRENT_ID=\$(rollback_path_identity "\$DEST") || CURRENT_ID=""
+            if [ -z "\$EXPECTED_ID" ] || [ "\$CURRENT_ID" != "\$EXPECTED_ID" ] \
+                || ! rollback_roots_match \
+                    "\${RESTORE_ROOTS[\$INDEX]}" "\$STAGE" "\$RESTORE_ROOT"; then
+                RESULT=1
+                INDEX=\$((INDEX - 1))
+                continue
+            fi
+            if ! rm -rf -- "\$DEST" >/dev/null 2>&1; then
+                RESULT=1
+                INDEX=\$((INDEX - 1))
+                continue
+            fi
+        elif [ -e "\$DEST" ] || [ -L "\$DEST" ]; then
+            # A path appeared after the transaction began.  Preserve it and
+            # retain OLD for manual recovery instead of overwriting it.
+            RESULT=1
+            INDEX=\$((INDEX - 1))
+            continue
+        fi
+        if [ "\$HAD_OLD" = yes ]; then
+            if { [ -e "\$OLD" ] || [ -L "\$OLD" ]; } \
+                && mv "\$OLD" "\$DEST" >/dev/null 2>&1; then
+                :
+            else
+                RESULT=1
+            fi
+        fi
+        INDEX=\$((INDEX - 1))
+    done
+    cleanup_prepared_news || RESULT=1
+    return "\$RESULT"
+}
+cleanup_committed_backups() {
+    local INDEX=0 OLD NEW RESULT=0
+    while [ "\$INDEX" -lt "\$RESTORE_COUNT" ]; do
+        OLD="\${RESTORE_OLDS[\$INDEX]}"
+        NEW="\${RESTORE_NEWS[\$INDEX]}"
+        if { [ -e "\$OLD" ] || [ -L "\$OLD" ]; } \
+            && ! rm -rf -- "\$OLD" >/dev/null 2>&1; then
+            RESULT=1
+        fi
+        if { [ -e "\$NEW" ] || [ -L "\$NEW" ]; } \
+            && ! rm -rf -- "\$NEW" >/dev/null 2>&1; then
+            RESULT=1
+        fi
+        INDEX=\$((INDEX + 1))
+    done
+    return "\$RESULT"
+}
+rollback_interrupted() {
+    trap - TERM INT HUP
+    if [ "\$RUNTIME_STARTED" = no ] && rollback_committed_files; then
+        COMMITTED_COUNT=0
+    fi
+    [ -z "\${STAGE:-}" ] || rm -rf -- "\$STAGE"
+    [ -z "\$APPLIED_STAGE" ] || rm -rf -- "\$APPLIED_STAGE"
+    [ -z "\$VERIFY_STAGE" ] || rm -rf -- "\$VERIFY_STAGE"
+    mark_rollback_failed
+    release_rollback_lock
+    exit 1
+}
+sleep $ROLLBACK_DELAY
+acquire_rollback_lock
+trap release_rollback_lock EXIT
+trap rollback_interrupted TERM INT HUP
+IFS='|' read -r STATE_PID STATE_SCRIPT STATE_ROOTS STATE_SYSCTL STATE_SNAP STATE_STATUS \
+    < "\$STATE_FILE" 2>/dev/null || exit 1
+if [ "\$STATE_PID" != "\$\$" ] || [ "\$STATE_SCRIPT" != "\$SCRIPT" ] \
+    || [ "\$STATE_ROOTS" != "\$ROOTS_FILE" ] \
+    || [ "\$STATE_SYSCTL" != "\$SYSCTL_FILE" ] \
+    || [ "\$STATE_SNAP" != "\$SNAP" ]; then
+    exit 1
 fi
-systemctl restart systemd-resolved >/dev/null 2>&1 || true
-systemctl restart NetworkManager >/dev/null 2>&1 || true
-if command -v ufw >/dev/null 2>&1; then
-    if [ '$UFW_STATE' = active ]; then ufw --force enable >/dev/null 2>&1; else ufw --force disable >/dev/null 2>&1; fi
+if [ "\$STATE_STATUS" = cancelled ]; then
+    rm -f -- "\$SNAP" "\$ROOTS_FILE" "\$SYSCTL_FILE" \
+        "\$IPTABLES_FILE" "\$IP6TABLES_FILE" \
+        "\$APPLIED_SNAPSHOT" "\$APPLIED_ROOTS" \
+        "\$SCRIPT" "\$STATE_FILE" >/dev/null 2>&1 || true
+    exit 0
 fi
-if command -v firewall-cmd >/dev/null 2>&1; then
-    if [ '$FIREWALLD_STATE' = active ]; then systemctl start firewalld >/dev/null 2>&1; else systemctl stop firewalld >/dev/null 2>&1; fi
-    firewall-cmd --reload >/dev/null 2>&1 || true
+case "\$STATE_STATUS" in
+    armed) ;;
+    applied)
+        [ -f "\$APPLIED_SNAPSHOT" ] && [ -f "\$APPLIED_ROOTS" ] || {
+            mark_rollback_failed
+            exit 1
+        }
+        CURRENT_APPLIED=\$(mktemp "\${TMPDIR:-/tmp}/vps-tools-current.XXXXXX") || {
+            mark_rollback_failed
+            exit 1
+        }
+        CURRENT_ROOTS=\$(mktemp "\${TMPDIR:-/tmp}/vps-tools-current-roots.XXXXXX") || {
+            rm -f -- "\$CURRENT_APPLIED"
+            mark_rollback_failed
+            exit 1
+        }
+        : > "\$CURRENT_ROOTS" || {
+            rm -f -- "\$CURRENT_APPLIED" "\$CURRENT_ROOTS"
+            mark_rollback_failed
+            exit 1
+        }
+        while IFS= read -r ROOT; do
+            case "\$ROOT" in
+                etc/*|root/*|var/spool/cron/*) ;;
+                *)
+                    rm -f -- "\$CURRENT_APPLIED" "\$CURRENT_ROOTS"
+                    mark_rollback_failed
+                    exit 1
+                    ;;
+            esac
+            [ -e "\${RESTORE_ROOT%/}/\$ROOT" ] \
+                || [ -L "\${RESTORE_ROOT%/}/\$ROOT" ] || continue
+            printf '%s\n' "\$ROOT" >> "\$CURRENT_ROOTS" || {
+                rm -f -- "\$CURRENT_APPLIED" "\$CURRENT_ROOTS"
+                mark_rollback_failed
+                exit 1
+            }
+        done < "\$ROOTS_FILE"
+        if ! tar "\${TAR_EXTRA[@]}" -cf "\$CURRENT_APPLIED" -C "\$RESTORE_ROOT" \
+                -T "\$CURRENT_ROOTS" 2>/dev/null \
+            || ! cmp -s "\$APPLIED_ROOTS" "\$CURRENT_ROOTS" \
+            || ! cmp -s "\$APPLIED_SNAPSHOT" "\$CURRENT_APPLIED"; then
+            rm -f -- "\$CURRENT_APPLIED" "\$CURRENT_ROOTS"
+            mark_rollback_failed
+            exit 1
+        fi
+        rm -f -- "\$CURRENT_APPLIED" "\$CURRENT_ROOTS"
+        APPLIED_STAGE=\$(mktemp -d "\${TMPDIR:-/tmp}/vps-tools-applied.XXXXXX") || {
+            mark_rollback_failed
+            exit 1
+        }
+        VERIFY_STAGE=\$(mktemp -d "\${TMPDIR:-/tmp}/vps-tools-verify.XXXXXX") || {
+            rm -rf -- "\$APPLIED_STAGE"
+            mark_rollback_failed
+            exit 1
+        }
+        if ! tar "\${TAR_EXTRA[@]}" -xf "\$APPLIED_SNAPSHOT" \
+            -C "\$APPLIED_STAGE" >/dev/null 2>&1; then
+            rm -rf -- "\$APPLIED_STAGE" "\$VERIFY_STAGE"
+            mark_rollback_failed
+            exit 1
+        fi
+        ;;
+    *)
+        mark_rollback_failed
+        exit 1
+        ;;
+esac
+write_rollback_state restoring || {
+        mark_rollback_failed
+        exit 1
+    }
+STAGE=\$(mktemp -d "\${TMPDIR:-/tmp}/vps-tools-rollback.XXXXXX") || {
+    mark_rollback_failed
+    exit 1
+}
+TXN_ID="\${STAGE##*/}"
+if tar "\${TAR_EXTRA[@]}" -xzf "\$SNAP" -C "\$STAGE" >/dev/null 2>&1; then
+    while IFS= read -r ROOT; do
+        case "\$ROOT" in
+            etc/*|root/*|var/spool/cron/*)
+                SRC="\$STAGE/\$ROOT"
+                DEST="\${RESTORE_ROOT%/}/\$ROOT"
+                OLD="\${DEST}.vps-tools-old.\${TXN_ID}"
+                NEW="\${DEST}.vps-tools-new.\${TXN_ID}"
+                if [ -e "\$OLD" ] || [ -L "\$OLD" ] \
+                    || [ -e "\$NEW" ] || [ -L "\$NEW" ]; then
+                    FAILED=yes
+                    break
+                fi
+                ORIGINAL_ID=""
+                if [ -e "\$DEST" ] || [ -L "\$DEST" ]; then
+                    ORIGINAL_ID=\$(rollback_path_identity "\$DEST") || {
+                        FAILED=yes
+                        break
+                    }
+                fi
+                if [ -e "\$SRC" ] || [ -L "\$SRC" ]; then
+                    if ! mkdir -p "\$(dirname "\$DEST")" >/dev/null 2>&1 \
+                        || ! cp -a "\$SRC" "\$NEW" >/dev/null 2>&1; then
+                        rm -rf -- "\$NEW" >/dev/null 2>&1 || true
+                        FAILED=yes
+                        break
+                    fi
+                fi
+                RESTORE_ROOTS[\$RESTORE_COUNT]="\$ROOT"
+                RESTORE_DESTS[\$RESTORE_COUNT]="\$DEST"
+                RESTORE_OLDS[\$RESTORE_COUNT]="\$OLD"
+                RESTORE_NEWS[\$RESTORE_COUNT]="\$NEW"
+                RESTORE_HAD_OLD[\$RESTORE_COUNT]=no
+                RESTORE_ORIGINAL_IDS[\$RESTORE_COUNT]="\$ORIGINAL_ID"
+                RESTORE_INSTALLED[\$RESTORE_COUNT]=no
+                RESTORE_INSTALLED_ID[\$RESTORE_COUNT]=""
+                RESTORE_COUNT=\$((RESTORE_COUNT + 1))
+                ;;
+            *) FAILED=yes; break ;;
+        esac
+    done < "\$ROOTS_FILE"
+else
+    FAILED=yes
 fi
-nft -f /etc/nftables.conf >/dev/null 2>&1 || true
-logger -t vps-tools '未确认连接，已自动恢复 $LABEL 配置'
-rm -f '$SCRIPT' '$STATE_FILE'
+if [ "\$FAILED" = no ] && [ "\$STATE_STATUS" = applied ]; then
+    CURRENT_APPLIED=\$(mktemp "\${TMPDIR:-/tmp}/vps-tools-current.XXXXXX") \
+        || CURRENT_APPLIED=""
+    CURRENT_ROOTS=\$(mktemp "\${TMPDIR:-/tmp}/vps-tools-current-roots.XXXXXX") \
+        || CURRENT_ROOTS=""
+    if [ -z "\$CURRENT_APPLIED" ] || [ -z "\$CURRENT_ROOTS" ]; then
+        FAILED=yes
+    else
+        : > "\$CURRENT_ROOTS" || FAILED=yes
+        if [ "\$FAILED" = no ]; then
+            while IFS= read -r ROOT; do
+                case "\$ROOT" in
+                    etc/*|root/*|var/spool/cron/*) ;;
+                    *) FAILED=yes; break ;;
+                esac
+                [ -e "\${RESTORE_ROOT%/}/\$ROOT" ] \
+                    || [ -L "\${RESTORE_ROOT%/}/\$ROOT" ] || continue
+                printf '%s\n' "\$ROOT" >> "\$CURRENT_ROOTS" \
+                    || { FAILED=yes; break; }
+            done < "\$ROOTS_FILE"
+        fi
+        if [ "\$FAILED" = no ] \
+            && { ! tar "\${TAR_EXTRA[@]}" -cf "\$CURRENT_APPLIED" \
+                    -C "\$RESTORE_ROOT" -T "\$CURRENT_ROOTS" 2>/dev/null \
+                || ! cmp -s "\$APPLIED_ROOTS" "\$CURRENT_ROOTS" \
+                || ! cmp -s "\$APPLIED_SNAPSHOT" "\$CURRENT_APPLIED"; }; then
+            FAILED=yes
+        fi
+    fi
+    [ -z "\$CURRENT_APPLIED" ] || rm -f -- "\$CURRENT_APPLIED"
+    [ -z "\$CURRENT_ROOTS" ] || rm -f -- "\$CURRENT_ROOTS"
+fi
+if [ "\$FAILED" = no ]; then
+    INDEX=0
+    while [ "\$INDEX" -lt "\$RESTORE_COUNT" ]; do
+        SRC="\$STAGE/\${RESTORE_ROOTS[\$INDEX]}"
+        DEST="\${RESTORE_DESTS[\$INDEX]}"
+        OLD="\${RESTORE_OLDS[\$INDEX]}"
+        NEW="\${RESTORE_NEWS[\$INDEX]}"
+        EXPECTED_ORIGINAL_ID="\${RESTORE_ORIGINAL_IDS[\$INDEX]}"
+        if [ -n "\$EXPECTED_ORIGINAL_ID" ]; then
+            CURRENT_ORIGINAL_ID=\$(rollback_path_identity "\$DEST") \
+                || CURRENT_ORIGINAL_ID=""
+            if [ "\$CURRENT_ORIGINAL_ID" != "\$EXPECTED_ORIGINAL_ID" ]; then
+                FAILED=yes
+                break
+            fi
+            if ! mv "\$DEST" "\$OLD" >/dev/null 2>&1; then
+                FAILED=yes
+                break
+            fi
+            CURRENT_ORIGINAL_ID=\$(rollback_path_identity "\$OLD") \
+                || CURRENT_ORIGINAL_ID=""
+            if [ "\$CURRENT_ORIGINAL_ID" != "\$EXPECTED_ORIGINAL_ID" ]; then
+                [ -e "\$DEST" ] || [ -L "\$DEST" ] \
+                    || mv "\$OLD" "\$DEST" >/dev/null 2>&1 || true
+                FAILED=yes
+                break
+            fi
+            if [ "\$STATE_STATUS" = applied ]; then
+                VERIFY_PATH="\$VERIFY_STAGE/\${RESTORE_ROOTS[\$INDEX]}"
+                rm -rf -- "\$VERIFY_PATH" >/dev/null 2>&1 || {
+                    [ -e "\$DEST" ] || [ -L "\$DEST" ] \
+                        || mv "\$OLD" "\$DEST" >/dev/null 2>&1 || true
+                    FAILED=yes
+                    break
+                }
+                mkdir -p "\$(dirname "\$VERIFY_PATH")" >/dev/null 2>&1 \
+                    && cp -a "\$OLD" "\$VERIFY_PATH" >/dev/null 2>&1 \
+                    && rollback_roots_match \
+                        "\${RESTORE_ROOTS[\$INDEX]}" \
+                        "\$APPLIED_STAGE" "\$VERIFY_STAGE" || {
+                    rm -rf -- "\$VERIFY_PATH" >/dev/null 2>&1 || true
+                    [ -e "\$DEST" ] || [ -L "\$DEST" ] \
+                        || mv "\$OLD" "\$DEST" >/dev/null 2>&1 || true
+                    FAILED=yes
+                    break
+                }
+                rm -rf -- "\$VERIFY_PATH" >/dev/null 2>&1 || true
+            fi
+            RESTORE_HAD_OLD[\$INDEX]=yes
+        elif [ -e "\$DEST" ] || [ -L "\$DEST" ]; then
+            FAILED=yes
+            break
+        fi
+        COMMITTED_COUNT=\$((INDEX + 1))
+        if [ -e "\$SRC" ] || [ -L "\$SRC" ]; then
+            if [ -e "\$DEST" ] || [ -L "\$DEST" ] \
+                || ! mv "\$NEW" "\$DEST" >/dev/null 2>&1; then
+                FAILED=yes
+                break
+            fi
+            RESTORE_INSTALLED[\$INDEX]=yes
+            RESTORE_INSTALLED_ID[\$INDEX]=\$(rollback_path_identity "\$DEST") || {
+                FAILED=yes
+                break
+            }
+        elif [ -e "\$DEST" ] || [ -L "\$DEST" ]; then
+            FAILED=yes
+            break
+        fi
+        INDEX=\$((INDEX + 1))
+    done
+fi
+if [ "\$FAILED" = yes ]; then
+    if [ "\$COMMITTED_COUNT" -gt 0 ]; then
+        if rollback_committed_files; then
+            COMMITTED_COUNT=0
+        fi
+    else
+        cleanup_prepared_news || true
+    fi
+fi
+if [ "\$FAILED" = no ]; then
+    RUNTIME_STARTED=yes
+fi
+rm -rf -- "\$STAGE"
+rm -rf -- "\$APPLIED_STAGE" "\$VERIFY_STAGE"
+if [ "\$FAILED" = no ] && [ "\$RESTORE_ROOT" = / ]; then
+if [ "\$PROFILE_RESTART_SSH" = yes ] && command -v sshd >/dev/null 2>&1; then
+    if ! sshd -t >/dev/null 2>&1 \
+        || ! (rollback_service_restart ssh \
+            || rollback_service_restart sshd); then
+        FAILED=yes
+    fi
+fi
+if [ "\$PROFILE_RESTART_FAIL2BAN" = yes ] \
+    && command -v fail2ban-client >/dev/null 2>&1; then
+    rollback_service_restart_if_present fail2ban || FAILED=yes
+fi
+if [ "\$PROFILE_RESTART_DNS" = yes ]; then
+    rollback_service_restart_if_present systemd-resolved || FAILED=yes
+    rollback_service_restart_if_present NetworkManager || FAILED=yes
+fi
+if [ "\$PROFILE_FIREWALL" = yes ]; then
+if command -v ufw >/dev/null 2>&1 && [ "\$UFW_ORIGINAL_STATE" = inactive ]; then
+    UFW_CURRENT=\$(LC_ALL=C ufw status 2>/dev/null) || UFW_CURRENT=""
+    case "\$UFW_CURRENT" in
+        *"Status: active"*) ufw --force disable >/dev/null 2>&1 || FAILED=yes ;;
+        *"Status: inactive"*) ;;
+        *) FAILED=yes ;;
+    esac
+fi
+if rollback_systemd_available \
+    || command -v rc-service >/dev/null 2>&1 \
+    || command -v service >/dev/null 2>&1; then
+    if [ "\$FIREWALLD_ORIGINAL_STATE" = inactive ]; then
+        case "\$FIREWALLD_ENABLED_STATE" in
+            not-found|unavailable) ;;
+            *) rollback_service_stop firewalld || FAILED=yes ;;
+        esac
+    fi
+    if [ "\$NFTABLES_ORIGINAL_STATE" = inactive ]; then
+        case "\$NFTABLES_ENABLED_STATE" in
+            not-found|unavailable) ;;
+            *) rollback_service_stop nftables || FAILED=yes ;;
+        esac
+    fi
+fi
+case "\$FIREWALL_BACKEND" in
+    ufw)
+        command -v ufw >/dev/null 2>&1 \
+            && ufw --force enable >/dev/null 2>&1 || FAILED=yes
+        ;;
+    firewalld)
+        command -v firewall-cmd >/dev/null 2>&1 \
+            && rollback_service_start firewalld \
+            && firewall-cmd --reload >/dev/null 2>&1 || FAILED=yes
+        ;;
+    nftables)
+        if rollback_systemd_available \
+            || command -v rc-service >/dev/null 2>&1 \
+            || command -v service >/dev/null 2>&1; then
+            rollback_service_restart nftables || FAILED=yes
+        elif command -v nft >/dev/null 2>&1 && [ -f /etc/nftables.conf ]; then
+            nft -f /etc/nftables.conf >/dev/null 2>&1 || FAILED=yes
+        else
+            FAILED=yes
+        fi
+        ;;
+    iptables)
+        if [ -s "\$IPTABLES_FILE" ]; then
+            if command -v iptables-restore >/dev/null 2>&1; then
+                iptables-restore < "\$IPTABLES_FILE" >/dev/null 2>&1 || FAILED=yes
+            else
+                FAILED=yes
+            fi
+        fi
+        if [ -s "\$IP6TABLES_FILE" ]; then
+            if command -v ip6tables-restore >/dev/null 2>&1; then
+                ip6tables-restore < "\$IP6TABLES_FILE" >/dev/null 2>&1 || FAILED=yes
+            else
+                FAILED=yes
+            fi
+        fi
+        ;;
+esac
+restore_unit_enabled_state() {
+    local UNIT="\$1" ORIGINAL="\$2" SERVICE_NAME="\${1%.service}"
+    if rollback_systemd_available; then
+        case "\$ORIGINAL" in
+            enabled) systemctl enable "\$UNIT" >/dev/null 2>&1 ;;
+            enabled-runtime) systemctl enable --runtime "\$UNIT" >/dev/null 2>&1 ;;
+            disabled) systemctl disable "\$UNIT" >/dev/null 2>&1 ;;
+            masked) systemctl mask "\$UNIT" >/dev/null 2>&1 ;;
+            masked-runtime) systemctl mask --runtime "\$UNIT" >/dev/null 2>&1 ;;
+            static|indirect|not-found|unavailable) return 0 ;;
+            *) return 1 ;;
+        esac
+    elif command -v rc-update >/dev/null 2>&1; then
+        case "\$ORIGINAL" in
+            openrc:*)
+                ORIGINAL_LEVELS="\${ORIGINAL#openrc:}"
+                RC_STATE=\$(rc-update show 2>/dev/null) || return 1
+                CURRENT_LEVELS=\$(printf '%s\n' "\$RC_STATE" \
+                    | awk -v service="\$SERVICE_NAME" '
+                        \$1 == service {
+                            for (i=3; i<=NF; i++) {
+                                if (\$i == "|") continue
+                                out=out (out == "" ? "" : ",") \$i
+                            }
+                        }
+                        END {print (out == "" ? "none" : out)}
+                    ')
+                if [ "\$CURRENT_LEVELS" != none ]; then
+                    rc-update del "\$SERVICE_NAME" >/dev/null 2>&1 || return 1
+                fi
+                if [ "\$ORIGINAL_LEVELS" != none ]; then
+                    OLD_IFS="\$IFS"
+                    IFS=,
+                    for RUNLEVEL in \$ORIGINAL_LEVELS; do
+                        case "\$RUNLEVEL" in
+                            ""|*[!A-Za-z0-9_.-]*) IFS="\$OLD_IFS"; return 1 ;;
+                        esac
+                        rc-update add "\$SERVICE_NAME" "\$RUNLEVEL" \
+                            >/dev/null 2>&1 || {
+                            IFS="\$OLD_IFS"
+                            return 1
+                        }
+                    done
+                    IFS="\$OLD_IFS"
+                fi
+                RC_STATE=\$(rc-update show 2>/dev/null) || return 1
+                CURRENT_LEVELS=\$(printf '%s\n' "\$RC_STATE" \
+                    | awk -v service="\$SERVICE_NAME" '
+                        \$1 == service {
+                            for (i=3; i<=NF; i++) {
+                                if (\$i == "|") continue
+                                out=out (out == "" ? "" : ",") \$i
+                            }
+                        }
+                        END {print (out == "" ? "none" : out)}
+                    ')
+                [ "\$CURRENT_LEVELS" = "\$ORIGINAL_LEVELS" ] || return 1
+                ;;
+            not-found|unavailable) return 0 ;;
+            *) return 1 ;;
+        esac
+    else
+        case "\$ORIGINAL" in not-found|unavailable) return 0 ;; *) return 1 ;; esac
+    fi
+}
+if rollback_systemd_available || command -v rc-update >/dev/null 2>&1; then
+    restore_unit_enabled_state firewalld.service "\$FIREWALLD_ENABLED_STATE" \
+        || FAILED=yes
+    restore_unit_enabled_state nftables.service "\$NFTABLES_ENABLED_STATE" \
+        || FAILED=yes
+fi
+fi
+if command -v sysctl >/dev/null 2>&1 && [ -f "\$SYSCTL_FILE" ]; then
+    while IFS='=' read -r KEY VALUE; do
+        case "\$VALUE" in ''|*[!0-9-]*) continue ;; esac
+        case "\$KEY" in
+            net.ipv6.conf.all.disable_ipv6|\
+            net.ipv6.conf.default.disable_ipv6|\
+            net.ipv6.conf.lo.disable_ipv6|\
+            net.ipv4.conf.all.promote_secondaries)
+                sysctl -w "\$KEY=\$VALUE" >/dev/null 2>&1 || FAILED=yes
+                ;;
+        esac
+    done < "\$SYSCTL_FILE"
+fi
+fi
+if [ "\$FAILED" = no ]; then
+    COMMITTED_COUNT=0
+    cleanup_committed_backups || FAILED=yes
+fi
+if [ "\$FAILED" = yes ]; then
+    mark_rollback_failed
+    exit 1
+fi
+logger -t vps-tools "未确认连接，已自动恢复 \$LABEL 配置" >/dev/null 2>&1 || true
+rm -f -- "\$SNAP" "\$ROOTS_FILE" "\$SYSCTL_FILE" \
+    "\$IPTABLES_FILE" "\$IP6TABLES_FILE" \
+    "\$APPLIED_SNAPSHOT" "\$APPLIED_ROOTS" "\$SCRIPT" >/dev/null 2>&1 || true
+rm -f -- "\$STATE_FILE" >/dev/null 2>&1 || true
 ROLLBACK_EOF
     then
-        rm -f "$SCRIPT"
+        safety_artifact_remove "$SCRIPT"
+        safety_artifact_remove "$ROOTS_FILE"
+        safety_artifact_remove "$SYSCTL_FILE"
+        safety_artifact_remove "$IPTABLES_FILE"
+        safety_artifact_remove "$IP6TABLES_FILE"
+        safety_artifact_remove "$SNAP"
         safety_lock_release
         return 1
     fi
     if ! chmod 700 "$SCRIPT"; then
-        rm -f "$SCRIPT"
+        safety_artifact_remove "$SCRIPT"
+        safety_artifact_remove "$ROOTS_FILE"
+        safety_artifact_remove "$SYSCTL_FILE"
+        safety_artifact_remove "$IPTABLES_FILE"
+        safety_artifact_remove "$IP6TABLES_FILE"
+        safety_artifact_remove "$SNAP"
         safety_lock_release
         return 1
     fi
     nohup bash "$SCRIPT" >/dev/null 2>&1 &
     SAFETY_PID=$!
     SAFETY_SCRIPT="$SCRIPT"
-    if ! printf '%s|%s\n' "$SAFETY_PID" "$SAFETY_SCRIPT" > "$STATE_FILE"; then
+    SAFETY_ROOTS_FILE="$ROOTS_FILE"
+    SAFETY_SYSCTL_FILE="$SYSCTL_FILE"
+    SAFETY_IPTABLES_FILE="$IPTABLES_FILE"
+    SAFETY_IP6TABLES_FILE="$IP6TABLES_FILE"
+    SAFETY_APPLIED_SNAPSHOT="${SCRIPT%.sh}.applied.tar"
+    SAFETY_APPLIED_ROOTS="${SCRIPT%.sh}.applied.roots"
+    SAFETY_SNAPSHOT="$SNAP"
+    SAFETY_STATUS=armed
+    for ATTEMPT in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+        if safety_worker_identity_valid "$SAFETY_PID" "$SAFETY_SCRIPT"; then
+            READY=yes
+            break
+        fi
+        kill -0 "$SAFETY_PID" 2>/dev/null || break
+        sleep 0.05
+    done
+    if [ "$READY" != yes ]; then
         kill "$SAFETY_PID" 2>/dev/null || true
         wait "$SAFETY_PID" 2>/dev/null || true
-        rm -f "$SAFETY_SCRIPT"
-        SAFETY_PID="" SAFETY_SCRIPT=""
+        safety_artifact_remove "$SAFETY_SCRIPT"
+        safety_artifact_remove "$SAFETY_ROOTS_FILE"
+        safety_artifact_remove "$SAFETY_SYSCTL_FILE"
+        safety_artifact_remove "$SAFETY_IPTABLES_FILE"
+        safety_artifact_remove "$SAFETY_IP6TABLES_FILE"
+        safety_artifact_remove "$SAFETY_SNAPSHOT"
+        SAFETY_PID="" SAFETY_SCRIPT="" SAFETY_ROOTS_FILE="" SAFETY_SYSCTL_FILE=""
+        SAFETY_IPTABLES_FILE="" SAFETY_IP6TABLES_FILE=""
+        SAFETY_APPLIED_SNAPSHOT="" SAFETY_APPLIED_ROOTS=""
+        SAFETY_SNAPSHOT="" SAFETY_STATUS=""
+        safety_lock_release
+        error "自动回滚进程未能可靠启动"
+        return 1
+    fi
+    STATE_TMP=$(mktemp "${STATE_FILE}.tmp.XXXXXX") || STATE_TMP=""
+    if [ -z "$STATE_TMP" ] \
+        || ! printf '%s|%s|%s|%s|%s|armed\n' \
+        "$SAFETY_PID" "$SAFETY_SCRIPT" "$SAFETY_ROOTS_FILE" \
+        "$SAFETY_SYSCTL_FILE" "$SAFETY_SNAPSHOT" > "$STATE_TMP" \
+        || ! chmod 600 "$STATE_TMP" 2>/dev/null \
+        || ! mv -f -- "$STATE_TMP" "$STATE_FILE"; then
+        [ -z "$STATE_TMP" ] || rm -f -- "$STATE_TMP"
+        kill "$SAFETY_PID" 2>/dev/null || true
+        wait "$SAFETY_PID" 2>/dev/null || true
+        safety_artifact_remove "$SAFETY_SCRIPT"
+        safety_artifact_remove "$SAFETY_ROOTS_FILE"
+        safety_artifact_remove "$SAFETY_SYSCTL_FILE"
+        safety_artifact_remove "$SAFETY_IPTABLES_FILE"
+        safety_artifact_remove "$SAFETY_IP6TABLES_FILE"
+        safety_artifact_remove "$SAFETY_SNAPSHOT"
+        SAFETY_PID="" SAFETY_SCRIPT="" SAFETY_ROOTS_FILE="" SAFETY_SYSCTL_FILE=""
+        SAFETY_IPTABLES_FILE="" SAFETY_IP6TABLES_FILE=""
+        SAFETY_SNAPSHOT="" SAFETY_STATUS=""
         safety_lock_release
         error "无法保存防断联任务状态"
         return 1
     fi
-    chmod 600 "$STATE_FILE" 2>/dev/null || true
     safety_lock_release
     audit_action "启动防断联保护 $LABEL" SUCCESS
-    warn "防断联保护已启动：180 秒内未确认将自动恢复。"
+    warn "防断联保护已启动：${ROLLBACK_DELAY} 秒内未确认将自动恢复。"
 }
 
 safety_confirm() {
-    local STATE_FILE="${SAFETY_STATE_FILE:-${VPS_DATA_DIR}/rollback.active}"
-    safety_load_pending || return 0
+    local EXPECTED_PID EXPECTED_SCRIPT EXPECTED_ROOTS EXPECTED_SYSCTL EXPECTED_SNAPSHOT
+    safety_mark_applied || return 1
+    EXPECTED_PID="${SAFETY_PID:-}"
+    EXPECTED_SCRIPT="${SAFETY_SCRIPT:-}"
+    EXPECTED_ROOTS="${SAFETY_ROOTS_FILE:-}"
+    EXPECTED_SYSCTL="${SAFETY_SYSCTL_FILE:-}"
+    EXPECTED_SNAPSHOT="${SAFETY_SNAPSHOT:-}"
     echo ""
     warn "请保持当前连接，并用新终端确认 SSH 和网络正常。"
     read -rp "  确认连接正常，取消自动回滚？(y/N): " OK
     if echo "$OK" | grep -qiE '^y(es)?$'; then
-        kill "$SAFETY_PID" 2>/dev/null || true
-        wait "$SAFETY_PID" 2>/dev/null || true
-        rm -f "${SAFETY_SCRIPT:-}"
-        rm -f "$STATE_FILE" 2>/dev/null || true
+        if ! cancel_safety_timer \
+            "$EXPECTED_PID" "$EXPECTED_SCRIPT" "$EXPECTED_ROOTS" \
+            "$EXPECTED_SYSCTL" "$EXPECTED_SNAPSHOT"; then
+            error "未能安全取消自动回滚；请保持当前连接并检查回滚状态"
+            return 1
+        fi
         audit_action "确认连接正常，取消自动回滚" SUCCESS
         info "已取消自动回滚"
-        SAFETY_PID="" SAFETY_SCRIPT=""
     else
         warn "自动回滚仍在计时，请勿关闭旧连接。"
     fi

@@ -200,43 +200,64 @@ EOF
 
 (
     INSTALL_HOME="$TMP/install-generated-key-home"
-    mkdir -p "$INSTALL_HOME"
-    SSH_PASSWD_FILE="$TMP/install-generated-key-passwd"
-    printf '%s\n' "tony:x:1000:1000::${INSTALL_HOME}:/bin/bash" > "$SSH_PASSWD_FILE"
-    SSHD_CONFIG="$TMP/install-generated-key-sshd"
-    printf '%s\n' 'Port 22' > "$SSHD_CONFIG"
-    ssh_effective_config_dump() {
-        printf '%s\n' 'authorizedkeysfile .ssh/authorized_keys'
-    }
+    mkdir -p "$INSTALL_HOME/.ssh"
+    chmod 700 "$INSTALL_HOME" "$INSTALL_HOME/.ssh"
+    SSH_KEY_TARGET_USER=tony
+    SSH_KEY_TARGET_UID=$(id -u)
+    SSH_KEY_TARGET_GID=$(id -g)
+    SSH_KEY_TARGET_HOME="$INSTALL_HOME"
+    SSH_KEY_TARGET_FILE="$INSTALL_HOME/.ssh/authorized_keys"
+    SSH_KEY_TARGET_SCOPE=home
     ssh_public_key_line_valid() {
         case "$1" in
+            'ssh-ed25519 EXISTING_KEY_DATA'|'ssh-ed25519 EXISTING_KEY_DATA existing@test'|\
             'ssh-ed25519 GENERATED_KEY_DATA'|'ssh-ed25519 GENERATED_KEY_DATA generated@test')
                 return 0
                 ;;
             *) return 1 ;;
         esac
     }
-    chown() { :; }
     info() { :; }
     warn() { :; }
     error() { printf '%s\n' "$*" >&2; }
     INSTALL_AUDIT_LOG="$TMP/install-generated-key-audit"
     audit_action() { printf '%s|%s\n' "$1" "$2" >> "$INSTALL_AUDIT_LOG"; }
 
-    ssh_public_key_target_resolve tony
-    [ "$SSH_KEY_TARGET_FILE" = "$INSTALL_HOME/.ssh/authorized_keys" ] \
-        || { echo "Generated key target did not use the selected user's AuthorizedKeysFile" >&2; exit 1; }
+    printf '%s' 'ssh-ed25519 EXISTING_KEY_DATA existing@test' > "$SSH_KEY_TARGET_FILE"
     ssh_public_key_install 'ssh-ed25519 GENERATED_KEY_DATA generated@test'
+    grep -qx 'ssh-ed25519 EXISTING_KEY_DATA existing@test' "$SSH_KEY_TARGET_FILE" \
+        || { echo "Existing authorized_keys line without LF was changed" >&2; exit 1; }
     grep -qx 'ssh-ed25519 GENERATED_KEY_DATA generated@test' "$SSH_KEY_TARGET_FILE" \
         || { echo "Generated key was not installed for the selected user" >&2; exit 1; }
-    sed -i 's/^ssh-ed25519/no-agent-forwarding ssh-ed25519/' "$SSH_KEY_TARGET_FILE"
-    [ "$(ssh_key_file_count "$SSH_KEY_TARGET_FILE")" = 1 ] \
-        || { echo "AuthorizedKeys options caused the generated key count to be wrong" >&2; exit 1; }
+    [ "$(ssh_key_file_count "$SSH_KEY_TARGET_FILE")" = 2 ] \
+        || { echo "Missing final LF caused the generated key count to be wrong" >&2; exit 1; }
+    sed -i 's/^ssh-ed25519 GENERATED/no-agent-forwarding ssh-ed25519 GENERATED/' "$SSH_KEY_TARGET_FILE"
     ssh_public_key_install 'ssh-ed25519 GENERATED_KEY_DATA generated@test'
-    [ "$(wc -l < "$SSH_KEY_TARGET_FILE" | tr -d '[:space:]')" = 1 ] \
+    [ "$(wc -l < "$SSH_KEY_TARGET_FILE" | tr -d '[:space:]')" = 2 ] \
         || { echo "Generated key installation did not prevent duplicates" >&2; exit 1; }
     grep -q '为用户 tony 添加 SSH 公钥|SUCCESS' "$INSTALL_AUDIT_LOG" \
         || { echo "Generated public key installation was not written to the audit log" >&2; exit 1; }
+)
+
+(
+    SYMLINK_HOME="$TMP/install-key-symlink-home"
+    SYMLINK_OUTSIDE="$TMP/install-key-symlink-outside"
+    mkdir -p "$SYMLINK_HOME" "$SYMLINK_OUTSIDE"
+    chmod 700 "$SYMLINK_HOME" "$SYMLINK_OUTSIDE"
+    if ln -s "$SYMLINK_OUTSIDE" "$SYMLINK_HOME/.ssh" 2>/dev/null; then
+        ! ssh_public_key_path_snapshot \
+            "$SYMLINK_HOME/.ssh/authorized_keys" home "$(id -u)" "$SYMLINK_HOME" \
+            >/dev/null 2>&1 \
+            || { echo "AuthorizedKeysFile parent symlink was accepted" >&2; exit 1; }
+    fi
+    if [ "$(id -u)" -eq 0 ]; then
+        GLOBAL_WRITABLE="$TMP/install-key-global-writable"
+        mkdir -p "$GLOBAL_WRITABLE"
+        chmod 777 "$GLOBAL_WRITABLE"
+        ! ssh_public_key_path_snapshot \
+            "$GLOBAL_WRITABLE/tony" global 0 /root >/dev/null 2>&1 \
+            || { echo "Writable global AuthorizedKeysFile parent was accepted" >&2; exit 1; }
+    fi
 )
 
 (
@@ -450,8 +471,11 @@ EOF
     nohup() { return 0; }
     ssh_key_delete_safety_arm "$SAFETY_KEY_FILE" "$SAFETY_BACKUP" tony \
         || { echo "Public key safety rollback could not be armed" >&2; exit 1; }
-    IFS='|' read -r SAFETY_TEST_PID SAFETY_TEST_SCRIPT < "$SAFETY_STATE_FILE"
+    IFS='|' read -r SAFETY_TEST_PID SAFETY_TEST_SCRIPT _ _ SAFETY_TEST_BACKUP SAFETY_TEST_STATUS \
+        < "$SAFETY_STATE_FILE"
     [[ "$SAFETY_TEST_PID" =~ ^[0-9]+$ ]] && [ -f "$SAFETY_TEST_SCRIPT" ] \
+        && [ "$SAFETY_TEST_BACKUP" = "$SAFETY_BACKUP" ] \
+        && [ "$SAFETY_TEST_STATUS" = armed ] \
         || { echo "Public key safety rollback state was not persisted" >&2; exit 1; }
     bash -n "$SAFETY_TEST_SCRIPT" \
         || { echo "Generated public key rollback script has invalid syntax" >&2; exit 1; }
@@ -461,6 +485,35 @@ EOF
     grep -Fq "$VPS_AUDIT_LOG" "$SAFETY_TEST_SCRIPT" \
         || { echo "Automatic public key rollback was not connected to the audit log" >&2; exit 1; }
     rm -f "$SAFETY_STATE_FILE" "$SAFETY_TEST_SCRIPT"
+)
+
+(
+    VPS_DATA_DIR="$TMP/delete-key-executed-safety-data"
+    SAFETY_STATE_FILE="$VPS_DATA_DIR/rollback.active"
+    SSH_KEY_ROLLBACK_DELAY=1
+    SAFETY_KEY_FILE="$TMP/delete-key-executed-home/authorized_keys"
+    SAFETY_BACKUP="$VPS_DATA_DIR/authorized_keys.backup"
+    mkdir -p "$(dirname "$SAFETY_KEY_FILE")" "$VPS_DATA_DIR"
+    printf 'before\n' > "$SAFETY_KEY_FILE"
+    cp -p "$SAFETY_KEY_FILE" "$SAFETY_BACKUP"
+    error() { printf '%s\n' "$*" >&2; }
+    warn() { :; }
+    audit_action() { :; }
+    ssh_key_delete_safety_arm "$SAFETY_KEY_FILE" "$SAFETY_BACKUP" tony \
+        || { echo "Executable public key rollback could not be armed" >&2; exit 1; }
+    printf 'after\n' > "$SAFETY_KEY_FILE"
+    mkdir "${SAFETY_STATE_FILE}.lock"
+    printf 'stale-owner\n' > "${SAFETY_STATE_FILE}.lock/pid"
+    for _ in 1 2 3 4 5 6 7 8; do
+        [ ! -e "$SAFETY_STATE_FILE" ] && break
+        sleep 1
+    done
+    grep -qx before "$SAFETY_KEY_FILE" \
+        || { echo "Public key rollback abandoned recovery behind a stale lock" >&2; exit 1; }
+    [ ! -e "$SAFETY_STATE_FILE" ] && [ ! -e "${SAFETY_STATE_FILE}.lock" ] \
+        || { echo "Public key rollback left active state or lock artifacts" >&2; exit 1; }
+    [ -f "$SAFETY_BACKUP" ] \
+        || { echo "Public key rollback removed the independent operator backup" >&2; exit 1; }
 )
 
 (
@@ -499,7 +552,14 @@ EOF
 
 (
     SSHD_CONFIG="$TMP/revoke-success-sshd-config"
-    printf '%s\n' 'Port 22' > "$SSHD_CONFIG"
+    {
+        printf '%s\n' "$SSHD_MANAGED_BEGIN"
+        printf '%s\n' 'DenyUsers legacy'
+        printf '%s\n' "$SSHD_MANAGED_END"
+        printf '%s\n' 'Port 22'
+        printf '%s\n' 'Match Address 192.0.2.*'
+        printf '%s\n' '    DenyUsers conditional-only'
+    } > "$SSHD_CONFIG"
     ssh_account_records() {
         printf '%s\n' \
             'root:x:0:0:root:/root:/bin/bash' \
@@ -509,7 +569,7 @@ EOF
         ssh_account_records | awk -F: -v username="$1" '$1 == username {print; exit}'
     }
     ssh_effective_config_dump() {
-        if [ "$2" = tony ] && grep -q '^DenyUsers tony$' "$1" 2>/dev/null; then
+        if [ "$2" = tony ] && grep -Eq '^DenyUsers .*tony([[:space:]]|$)' "$1" 2>/dev/null; then
             printf '%s\n' "${STRICT_POLICY_DUMP}" 'denyusers tony'
         else
             printf '%s\n' "${STRICT_POLICY_DUMP}"
@@ -532,10 +592,51 @@ EOF
         printf '%s|%s\n' "$1" "$2" > "$REVOKE_CONFIRM_LOG"
     }
     revoke_user_ssh_login <<< $'tony\nroot\ntony'
-    grep -q '^DenyUsers tony$' "$SSHD_CONFIG" \
-        || { echo "Successful SSH login revocation did not persist DenyUsers" >&2; exit 1; }
+    [ "$(ssh_collect_managed_deny_users "$SSHD_CONFIG")" = 'legacy tony' ] \
+        || { echo "SSH revocation did not preserve only the historical managed DenyUsers list" >&2; exit 1; }
+    grep -q '^[[:space:]]*DenyUsers conditional-only$' "$SSHD_CONFIG" \
+        || { echo "Conditional DenyUsers rule outside the managed block was changed" >&2; exit 1; }
     grep -qx 'root|密钥' "$REVOKE_CONFIRM_LOG" \
         || { echo "Successful SSH login revocation did not verify the selected fallback" >&2; exit 1; }
+)
+
+(
+    SSHD_CONFIG="$TMP/revoke-non-admin-verifier-sshd-config"
+    printf '%s\n' 'Port 22' > "$SSHD_CONFIG"
+    ssh_account_records() {
+        printf '%s\n' \
+            'root:x:0:0:root:/root:/bin/bash' \
+            "tony:x:1000:1000::${STRICT_HOME}:/bin/bash"
+    }
+    ssh_account_record() {
+        ssh_account_records | awk -F: -v username="$1" '$1 == username {print; exit}'
+    }
+    ssh_effective_config_dump() {
+        if [ "$2" = tony ] && grep -Eq '^DenyUsers .*tony([[:space:]]|$)' "$1" 2>/dev/null; then
+            printf '%s\n' "${STRICT_POLICY_DUMP}" 'denyusers tony'
+        else
+            printf '%s\n' "${STRICT_POLICY_DUMP}"
+        fi
+    }
+    sshd() { return 0; }
+    ssh_login_candidates() {
+        printf '%s\n' 'root|密钥|yes' 'guest|密码|no'
+    }
+    print_header() { :; }
+    menu_div() { :; }
+    info() { :; }
+    warn() { :; }
+    error() { printf '%s\n' "$*"; }
+    REVOKE_NON_ADMIN_BACKUP="$TMP/revoke-non-admin-backup"
+    backup_config() { : > "$REVOKE_NON_ADMIN_BACKUP"; }
+    if REVOKE_NON_ADMIN_OUTPUT=$(revoke_user_ssh_login <<< $'tony\nguest'); then
+        echo "SSH revocation accepted a non-admin verification account" >&2
+        exit 1
+    fi
+    [[ "$REVOKE_NON_ADMIN_OUTPUT" == *"完整 root 权限的管理员"* ]] \
+        || { echo "Non-admin SSH revocation verifier rejection was not reported" >&2; exit 1; }
+    [ ! -e "$REVOKE_NON_ADMIN_BACKUP" ] \
+        || { echo "SSH revocation backed up/applied before rejecting a non-admin verifier" >&2; exit 1; }
 )
 
 user_name_valid alice || { echo "Valid username was rejected" >&2; exit 1; }
@@ -609,9 +710,13 @@ security_root_password_restricted yes no no || { echo "Globally disabled passwor
     user_has_sudo_access tony \
         || { echo "Allowed sudo listing was not recognized as administrator access" >&2; exit 1; }
 )
-user_home_safe_to_remove /home/alice || { echo "Normal user home was rejected for deletion" >&2; exit 1; }
+REMOVABLE_HOME="$TMP/removable-user-home"
+mkdir -p "$REMOVABLE_HOME"
+user_home_safe_to_remove "$REMOVABLE_HOME" || { echo "Normal existing user home was rejected for deletion" >&2; exit 1; }
 ! user_home_safe_to_remove / >/dev/null 2>&1 || { echo "Filesystem root was accepted as user workspace" >&2; exit 1; }
 ! user_home_safe_to_remove /home >/dev/null 2>&1 || { echo "Shared home root was accepted as user workspace" >&2; exit 1; }
+! user_home_safe_to_remove /home/ >/dev/null 2>&1 || { echo "Shared home root with trailing slash was accepted" >&2; exit 1; }
+! user_home_safe_to_remove // >/dev/null 2>&1 || { echo "Double-slash filesystem root was accepted" >&2; exit 1; }
 ! user_home_safe_to_remove /home/alice/../bob >/dev/null 2>&1 || { echo "Traversal path was accepted as user workspace" >&2; exit 1; }
 (
     USER_PASSWD_FILE="$TMP/passwd"
@@ -980,7 +1085,7 @@ for fn in docker_install docker_status docker_select_container docker_upgrade_co
     declare -F "$fn" >/dev/null || { echo "Missing Docker function: $fn" >&2; exit 1; }
 done
 
-for fn in self_install self_script_valid self_resolve_script_source self_fetch_script self_shortcut_owned self_install_shortcut self_remove_shortcut self_offline_bundle_create self_offline_bundle_install self_update self_manifest_value self_remote_main_sha monitor_alert_check monitor_alert_config_menu monitor_alert_home_menu monitor_alert_daily_report monitor_alert_host_label monitor_alert_host_label_html monitor_alert_html_escape monitor_alert_set_host_label monitor_time_normalize monitor_date_normalize monitor_int_normalize monitor_positive_number_valid monitor_positive_int_valid monitor_percent_valid monitor_renew_notice_days_valid monitor_renew_future_date monitor_traffic_interfaces monitor_traffic_reset_day_valid monitor_traffic_totals monitor_traffic_delta_bytes monitor_traffic_reconcile_counters monitor_traffic_usage_triplet monitor_traffic_usage_text monitor_traffic_set_cycle_usage_split_gb monitor_alert_service_state monitor_alert_any_service_state monitor_alert_ssh_state monitor_alert_test_snapshot monitor_alert_resource_snapshot monitor_alert_traffic_snapshot monitor_alert_renew_snapshot monitor_alert_renew_mark_paid monitor_alert_renew_auto_advance_toggle monitor_alert_renew_auto_advance monitor_alert_renew_reset_state monitor_alert_notify monitor_alert_telegram_send monitor_alert_history_add monitor_alert_history_view monitor_alert_cooldown_seconds monitor_alert_time_to_minutes monitor_alert_in_silence monitor_alert_metrics monitor_alert_metrics_sample monitor_alert_trend_line monitor_alert_trend_summary monitor_alert_level_label monitor_alert_level_icon monitor_alert_level_rank monitor_alert_worst_level monitor_alert_daily_cron_expr monitor_alert_cron_command monitor_alert_cron_without_managed monitor_alert_acquire_lock monitor_alert_install_cron monitor_alert_remove_cron monitor_alert_cron_status monitor_alert_next_daily_time monitor_alert_configured_without_cron monitor_alert_service_menu monitor_alert_notify_menu monitor_alert_resource_menu monitor_alert_traffic_menu monitor_alert_daily_menu monitor_alert_renew_menu monitor_alert_advanced_menu monitor_alert_quick_setup_menu config_health_check diagnostic_bundle_create; do
+for fn in self_install self_script_valid self_resolve_script_source self_fetch_script self_shortcut_owned self_install_shortcut self_remove_shortcut self_offline_bundle_create self_offline_bundle_install self_update self_manifest_value self_remote_main_sha monitor_alert_check monitor_alert_config_menu monitor_alert_home_menu monitor_alert_daily_report monitor_alert_host_label monitor_alert_host_label_html monitor_alert_html_escape monitor_alert_set_host_label monitor_time_normalize monitor_date_normalize monitor_int_normalize monitor_positive_number_valid monitor_positive_int_valid monitor_percent_valid monitor_renew_notice_days_valid monitor_renew_future_date monitor_traffic_interfaces monitor_traffic_reset_day_valid monitor_traffic_totals monitor_traffic_delta_bytes monitor_traffic_reconcile_counters monitor_traffic_usage_triplet monitor_traffic_usage_text monitor_traffic_set_cycle_usage_split_gb monitor_alert_service_state monitor_alert_any_service_state monitor_alert_ssh_state monitor_alert_test_snapshot monitor_alert_resource_snapshot monitor_alert_traffic_snapshot monitor_alert_renew_snapshot monitor_alert_renew_mark_paid monitor_alert_renew_auto_advance_toggle monitor_alert_renew_auto_advance monitor_alert_renew_reset_state monitor_alert_notify monitor_alert_telegram_send monitor_alert_history_add monitor_alert_history_view monitor_alert_cooldown_seconds monitor_alert_time_to_minutes monitor_alert_in_silence monitor_alert_metrics monitor_alert_metrics_sample monitor_alert_trend_line monitor_alert_trend_summary monitor_alert_level_label monitor_alert_level_icon monitor_alert_level_rank monitor_alert_worst_level monitor_alert_daily_cron_expr monitor_alert_cron_command monitor_alert_cron_without_managed monitor_alert_release_lock monitor_alert_acquire_lock monitor_alert_install_cron monitor_alert_remove_cron monitor_alert_cron_status monitor_alert_next_daily_time monitor_alert_configured_without_cron monitor_alert_service_menu monitor_alert_notify_menu monitor_alert_resource_menu monitor_alert_traffic_menu monitor_alert_daily_menu monitor_alert_renew_menu monitor_alert_advanced_menu monitor_alert_quick_setup_menu config_health_check diagnostic_bundle_create; do
     declare -F "$fn" >/dev/null || { echo "Missing new function: $fn" >&2; exit 1; }
 done
 
@@ -1292,6 +1397,248 @@ EOF
 set_config_file "$SSHD_SAMPLE" "PasswordAuthentication" "no"
 FIRST_DIRECTIVE=$(grep -m1 -E '^(Include|PasswordAuthentication|Match)' "$SSHD_SAMPLE")
 [[ "$FIRST_DIRECTIVE" = "PasswordAuthentication no" ]] || { echo "Managed SSH settings must precede Include and Match blocks" >&2; exit 1; }
+SSHD_PORT_SAMPLE="$TMP/sshd-port-config"
+cat > "$SSHD_PORT_SAMPLE" <<'EOF'
+Port 22
+Include /etc/ssh/sshd_config.d/*.conf
+Match User deploy
+    Port 2200
+EOF
+set_config_file "$SSHD_PORT_SAMPLE" "Port" "2222"
+grep -q '^Port 2222$' "$SSHD_PORT_SAMPLE" \
+    || { echo "Managed SSH port was not written" >&2; exit 1; }
+! awk 'tolower($1) == "match" {in_match=1} !in_match && $1 == "Port" && $2 == "22" {found=1} END {exit !found}' \
+    "$SSHD_PORT_SAMPLE" \
+    || { echo "Unmanaged global SSH Port directive was retained" >&2; exit 1; }
+grep -q '^[[:space:]]*Port 2200$' "$SSHD_PORT_SAMPLE" \
+    || { echo "Match-scoped SSH Port directive was unexpectedly removed" >&2; exit 1; }
+(
+    SSHD_WRITE_FAIL="$TMP/sshd-write-fail"
+    printf '%s\n' 'PasswordAuthentication yes' > "$SSHD_WRITE_FAIL"
+    cp "$SSHD_WRITE_FAIL" "$SSHD_WRITE_FAIL.before"
+    mv() { return 1; }
+    ! set_config_file "$SSHD_WRITE_FAIL" "PasswordAuthentication" "no" \
+        || { echo "set_config_file reported success after replacement failure" >&2; exit 1; }
+    cmp -s "$SSHD_WRITE_FAIL.before" "$SSHD_WRITE_FAIL" \
+        || { echo "set_config_file changed the target after replacement failure" >&2; exit 1; }
+)
+(
+    SSHD_METADATA="$TMP/sshd-metadata"
+    printf '%s\n' 'PasswordAuthentication yes' > "$SSHD_METADATA"
+    chmod 640 "$SSHD_METADATA"
+    SSHD_METADATA_BEFORE=$(stat -Lc '%u:%g:%a' "$SSHD_METADATA")
+    set_config_file "$SSHD_METADATA" "PasswordAuthentication" "no"
+    [ "$(stat -Lc '%u:%g:%a' "$SSHD_METADATA")" = "$SSHD_METADATA_BEFORE" ] \
+        || { echo "set_config_file changed sshd_config owner or mode" >&2; exit 1; }
+)
+(
+    SSHD_REAL="$TMP/sshd-real"
+    SSHD_LINK="$TMP/sshd-link"
+    printf '%s\n' 'PasswordAuthentication yes' > "$SSHD_REAL"
+    if ln -s "$SSHD_REAL" "$SSHD_LINK" 2>/dev/null; then
+        ! set_config_file "$SSHD_LINK" "PasswordAuthentication" "no" \
+            || { echo "set_config_file replaced an sshd_config symlink" >&2; exit 1; }
+        [ -L "$SSHD_LINK" ] && grep -qx 'PasswordAuthentication yes' "$SSHD_REAL" \
+            || { echo "Rejected sshd_config symlink was modified" >&2; exit 1; }
+        SSHD_CONFIG="$SSHD_LINK"
+        ! ssh_prepare_config_candidate SSHD_LINK_CANDIDATE >/dev/null 2>&1 \
+            || { echo "SSH candidate preparation followed an sshd_config symlink" >&2; exit 1; }
+    fi
+)
+(
+    sshd() { printf '%s\n' 'port 2222'; }
+    ssh_candidate_has_unique_port "$TMP/unused-sshd-candidate" 2222 \
+        || { echo "Unique effective SSH port was rejected" >&2; exit 1; }
+    sshd() {
+        printf '%s\n' \
+            'port 2222' \
+            'listenaddress 0.0.0.0:2222' \
+            'listenaddress [::]:2222'
+    }
+    ssh_candidate_has_unique_port "$TMP/unused-sshd-candidate" 2222 \
+        || { echo "Matching ListenAddress ports were rejected" >&2; exit 1; }
+    sshd() {
+        printf '%s\n' \
+            'port 2222' \
+            'listenaddress 0.0.0.0:22'
+    }
+    ! ssh_candidate_has_unique_port "$TMP/unused-sshd-candidate" 2222 \
+        || { echo "Mismatched ListenAddress port was accepted" >&2; exit 1; }
+    sshd() { printf '%s\n' 'port 2222' 'port 22'; }
+    ! ssh_candidate_has_unique_port "$TMP/unused-sshd-candidate" 2222 \
+        || { echo "Multiple effective SSH ports from Include were accepted" >&2; exit 1; }
+)
+(
+    IPTABLES_RULE_PRESENT=yes
+    IPTABLES_DELETE_LOG="$TMP/iptables-delete.log"
+    IPTABLES_RULES_FILE="$TMP/rules.v4"
+    : > "$IPTABLES_RULES_FILE"
+    iptables() {
+        case "$1" in
+            -C) [ "$IPTABLES_RULE_PRESENT" = yes ] ;;
+            -D)
+                printf '%s\n' "$*" > "$IPTABLES_DELETE_LOG"
+                IPTABLES_RULE_PRESENT=no
+                ;;
+            *) return 1 ;;
+        esac
+    }
+    iptables-save() { printf '%s\n' '*filter' 'COMMIT'; }
+    firewall_remove_port 22 \
+        || { echo "Exact iptables old-port cleanup failed" >&2; exit 1; }
+    [ "${FIREWALL_REMOVE_CHANGED:-no}" = yes ] \
+        || { echo "Successful iptables cleanup was not marked as changed" >&2; exit 1; }
+    grep -qx -- '-D INPUT -p tcp --dport 22 -j ACCEPT' "$IPTABLES_DELETE_LOG" \
+        || { echo "iptables cleanup did not delete the exact SSH allow rule" >&2; exit 1; }
+    grep -q '^COMMIT$' "$IPTABLES_RULES_FILE" \
+        || { echo "iptables cleanup was not persisted safely" >&2; exit 1; }
+)
+(
+    iptables() {
+        case "$1" in
+            -C) return 0 ;;
+            -D) return 1 ;;
+            *) return 1 ;;
+        esac
+    }
+    ! firewall_remove_port 22 >/dev/null 2>&1 \
+        || { echo "Failed iptables cleanup reported success" >&2; exit 1; }
+    [ "${FIREWALL_REMOVE_CHANGED:-no}" = no ] \
+        || { echo "Failed iptables cleanup falsely reported a removed rule" >&2; exit 1; }
+)
+(
+    [ "$(firewall_ufw_port_state $'Status: active\n2222/tcp DENY IN Anywhere' 2222)" = deny ] \
+        || { echo "UFW deny rule was mistaken for an allowance" >&2; exit 1; }
+    [ "$(firewall_ufw_port_state $'Status: active\n2222/tcp LIMIT IN Anywhere' 2222)" = allow ] \
+        || { echo "Unconditional UFW limit rule was not treated as reachable" >&2; exit 1; }
+    [ "$(firewall_ufw_port_state $'Status: active\n2222/tcp on eth0 LIMIT IN Anywhere' 2222)" = policy ] \
+        || { echo "Interface-scoped UFW limit policy was treated as unconditional" >&2; exit 1; }
+    [ "$(firewall_ufw_port_state $'Status: active\n2222/tcp ALLOW IN 192.0.2.1' 2222)" = policy ] \
+        || { echo "Source-scoped UFW allow rule was not preserved as policy" >&2; exit 1; }
+    [ "$(firewall_ufw_port_state $'Status: active\n10.0.0.5 2222/tcp ALLOW IN Anywhere' 2222)" = allow ] \
+        || { echo "UFW rule with a destination address was not recognized" >&2; exit 1; }
+)
+(
+    UFW_RULE_PRESENT=no
+    UFW_ROLLBACK_LOG="$TMP/ufw-new-port-rollback"
+    ufw() {
+        case "$1" in
+            status)
+                printf '%s\n' 'Status: active'
+                ;;
+            insert)
+                UFW_RULE_PRESENT=yes
+                ;;
+            delete)
+                UFW_RULE_PRESENT=no
+                : > "$UFW_ROLLBACK_LOG"
+                ;;
+            *) return 1 ;;
+        esac
+    }
+    ! firewall_allow_port 2222 <<< "y" >/dev/null 2>&1 \
+        || { echo "Failed new-port firewall allowance reported success" >&2; exit 1; }
+    [ "$UFW_RULE_PRESENT" = no ] && [ -e "$UFW_ROLLBACK_LOG" ] \
+        || { echo "Partial firewall allowance did not roll back its new ufw rule" >&2; exit 1; }
+)
+(
+    IPTABLES_RULES_FILE="$TMP/iptables-drop-first.rules"
+    printf '%s\n' '*filter' 'COMMIT' > "$IPTABLES_RULES_FILE"
+    IPTABLES_INSERT_LOG="$TMP/iptables-insert.log"
+    svc_is_active() { return 1; }
+    iptables() {
+        case "$1" in
+            -S)
+                printf '%s\n' \
+                    '-P INPUT DROP' \
+                    '-A INPUT -p tcp --dport 2222 -j ACCEPT'
+                ;;
+            -I) printf '%s\n' "$*" > "$IPTABLES_INSERT_LOG" ;;
+            -D) return 0 ;;
+            *) return 1 ;;
+        esac
+    }
+    iptables-save() { printf '%s\n' '*filter' 'COMMIT'; }
+    firewall_allow_port 2222 <<< "y" >/dev/null \
+        || { echo "Default-DROP iptables policy was not handled" >&2; exit 1; }
+    grep -qx -- '-I INPUT 1 -p tcp --dport 2222 -j ACCEPT' "$IPTABLES_INSERT_LOG" \
+        || { echo "iptables allowance was not inserted before an earlier drop" >&2; exit 1; }
+)
+(
+    SSHD_CONFIG="$TMP/change-port-firewall-failure"
+    printf '%s\n' 'Port 22' > "$SSHD_CONFIG"
+    get_config() { printf '%s\n' 22; }
+    sshd() {
+        if [ "$1" = -T ]; then
+            awk 'tolower($1) == "port" {print "port " $2}' "$3"
+        else
+            return 0
+        fi
+    }
+    print_header() { :; }
+    menu_div() { :; }
+    confirm_file_diff() { return 0; }
+    backup_config() {
+        LAST_SSHD_BACKUP="$SSHD_CONFIG.before"
+        cp -p -- "$SSHD_CONFIG" "$LAST_SSHD_BACKUP"
+    }
+    safety_arm() { return 0; }
+    firewall_allow_port() { return 1; }
+    PORT_RESTORE_MARK="$TMP/change-port-restored"
+    PORT_CANCEL_MARK="$TMP/change-port-cancelled"
+    restore_ssh_config_backup() {
+        cp -p -- "$LAST_SSHD_BACKUP" "$SSHD_CONFIG"
+        : > "$PORT_RESTORE_MARK"
+    }
+    ssh_cancel_safety_timer_checked() { : > "$PORT_CANCEL_MARK"; }
+    info() { :; }
+    warn() { :; }
+    error() { :; }
+    ! change_port <<< "2222" \
+        || { echo "SSH port change continued after firewall allowance failure" >&2; exit 1; }
+    grep -qx 'Port 22' "$SSHD_CONFIG" \
+        || { echo "SSH config was not restored after firewall allowance failure" >&2; exit 1; }
+    [ -e "$PORT_RESTORE_MARK" ] && [ -e "$PORT_CANCEL_MARK" ] \
+        || { echo "Firewall failure did not restore config and cancel safety timer" >&2; exit 1; }
+)
+(
+    SSHD_CONFIG="$TMP/change-port-apply-failure"
+    printf '%s\n' 'Port 22' > "$SSHD_CONFIG"
+    get_config() { printf '%s\n' 22; }
+    sshd() {
+        if [ "$1" = -T ]; then
+            awk 'tolower($1) == "port" {print "port " $2}' "$3"
+        else
+            return 0
+        fi
+    }
+    print_header() { :; }
+    menu_div() { :; }
+    confirm_file_diff() { return 0; }
+    backup_config() {
+        LAST_SSHD_BACKUP="$SSHD_CONFIG.before"
+        cp -p -- "$SSHD_CONFIG" "$LAST_SSHD_BACKUP"
+    }
+    safety_arm() { return 0; }
+    firewall_allow_port() { return 0; }
+    PORT_FIREWALL_ROLLBACK="$TMP/change-port-firewall-rolled-back"
+    PORT_TIMER_CANCEL="$TMP/change-port-apply-timer-cancelled"
+    firewall_rollback_allowed_port() { : > "$PORT_FIREWALL_ROLLBACK"; }
+    apply_and_restart() {
+        cp -p -- "$LAST_SSHD_BACKUP" "$SSHD_CONFIG"
+        return 1
+    }
+    ssh_cancel_safety_timer_checked() { : > "$PORT_TIMER_CANCEL"; }
+    info() { :; }
+    warn() { :; }
+    error() { :; }
+    ! change_port <<< "2222" \
+        || { echo "SSH port change reported success after apply failure" >&2; exit 1; }
+    grep -qx 'Port 22' "$SSHD_CONFIG" \
+        || { echo "SSH config was not restored after apply failure" >&2; exit 1; }
+    [ -e "$PORT_FIREWALL_ROLLBACK" ] && [ -e "$PORT_TIMER_CANCEL" ] \
+        || { echo "SSH apply failure did not roll back firewall and cancel safety timer" >&2; exit 1; }
+)
 (
     NFT_RULES_FILE="$TMP/nft-rules.db"
     NFT_ACCESS_FILE="$TMP/nft-access.conf"

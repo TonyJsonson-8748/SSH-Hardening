@@ -205,9 +205,162 @@ swap_delete() {
 }
 
 # ── 修改 swappiness ───────────────────────────────────────
+swap_swappiness_runtime_write() {
+    local PROC_FILE="$1" VALUE="$2"
+    printf '%s\n' "$VALUE" > "$PROC_FILE" 2>/dev/null
+}
+
+swap_swappiness_restore_state() {
+    local PROC_FILE="$1" OLD_RUNTIME="$2" SYSCTL_FILE="$3" BACKUP="$4" EXISTED="$5"
+    local RESTORE_TMP="" RESTORE_RC=0
+    if [ "$EXISTED" = yes ]; then
+        if [ -z "$BACKUP" ] || [ ! -f "$BACKUP" ]; then
+            RESTORE_RC=1
+        else
+            RESTORE_TMP=$(mktemp "${SYSCTL_FILE}.vps-tools-restore.XXXXXX") || RESTORE_RC=1
+            if [ "$RESTORE_RC" -eq 0 ]; then
+                if ! cp -p -- "$BACKUP" "$RESTORE_TMP" \
+                    || ! mv -f -- "$RESTORE_TMP" "$SYSCTL_FILE"; then
+                    RESTORE_RC=1
+                    rm -f -- "$RESTORE_TMP" 2>/dev/null || true
+                fi
+            fi
+        fi
+    else
+        rm -f -- "$SYSCTL_FILE" 2>/dev/null || RESTORE_RC=1
+    fi
+    if ! [[ "$OLD_RUNTIME" =~ ^[0-9]+$ ]] \
+        || ! swap_swappiness_runtime_write "$PROC_FILE" "$OLD_RUNTIME"; then
+        RESTORE_RC=1
+    fi
+    return "$RESTORE_RC"
+}
+
+swap_swappiness_handle_failure() {
+    local REASON="$1" PROC_FILE="$2" OLD_RUNTIME="$3"
+    local SYSCTL_FILE="$4" BACKUP="$5" EXISTED="$6"
+    if swap_swappiness_restore_state "$PROC_FILE" "$OLD_RUNTIME" \
+        "$SYSCTL_FILE" "$BACKUP" "$EXISTED"; then
+        rm -f -- "$BACKUP" 2>/dev/null || true
+        error "$REASON，已恢复原设置"
+        return 1
+    fi
+    error "$REASON，且自动回滚不完整"
+    if [ -n "$BACKUP" ] && [ -f "$BACKUP" ]; then
+        warn "原配置备份已保留，请人工恢复：$BACKUP"
+    else
+        warn "原配置备份不可用，请立即人工核对：$SYSCTL_FILE"
+    fi
+    warn "请同时核对当前运行值：$PROC_FILE"
+    return 2
+}
+
+swap_apply_swappiness() {
+    local VAL="$1"
+    local PROC_FILE="${SWAPPINESS_PROC_FILE:-/proc/sys/vm/swappiness}"
+    local SYSCTL_FILE="${SWAPPINESS_SYSCTL_FILE:-/etc/sysctl.conf}"
+    local SYSCTL_DIR CANDIDATE BACKUP="" EXISTED=no OLD_RUNTIME ACTUAL CONFIG_INPUT=/dev/null
+    local FAILURE_RC
+
+    [[ "$VAL" =~ ^[0-9]+$ ]] && [ "$VAL" -le 100 ] || {
+        error "无效值（0-100）"
+        return 1
+    }
+    VAL=$((10#$VAL))
+    [ -f "$PROC_FILE" ] && [ ! -L "$PROC_FILE" ] || {
+        error "swappiness 运行参数不可用：$PROC_FILE"
+        return 1
+    }
+    if [ -e "$SYSCTL_FILE" ] || [ -L "$SYSCTL_FILE" ]; then
+        [ -f "$SYSCTL_FILE" ] && [ ! -L "$SYSCTL_FILE" ] || {
+            error "sysctl 配置不是安全的普通文件：$SYSCTL_FILE"
+            return 1
+        }
+        EXISTED=yes
+    fi
+    SYSCTL_DIR=$(dirname "$SYSCTL_FILE")
+    [ -d "$SYSCTL_DIR" ] || {
+        error "sysctl 配置目录不存在：$SYSCTL_DIR"
+        return 1
+    }
+    OLD_RUNTIME=$(cat "$PROC_FILE" 2>/dev/null)
+    [[ "$OLD_RUNTIME" =~ ^[0-9]+$ ]] || {
+        error "无法读取当前 swappiness"
+        return 1
+    }
+
+    CANDIDATE=$(mktemp "${SYSCTL_FILE}.vps-tools.XXXXXX") || {
+        error "无法创建 sysctl 候选文件"
+        return 1
+    }
+    if [ "$EXISTED" = yes ]; then
+        CONFIG_INPUT="$SYSCTL_FILE"
+        BACKUP=$(mktemp "${SYSCTL_FILE}.vps-tools-backup.XXXXXX") || {
+            rm -f "$CANDIDATE"
+            error "无法创建 sysctl 备份"
+            return 1
+        }
+        if ! cp -p -- "$SYSCTL_FILE" "$BACKUP" \
+            || ! cp -p -- "$SYSCTL_FILE" "$CANDIDATE"; then
+            rm -f "$CANDIDATE" "$BACKUP"
+            error "无法备份 sysctl 配置"
+            return 1
+        fi
+    else
+        chmod 644 "$CANDIDATE" 2>/dev/null || true
+    fi
+
+    if ! awk -v value="$VAL" '
+        /^[[:space:]]*vm[.]swappiness[[:space:]]*=/ {
+            if (!written) print "vm.swappiness = " value
+            written=1
+            next
+        }
+        { print }
+        END {
+            if (!written) print "vm.swappiness = " value
+        }
+    ' "$CONFIG_INPUT" > "$CANDIDATE"; then
+        rm -f "$CANDIDATE" "$BACKUP"
+        error "无法生成 sysctl 候选配置"
+        return 1
+    fi
+
+    if ! swap_swappiness_runtime_write "$PROC_FILE" "$VAL"; then
+        rm -f -- "$CANDIDATE"
+        FAILURE_RC=1
+        swap_swappiness_handle_failure "无法修改当前 swappiness" \
+            "$PROC_FILE" "$OLD_RUNTIME" "$SYSCTL_FILE" "$BACKUP" "$EXISTED" \
+            || FAILURE_RC=$?
+        return "$FAILURE_RC"
+    fi
+    if ! mv -f -- "$CANDIDATE" "$SYSCTL_FILE"; then
+        rm -f -- "$CANDIDATE" 2>/dev/null || true
+        FAILURE_RC=1
+        swap_swappiness_handle_failure "无法写入 sysctl 配置" \
+            "$PROC_FILE" "$OLD_RUNTIME" "$SYSCTL_FILE" "$BACKUP" "$EXISTED" \
+            || FAILURE_RC=$?
+        return "$FAILURE_RC"
+    fi
+    ACTUAL=$(cat "$PROC_FILE" 2>/dev/null)
+    ACTUAL=${ACTUAL//[[:space:]]/}
+    if [ "$ACTUAL" != "$VAL" ]; then
+        FAILURE_RC=1
+        swap_swappiness_handle_failure \
+            "swappiness 写后验证失败（期望 $VAL，实际 ${ACTUAL:-未知}）" \
+            "$PROC_FILE" "$OLD_RUNTIME" "$SYSCTL_FILE" "$BACKUP" "$EXISTED" \
+            || FAILURE_RC=$?
+        return "$FAILURE_RC"
+    fi
+    if [ -n "$BACKUP" ] && ! rm -f -- "$BACKUP"; then
+        warn "swappiness 已生效，但临时备份清理失败：$BACKUP"
+    fi
+}
+
 swap_set_swappiness() {
     print_header "设置 Swappiness"
-    local CUR; CUR=$(cat /proc/sys/vm/swappiness 2>/dev/null || echo 60)
+    local PROC_FILE="${SWAPPINESS_PROC_FILE:-/proc/sys/vm/swappiness}"
+    local CUR; CUR=$(cat "$PROC_FILE" 2>/dev/null || echo 60)
 
     echo -e "  当前 swappiness：${BOLD}${CUR}${NC}"
     echo ""
@@ -236,17 +389,9 @@ swap_set_swappiness() {
         *) warn "无效选项"; return ;;
     esac
 
-    # 立即生效
-    echo "$VAL" > /proc/sys/vm/swappiness 2>/dev/null || { error "无法修改当前 swappiness"; return 1; }
-
-    # 持久化到 sysctl.conf
-    if grep -q "vm.swappiness" /etc/sysctl.conf 2>/dev/null; then
-        sed -i "s/^vm.swappiness.*/vm.swappiness = ${VAL}/" /etc/sysctl.conf || return 1
-    else
-        echo "vm.swappiness = ${VAL}" >> /etc/sysctl.conf || return 1
-    fi
-
-    sysctl -p &>/dev/null || { error "sysctl 配置加载失败"; return 1; }
+    local APPLY_RC=0
+    swap_apply_swappiness "$VAL" || APPLY_RC=$?
+    [ "$APPLY_RC" -eq 0 ] || return "$APPLY_RC"
     info "swappiness 已设置为 ${VAL}，重启后持续生效 ✓"
 }
 

@@ -237,6 +237,18 @@ if find "$VPS_BACKUP_DIR" -type f -name '*.tar.gz' 2>/dev/null | grep -q .; then
     echo "Partial backup archive was left behind" >&2
     exit 1
 fi
+(
+    VPS_DATA_DIR="$TMP/unrestorable-backup"
+    VPS_BACKUP_DIR="$VPS_DATA_DIR/backups"
+    mkdir -p "$TMP/unrestorable-source"
+    printf 'config\n' > "$TMP/unrestorable-source/value"
+    config_backup_paths() { printf '%s/unrestorable-source/value\n' "${TMP#/}"; }
+    config_archive_validate() { return 1; }
+    ! config_backup_create invalid_member true >/dev/null 2>&1 \
+        || { echo "Backup creation accepted an archive it cannot restore" >&2; exit 1; }
+    ! find "$VPS_BACKUP_DIR" -type f -name '*.tar.gz' 2>/dev/null | grep -q . \
+        || { echo "Unrestorable backup archive was retained" >&2; exit 1; }
+)
 
 # Retention must remove old archives after the configured limit.
 mkdir -p "$TMP/source"
@@ -274,6 +286,113 @@ config_archive_validate "$TMP/valid-config.tar.gz" >/dev/null \
     config_archive_extract "$TMP/valid-config.tar.gz" >/dev/null
     grep -qx valid "$CONFIG_RESTORE_ROOT/root/.vps-monitor" \
         || { echo "Allowlisted config archive was not restored" >&2; exit 1; }
+)
+
+# Present roots are replaced exactly, while omitted roots from a partial import
+# must remain untouched.
+(
+    EXACT_SOURCE="$TMP/exact-archive-source"
+    export CONFIG_RESTORE_ROOT="$TMP/exact-restored-root"
+    mkdir -p "$EXACT_SOURCE/etc/vps-tools-test-dir"
+    printf 'snapshot\n' > "$EXACT_SOURCE/etc/vps-tools-test-dir/kept.conf"
+    tar -czf "$TMP/exact-config.tar.gz" -C "$EXACT_SOURCE" etc/vps-tools-test-dir
+    mkdir -p \
+        "$CONFIG_RESTORE_ROOT/etc/vps-tools-test-dir" \
+        "$CONFIG_RESTORE_ROOT/etc/vps-tools-test-absent"
+    printf 'stale\n' > "$CONFIG_RESTORE_ROOT/etc/vps-tools-test-dir/stale.conf"
+    printf 'new\n' > "$CONFIG_RESTORE_ROOT/etc/vps-tools-test-absent/new.conf"
+    config_backup_allowed_roots() {
+        printf '%s\n' etc/vps-tools-test-dir etc/vps-tools-test-absent
+    }
+    config_archive_extract "$TMP/exact-config.tar.gz" >/dev/null
+    grep -qx snapshot "$CONFIG_RESTORE_ROOT/etc/vps-tools-test-dir/kept.conf" \
+        || { echo "Exact restore lost the snapshotted file" >&2; exit 1; }
+    [ ! -e "$CONFIG_RESTORE_ROOT/etc/vps-tools-test-dir/stale.conf" ] \
+        || { echo "Exact restore retained a file created after the snapshot" >&2; exit 1; }
+    grep -qx new "$CONFIG_RESTORE_ROOT/etc/vps-tools-test-absent/new.conf" \
+        || { echo "Partial restore deleted a root omitted from the archive" >&2; exit 1; }
+)
+
+# Config archives must reject empty, special, wrongly typed and symlink-pivot members.
+tar -czf "$TMP/empty-config.tar.gz" -T /dev/null
+! config_archive_validate "$TMP/empty-config.tar.gz" >/dev/null 2>&1 \
+    || { echo "Config import accepted an empty archive" >&2; exit 1; }
+mkdir -p "$TMP/wrong-type/root/.vps-monitor"
+tar -czf "$TMP/wrong-type-config.tar.gz" -C "$TMP/wrong-type" root/.vps-monitor
+! config_archive_validate "$TMP/wrong-type-config.tar.gz" >/dev/null 2>&1 \
+    || { echo "Config import accepted a directory where a file root was expected" >&2; exit 1; }
+mkdir -p "$TMP/wrong-directory-type/etc"
+printf 'not a directory\n' > "$TMP/wrong-directory-type/etc/caddy"
+tar -czf "$TMP/wrong-directory-type-config.tar.gz" \
+    -C "$TMP/wrong-directory-type" etc/caddy
+! config_archive_validate "$TMP/wrong-directory-type-config.tar.gz" >/dev/null 2>&1 \
+    || { echo "Config import accepted a file where a directory root was expected" >&2; exit 1; }
+if command -v mkfifo >/dev/null 2>&1; then
+    mkdir -p "$TMP/special/root"
+    mkfifo "$TMP/special/root/.vps-monitor"
+    tar -czf "$TMP/special-config.tar.gz" -C "$TMP/special" root/.vps-monitor
+    ! config_archive_validate "$TMP/special-config.tar.gz" >/dev/null 2>&1 \
+        || { echo "Config import accepted a FIFO member" >&2; exit 1; }
+fi
+if tar --help 2>&1 | grep -q -- '--transform'; then
+    mkdir -p "$TMP/pivot/etc/caddy" "$TMP/pivot-payload"
+    ln -s safe-target "$TMP/pivot/etc/caddy/pivot"
+    printf 'escape\n' > "$TMP/pivot-payload/child"
+    tar -czf "$TMP/pivot-config.tar.gz" \
+        -C "$TMP/pivot" etc/caddy/pivot \
+        -C "$TMP/pivot-payload" \
+        --transform='s|^child$|etc/caddy/pivot/child|' child
+    ! config_archive_validate "$TMP/pivot-config.tar.gz" >/dev/null 2>&1 \
+        || { echo "Config import accepted a symlink with descendant members" >&2; exit 1; }
+    tar -czf "$TMP/pivot-dot-config.tar.gz" \
+        -C "$TMP/pivot" etc/caddy/pivot \
+        -C "$TMP/pivot-payload" \
+        --transform='s|^child$|etc/caddy/./pivot/child|' child
+    ! config_archive_validate "$TMP/pivot-dot-config.tar.gz" >/dev/null 2>&1 \
+        || { echo "Config import accepted an internal dot-component pivot" >&2; exit 1; }
+fi
+mkdir -p "$TMP/config-hardlink/etc/caddy"
+printf 'linked\n' > "$TMP/config-hardlink/etc/caddy/one"
+if ln "$TMP/config-hardlink/etc/caddy/one" "$TMP/config-hardlink/etc/caddy/two" 2>/dev/null; then
+    tar -czf "$TMP/config-hardlink.tar.gz" -C "$TMP/config-hardlink" \
+        etc/caddy/one etc/caddy/two
+    ! config_archive_validate "$TMP/config-hardlink.tar.gz" >/dev/null 2>&1 \
+        || { echo "Config import accepted a hardlink archive member" >&2; exit 1; }
+fi
+mkdir -p "$TMP/resolv-link/etc"
+if ln -s ../run/systemd/resolve/stub-resolv.conf "$TMP/resolv-link/etc/resolv.conf" 2>/dev/null \
+    && [ -L "$TMP/resolv-link/etc/resolv.conf" ]; then
+    tar -czf "$TMP/resolv-link-config.tar.gz" -C "$TMP/resolv-link" etc/resolv.conf
+    config_archive_validate "$TMP/resolv-link-config.tar.gz" >/dev/null \
+        || { echo "Config import rejected a standard relative resolv.conf symlink" >&2; exit 1; }
+fi
+
+# Safety snapshots must retain the runtime sysctl values needed after file restore.
+(
+    SYSCTL_STATE="$TMP/safety-runtime.sysctl"
+    sysctl() {
+        [ "$1" = -n ] || return 1
+        case "$2" in
+            net.ipv6.conf.all.disable_ipv6) printf '0\n' ;;
+            net.ipv6.conf.default.disable_ipv6) printf '1\n' ;;
+            net.ipv6.conf.lo.disable_ipv6) printf '0\n' ;;
+            net.ipv4.conf.all.promote_secondaries) printf '1\n' ;;
+            *) return 1 ;;
+        esac
+    }
+    safety_snapshot_sysctl_state "$SYSCTL_STATE"
+    grep -qx 'net.ipv6.conf.all.disable_ipv6=0' "$SYSCTL_STATE" \
+        || { echo "Safety snapshot lost the IPv6 runtime state" >&2; exit 1; }
+    grep -qx 'net.ipv4.conf.all.promote_secondaries=1' "$SYSCTL_STATE" \
+        || { echo "Safety snapshot lost the IPv4 runtime state" >&2; exit 1; }
+)
+(
+    IPTABLES_STATE="$TMP/safety-runtime.iptables"
+    iptables-save() { return 1; }
+    safety_snapshot_iptables_state "$IPTABLES_STATE" \
+        || { echo "Unreadable iptables state disabled all safety protection" >&2; exit 1; }
+    [ ! -s "$IPTABLES_STATE" ] \
+        || { echo "Failed iptables snapshot retained partial runtime state" >&2; exit 1; }
 )
 
 # Firewall installation must never enable UFW when the SSH allow rule failed.
@@ -370,8 +489,241 @@ EOF
     ! safety_arm concurrent_change >/dev/null 2>&1 \
         || { echo "Safety rollback ignored a concurrent setup operation" >&2; exit 1; }
 )
+
+# A generated safety rollback must be syntactically valid, use an independent
+# snapshot that pruning cannot remove, and clean all artifacts on cancellation.
+(
+    VPS_DATA_DIR="$TMP/generated-safety"
+    VPS_BACKUP_DIR="$VPS_DATA_DIR/backups"
+    SAFETY_STATE_FILE="$VPS_DATA_DIR/rollback.active"
+    SAFETY_ROLLBACK_DELAY=600
+    SAFETY_RESTORE_ROOT="$TMP/generated-safety-root"
+    SAFETY_SNAPSHOT_ROOT="$SAFETY_RESTORE_ROOT"
+    mkdir -p "$SAFETY_RESTORE_ROOT/etc/generated-safety"
+    printf 'snapshot\n' > "$SAFETY_RESTORE_ROOT/etc/generated-safety/value"
+    config_backup_allowed_roots() { printf '%s\n' etc/generated-safety; }
+    config_backup_root_is_directory() { [ "$1" = etc/generated-safety ]; }
+    safety_snapshot_iptables_state() { : > "$1"; }
+    sysctl() {
+        [ "$1" = -n ] || return 1
+        printf '0\n'
+    }
+    svc_is_active() { return 1; }
+    safety_arm generated_test >/dev/null \
+        || { echo "Could not generate a safety rollback task" >&2; exit 1; }
+    IFS='|' read -r GENERATED_PID GENERATED_SCRIPT GENERATED_ROOTS GENERATED_SYSCTL \
+        GENERATED_SNAPSHOT GENERATED_STATUS \
+        < "$SAFETY_STATE_FILE"
+    GENERATED_IPTABLES="${GENERATED_SCRIPT%.sh}.iptables"
+    [[ "$GENERATED_PID" =~ ^[0-9]+$ ]] \
+        && [ -f "$GENERATED_SCRIPT" ] \
+        && [ -f "$GENERATED_ROOTS" ] \
+        && [ -f "$GENERATED_SYSCTL" ] \
+        && [ -f "$GENERATED_IPTABLES" ] \
+        && [ -f "$GENERATED_SNAPSHOT" ] \
+        && [ "$GENERATED_STATUS" = armed ] \
+        || { echo "Safety rollback state did not retain all artifacts" >&2; exit 1; }
+    bash -n "$GENERATED_SCRIPT" \
+        || { echo "Generated safety rollback script has invalid syntax" >&2; exit 1; }
+    grep -Fq 'sysctl -w "$KEY=$VALUE"' "$GENERATED_SCRIPT" \
+        || { echo "Generated safety rollback omitted runtime sysctl restore" >&2; exit 1; }
+    mkdir -p "$VPS_BACKUP_DIR"
+    printf 'ordinary\n' > "$VPS_BACKUP_DIR/20000101_ordinary.tar.gz"
+    VPS_BACKUP_KEEP=1
+    config_backup_prune
+    [ -f "$GENERATED_SNAPSHOT" ] \
+        || { echo "Ordinary backup pruning deleted the active safety snapshot" >&2; exit 1; }
+    cancel_safety_timer
+    [ ! -e "$SAFETY_STATE_FILE" ] \
+        && [ ! -e "$GENERATED_SCRIPT" ] \
+        && [ ! -e "$GENERATED_ROOTS" ] \
+        && [ ! -e "$GENERATED_SYSCTL" ] \
+        && [ ! -e "$GENERATED_IPTABLES" ] \
+        && [ ! -e "$GENERATED_SNAPSHOT" ] \
+        || { echo "Cancelling safety rollback left private artifacts behind" >&2; exit 1; }
+)
+
+# A failed rollback must have an explicit recovery-center escape hatch that
+# archives a valid snapshot before allowing future safety tasks.
+(
+    VPS_DATA_DIR="$TMP/failed-safety"
+    VPS_BACKUP_DIR="$VPS_DATA_DIR/backups"
+    SAFETY_STATE_FILE="$VPS_DATA_DIR/rollback.active"
+    FAILED_SOURCE="$TMP/failed-safety-source"
+    FAILED_SCRIPT="$VPS_DATA_DIR/rollback_failed.sh"
+    FAILED_ROOTS="$VPS_DATA_DIR/rollback_failed.roots"
+    FAILED_SYSCTL="$VPS_DATA_DIR/rollback_failed.sysctl"
+    FAILED_IPTABLES="$VPS_DATA_DIR/rollback_failed.iptables"
+    FAILED_SNAPSHOT="$VPS_DATA_DIR/rollback_failed.tar.gz"
+    mkdir -p "$VPS_DATA_DIR" "$FAILED_SOURCE/root"
+    printf 'recoverable\n' > "$FAILED_SOURCE/root/.vps-monitor"
+    tar -czf "$FAILED_SNAPSHOT" -C "$FAILED_SOURCE" root/.vps-monitor
+    : > "$FAILED_SCRIPT"
+    : > "$FAILED_ROOTS"
+    : > "$FAILED_SYSCTL"
+    : > "$FAILED_IPTABLES"
+    printf '|%s|%s|%s|%s|failed\n' \
+        "$FAILED_SCRIPT" "$FAILED_ROOTS" "$FAILED_SYSCTL" "$FAILED_SNAPSHOT" \
+        > "$SAFETY_STATE_FILE"
+    safety_failed_task_clear <<< "CLEAR" >/dev/null \
+        || { echo "Could not clear an explicitly confirmed failed safety task" >&2; exit 1; }
+    [ ! -e "$SAFETY_STATE_FILE" ] \
+        && [ ! -e "$FAILED_SCRIPT" ] \
+        && [ ! -e "$FAILED_ROOTS" ] \
+        && [ ! -e "$FAILED_SYSCTL" ] \
+        && [ ! -e "$FAILED_IPTABLES" ] \
+        && [ ! -e "$FAILED_SNAPSHOT" ] \
+        || { echo "Failed safety cleanup left managed blocking artifacts" >&2; exit 1; }
+    FAILED_ARCHIVE=$(find "$VPS_BACKUP_DIR" -maxdepth 1 -type f \
+        -name '*_failed-safety_*.tar.gz' | head -1)
+    [ -n "$FAILED_ARCHIVE" ] && config_archive_validate "$FAILED_ARCHIVE" >/dev/null \
+        || { echo "Failed safety cleanup did not retain a valid recovery archive" >&2; exit 1; }
+)
+
+# The generated rollback must execute an exact restore and remove files created
+# after the snapshot without touching the real system root.
+(
+    VPS_DATA_DIR="$TMP/executed-safety"
+    VPS_BACKUP_DIR="$VPS_DATA_DIR/backups"
+    SAFETY_STATE_FILE="$VPS_DATA_DIR/rollback.active"
+    SAFETY_ROLLBACK_DELAY=1
+    SAFETY_RESTORE_ROOT="$TMP/executed-safety-root"
+    SAFETY_SNAPSHOT_ROOT="$SAFETY_RESTORE_ROOT"
+    mkdir -p "$SAFETY_RESTORE_ROOT/etc/executed-safety"
+    printf 'before\n' > "$SAFETY_RESTORE_ROOT/etc/executed-safety/value"
+    config_backup_allowed_roots() { printf '%s\n' etc/executed-safety; }
+    config_backup_root_is_directory() { [ "$1" = etc/executed-safety ]; }
+    safety_snapshot_sysctl_state() { : > "$1"; }
+    safety_snapshot_iptables_state() { : > "$1"; }
+    sysctl() {
+        [ "$1" = -n ] || return 1
+        printf '0\n'
+    }
+    svc_is_active() { return 1; }
+    safety_arm executed_test >/dev/null \
+        || { echo "Could not arm executable safety rollback" >&2; exit 1; }
+    printf 'after\n' > "$SAFETY_RESTORE_ROOT/etc/executed-safety/value"
+    printf 'new\n' > "$SAFETY_RESTORE_ROOT/etc/executed-safety/new"
+    # A dead owner must not make the at-deadline rollback abandon recovery.
+    mkdir "${SAFETY_STATE_FILE}.lock"
+    printf 'not-a-live-pid\n' > "${SAFETY_STATE_FILE}.lock/pid"
+    for _ in 1 2 3 4 5 6 7 8 9 10; do
+        [ ! -e "$SAFETY_STATE_FILE" ] && break
+        sleep 1
+    done
+    grep -qx before "$SAFETY_RESTORE_ROOT/etc/executed-safety/value" \
+        || { echo "Executed safety rollback did not restore the snapshotted value" >&2; exit 1; }
+    [ ! -e "$SAFETY_RESTORE_ROOT/etc/executed-safety/new" ] \
+        || { echo "Executed safety rollback retained a post-snapshot file" >&2; exit 1; }
+    [ ! -e "$SAFETY_STATE_FILE" ] \
+        || { echo "Successful safety rollback left an active state file" >&2; exit 1; }
+    [ ! -e "${SAFETY_STATE_FILE}.lock" ] \
+        || { echo "Successful safety rollback left a stale lock" >&2; exit 1; }
+)
+
 grep -Fq 'restart fail2ban' "$ROOT/src/modules/toolbox.sh" \
     || { echo "Safety rollback does not reload restored Fail2ban configuration" >&2; exit 1; }
+grep -Fq 'sysctl -w "\$KEY=\$VALUE"' "$ROOT/src/modules/toolbox.sh" \
+    || { echo "Safety rollback does not restore snapshotted sysctl values" >&2; exit 1; }
+grep -Fq 'STAGE=\$(mktemp -d' "$ROOT/src/modules/toolbox.sh" \
+    || { echo "Safety rollback does not stage its snapshot before exact restore" >&2; exit 1; }
+
+# Monitor cron must install a real runner and propagate preparation failures.
+(
+    LOCAL_SCRIPT="$TMP/monitor runner/vps-tools"
+    SVC_PATH=""
+    CRON_CAPTURE="$TMP/monitor-cron"
+    self_ensure_local_runner() {
+        mkdir -p "$(dirname "$LOCAL_SCRIPT")"
+        printf '#!/bin/bash\n' > "$LOCAL_SCRIPT"
+        chmod 755 "$LOCAL_SCRIPT"
+    }
+    crontab() {
+        case "${1:-}" in
+            -l)
+                if [ -f "$CRON_CAPTURE" ]; then
+                    cat "$CRON_CAPTURE"
+                else
+                    echo "no crontab for test" >&2
+                    return 1
+                fi
+                ;;
+            -r) rm -f "$CRON_CAPTURE" ;;
+            -) cat > "$CRON_CAPTURE" ;;
+            *) cp "$1" "$CRON_CAPTURE" ;;
+        esac
+    }
+    ddns_start_cron_service() { return 0; }
+    monitor_alert_install_cron >/dev/null \
+        || { echo "Monitor cron rejected a prepared local runner" >&2; exit 1; }
+    grep -Fq -- '--monitor-alert' "$CRON_CAPTURE" \
+        || { echo "Monitor cron omitted its background entrypoint" >&2; exit 1; }
+    grep -Fq 'monitor\ runner/vps-tools' "$CRON_CAPTURE" \
+        || { echo "Monitor cron did not shell-escape its runner path" >&2; exit 1; }
+)
+(
+    LOCAL_SCRIPT="$TMP/monitor-service-failure/vps-tools"
+    SVC_PATH=""
+    CRON_CAPTURE="$TMP/monitor-service-failure.cron"
+    OLD_CRON="$TMP/monitor-service-failure.old"
+    printf '5 * * * * old-job # keep-me\n*/15 * * * * old-monitor # vps-tools-monitor-alert\n' > "$OLD_CRON"
+    cp "$OLD_CRON" "$CRON_CAPTURE"
+    self_ensure_local_runner() {
+        mkdir -p "$(dirname "$LOCAL_SCRIPT")"
+        printf '#!/bin/bash\n' > "$LOCAL_SCRIPT"
+        chmod 755 "$LOCAL_SCRIPT"
+    }
+    crontab() {
+        case "${1:-}" in
+            -l) cat "$CRON_CAPTURE" ;;
+            -r) rm -f "$CRON_CAPTURE" ;;
+            -) cat > "$CRON_CAPTURE" ;;
+            *) cp "$1" "$CRON_CAPTURE" ;;
+        esac
+    }
+    ddns_start_cron_service() { return 1; }
+    ! monitor_alert_install_cron >/dev/null 2>&1 \
+        || { echo "Monitor cron hid cron service startup failure" >&2; exit 1; }
+    cmp -s "$OLD_CRON" "$CRON_CAPTURE" \
+        || { echo "Monitor cron service failure did not restore the prior crontab" >&2; exit 1; }
+)
+(
+    LOCAL_SCRIPT="$TMP/monitor-read-failure/vps-tools"
+    SVC_PATH=""
+    CRON_CAPTURE="$TMP/monitor-read-failure.cron"
+    CRON_INSTALL_CALLED="$TMP/monitor-read-failure.install"
+    mkdir -p "$(dirname "$LOCAL_SCRIPT")"
+    printf '#!/bin/bash\n' > "$LOCAL_SCRIPT"
+    chmod 755 "$LOCAL_SCRIPT"
+    printf '15 3 * * * /usr/local/bin/keep-existing\n' > "$CRON_CAPTURE"
+    self_ensure_local_runner() { return 0; }
+    crontab() {
+        case "${1:-}" in
+            -l)
+                echo "permission denied while reading crontab" >&2
+                return 1
+                ;;
+            *)
+                : > "$CRON_INSTALL_CALLED"
+                return 0
+                ;;
+        esac
+    }
+    ! monitor_alert_install_cron >/dev/null 2>&1 \
+        || { echo "Monitor cron overwrote state after a crontab read error" >&2; exit 1; }
+    grep -qx '15 3 \* \* \* /usr/local/bin/keep-existing' "$CRON_CAPTURE" \
+        || { echo "Crontab read failure changed the prior table" >&2; exit 1; }
+    [ ! -e "$CRON_INSTALL_CALLED" ] \
+        || { echo "Crontab read failure still attempted an install" >&2; exit 1; }
+)
+(
+    LOCAL_SCRIPT="$TMP/missing-monitor-runner"
+    SVC_PATH=""
+    self_ensure_local_runner() { return 1; }
+    crontab() { echo "crontab must not run when runner preparation fails" >&2; return 1; }
+    ! monitor_alert_install_cron >/dev/null 2>&1 \
+        || { echo "Monitor cron hid local runner preparation failure" >&2; exit 1; }
+)
 
 # DDNS cron write errors must propagate.
 (
@@ -589,10 +941,7 @@ grep -Fq "$FORK_REPO" "$ROOT/README.md" "$ROOT/build.sh" "$ROOT/src/modules/self
 
 # Offline bundle creation must package a local script and offline install must place it at the target path.
 LOCAL_SCRIPT="$TMP/local-script"
-cat > "$LOCAL_SCRIPT" <<'EOF'
-#!/bin/bash
-echo offline
-EOF
+cp "$ROOT/SSH-Hardening.sh" "$LOCAL_SCRIPT"
 chmod 700 "$LOCAL_SCRIPT"
 if ! self_offline_bundle_create >/dev/null; then
     echo "Offline bundle creation failed" >&2
@@ -600,8 +949,8 @@ if ! self_offline_bundle_create >/dev/null; then
 fi
 OFFLINE_BUNDLE=$(find "$VPS_DATA_DIR/offline" -type f -name '*.tar.gz' | head -1)
 [ -f "$OFFLINE_BUNDLE" ] || { echo "Offline bundle was not created" >&2; exit 1; }
-LOCAL_SCRIPT="$TMP/installed-script.sh"
 LOCAL_BIN_DIR="$TMP/bin"
+LOCAL_SCRIPT="$LOCAL_BIN_DIR/vps-tools"
 self_offline_bundle_install "$OFFLINE_BUNDLE" >/dev/null || { echo "Offline install failed" >&2; exit 1; }
 [ -f "$LOCAL_SCRIPT" ] || { echo "Offline install did not place script" >&2; exit 1; }
 [ "$(readlink "$LOCAL_BIN_DIR/v")" = "$LOCAL_SCRIPT" ] || { echo "Offline install did not create an isolated shortcut" >&2; exit 1; }
@@ -625,7 +974,7 @@ self_install_shortcut V >/dev/null
 [ "$(readlink "$LOCAL_BIN_DIR/V")" = "$FOREIGN_SCRIPT" ] || { echo "Installer overwrote a foreign shortcut" >&2; exit 1; }
 
 # The real updater must reject a mismatched checksum without replacing the local script.
-LOCAL_SCRIPT="$TMP/local-script"
+LOCAL_SCRIPT="$LOCAL_BIN_DIR/vps-tools"
 export SCRIPT_URL="mock://script"
 CHECKSUM_URL="mock://checksum"
 printf 'original\n' > "$LOCAL_SCRIPT"

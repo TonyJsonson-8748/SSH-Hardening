@@ -61,15 +61,45 @@ user_account_record() {
 }
 
 user_has_active_session() {
-    local USERNAME="$1"
-    command -v who >/dev/null 2>&1 || return 1
-    who 2>/dev/null | awk -v username="$USERNAME" '$1 == username {found=1} END {exit !found}'
+    local USERNAME="$1" WHO_OUTPUT
+    command -v who >/dev/null 2>&1 || return 2
+    WHO_OUTPUT=$(who 2>/dev/null) || return 2
+    printf '%s\n' "$WHO_OUTPUT" \
+        | awk -v username="$USERNAME" '$1 == username {found=1} END {exit !found}'
 }
 
 user_has_processes() {
-    local USERNAME="$1"
-    command -v pgrep >/dev/null 2>&1 || return 1
+    local USERNAME="$1" RC
+    command -v pgrep >/dev/null 2>&1 || return 2
     pgrep -u "$USERNAME" >/dev/null 2>&1
+    RC=$?
+    [ "$RC" -le 1 ] || return 2
+    return "$RC"
+}
+
+user_runtime_quiescent() {
+    local USERNAME="$1" PHASE="${2:-当前}" RC
+    if user_has_active_session "$USERNAME"; then
+        error "${PHASE}用户 $USERNAME 仍有登录会话"
+        return 1
+    else
+        RC=$?
+        if [ "$RC" -ne 1 ]; then
+            error "无法可靠检查${PHASE}用户 $USERNAME 的登录会话，拒绝删除"
+            return 1
+        fi
+    fi
+    if user_has_processes "$USERNAME"; then
+        error "${PHASE}用户 $USERNAME 仍有运行中的进程"
+        return 1
+    else
+        RC=$?
+        if [ "$RC" -ne 1 ]; then
+            error "无法可靠检查${PHASE}用户 $USERNAME 的运行进程，拒绝删除"
+            return 1
+        fi
+    fi
+    return 0
 }
 
 user_is_protected_account() {
@@ -99,16 +129,75 @@ user_password_target_allowed() {
     [ "$USER_ID" -ge "$UID_MIN" ] 2>/dev/null
 }
 
-user_home_safe_to_remove() {
+user_home_canonical_path() {
+    local HOME_DIR="$1" RESOLVED
+    case "$HOME_DIR" in
+        ""|*$'\n'*|*$'\r'*|*$'\t'*) return 1 ;;
+        /*) ;;
+        *) return 1 ;;
+    esac
+    [ -d "$HOME_DIR" ] || return 1
+    RESOLVED=$(CDPATH= cd -P -- "$HOME_DIR" 2>/dev/null && pwd -P) || return 1
+    case "$RESOLVED" in /*) ;; *) return 1 ;; esac
+    # POSIX permits an implementation to preserve exactly two leading slashes.
+    # Linux treats them as "/", so normalize them before safety comparisons.
+    while [ "${RESOLVED#//}" != "$RESOLVED" ]; do
+        RESOLVED="/${RESOLVED#//}"
+    done
+    while [ "$RESOLVED" != "/" ] && [ "${RESOLVED%/}" != "$RESOLVED" ]; do
+        RESOLVED=${RESOLVED%/}
+    done
+    printf '%s\n' "$RESOLVED"
+}
+
+user_home_normalize_text() {
+    local HOME_DIR="$1" REL COMPONENT NORMALIZED=""
+    local COMPONENTS=()
+    case "$HOME_DIR" in
+        ""|*$'\n'*|*$'\r'*|*$'\t'*) return 1 ;;
+        /*) ;;
+        *) return 1 ;;
+    esac
+    REL=${HOME_DIR#/}
+    IFS='/' read -r -a COMPONENTS <<< "$REL"
+    for COMPONENT in "${COMPONENTS[@]}"; do
+        [ -n "$COMPONENT" ] || continue
+        case "$COMPONENT" in .|..) return 1 ;; esac
+        NORMALIZED="${NORMALIZED}/${COMPONENT}"
+    done
+    printf '%s\n' "${NORMALIZED:-/}"
+}
+
+user_home_resolve_path() {
+    local HOME_DIR="$1" REL COMPONENT CURRENT=""
+    local COMPONENTS=()
+    case "$HOME_DIR" in
+        ""|*$'\n'*|*$'\r'*|*$'\t'*) return 1 ;;
+        /*) ;;
+        *) return 1 ;;
+    esac
+    [ -d "$HOME_DIR" ] || return 1
+
+    # Reject every symlink component. Resolving only the final component is not
+    # enough: /home/user may traverse a user-controlled parent symlink.
+    REL=${HOME_DIR#/}
+    IFS='/' read -r -a COMPONENTS <<< "$REL"
+    for COMPONENT in "${COMPONENTS[@]}"; do
+        [ -n "$COMPONENT" ] || continue
+        case "$COMPONENT" in .|..) return 1 ;; esac
+        CURRENT="${CURRENT}/${COMPONENT}"
+        [ ! -L "$CURRENT" ] || return 1
+    done
+    user_home_canonical_path "$HOME_DIR"
+}
+
+user_home_path_protected() {
     local HOME_DIR="$1"
     case "$HOME_DIR" in
-        ""|/|/root|/home|/usr|/var|/etc|/opt|/srv|/tmp|/bin|/sbin|/lib|/lib64|/boot|/dev|/proc|/sys|/run|/mnt|/media)
-            return 1
-            ;;
-        /*/../*|*/..|/*/./*|*/.)
-            return 1
-            ;;
-        /*)
+        /|/root|/root/*|/home|/usr|/usr/*|/var|/var/*|/etc|/etc/*|\
+        /bin|/bin/*|/sbin|/sbin/*|/lib|/lib/*|/lib64|/lib64/*|\
+        /boot|/boot/*|/dev|/dev/*|/proc|/proc/*|/sys|/sys/*|/run|/run/*|\
+        /opt|/srv|/tmp|/mnt|/media)
             return 0
             ;;
         *)
@@ -117,14 +206,296 @@ user_home_safe_to_remove() {
     esac
 }
 
-user_home_is_shared() {
-    local USERNAME="$1" HOME_DIR="$2"
-    if [ "$USER_PASSWD_FILE" = "/etc/passwd" ] && command -v getent >/dev/null 2>&1; then
-        { getent passwd 2>/dev/null || cat "$USER_PASSWD_FILE" 2>/dev/null; }
+user_home_mounts_safe() {
+    local HOME_DIR="$1" RESOLVED LIST MOUNT_DEV MOUNT_ROOT MOUNT_TARGET
+    local HOME_MOUNT_DEV="" HOME_MOUNT_ROOT="" HOME_MOUNT_TARGET=""
+    local HOME_FS_PATH="" RELATIVE="" BEST_LEN=-1 TARGET_LEN RAW_LIST=""
+    RESOLVED=$(user_home_resolve_path "$HOME_DIR") || return 1
+    LIST=$(mktemp) || return 1
+    if [ -n "${USER_MOUNTINFO_FILE:-}" ]; then
+        [ -r "$USER_MOUNTINFO_FILE" ] \
+            && awk 'NF >= 5 {print $3 "\t" $4 "\t" $5}' \
+                "$USER_MOUNTINFO_FILE" > "$LIST" 2>/dev/null || {
+            rm -f "$LIST"
+            return 1
+        }
+    elif [ -r /proc/self/mountinfo ]; then
+        if ! awk 'NF >= 5 {print $3 "\t" $4 "\t" $5}' \
+            /proc/self/mountinfo > "$LIST" 2>/dev/null; then
+            rm -f "$LIST"
+            return 1
+        fi
+    elif command -v findmnt >/dev/null 2>&1; then
+        RAW_LIST=$(mktemp) || {
+            rm -f "$LIST"
+            return 1
+        }
+        if ! LC_ALL=C findmnt -rn -o MAJ:MIN,FSROOT,TARGET \
+            > "$RAW_LIST" 2>/dev/null \
+            || ! awk 'NF >= 3 {print $1 "\t" $2 "\t" $3}' \
+                "$RAW_LIST" > "$LIST" 2>/dev/null; then
+            rm -f "$RAW_LIST"
+            rm -f "$LIST"
+            return 1
+        fi
+        rm -f "$RAW_LIST"
     else
-        cat "$USER_PASSWD_FILE" 2>/dev/null
-    fi | awk -F: -v username="$USERNAME" -v home="$HOME_DIR" \
-        '$1 != username && $6 == home {found=1} END {exit !found}'
+        rm -f "$LIST"
+        [ "${VPS_TOOLS_TEST_MODE:-0}" = 1 ] && return 0
+        return 1
+    fi
+    [ -s "$LIST" ] || {
+        rm -f "$LIST"
+        return 1
+    }
+    while IFS=$'\t' read -r MOUNT_DEV MOUNT_ROOT MOUNT_TARGET; do
+        [ -n "$MOUNT_DEV" ] && [ -n "$MOUNT_ROOT" ] && [ -n "$MOUNT_TARGET" ] \
+            || continue
+        MOUNT_ROOT=$(printf '%b' "$MOUNT_ROOT") || {
+            rm -f "$LIST"
+            return 1
+        }
+        MOUNT_TARGET=$(printf '%b' "$MOUNT_TARGET") || {
+            rm -f "$LIST"
+            return 1
+        }
+        if [ "$MOUNT_TARGET" = / ]; then
+            case "$RESOLVED" in /*)
+                TARGET_LEN=1
+                if [ "$TARGET_LEN" -gt "$BEST_LEN" ]; then
+                    BEST_LEN=$TARGET_LEN
+                    HOME_MOUNT_DEV="$MOUNT_DEV"
+                    HOME_MOUNT_ROOT="$MOUNT_ROOT"
+                    HOME_MOUNT_TARGET="$MOUNT_TARGET"
+                fi
+                ;;
+            esac
+        else
+            case "$RESOLVED" in
+                "$MOUNT_TARGET"|"$MOUNT_TARGET"/*)
+                    TARGET_LEN=${#MOUNT_TARGET}
+                    if [ "$TARGET_LEN" -gt "$BEST_LEN" ]; then
+                        BEST_LEN=$TARGET_LEN
+                        HOME_MOUNT_DEV="$MOUNT_DEV"
+                        HOME_MOUNT_ROOT="$MOUNT_ROOT"
+                        HOME_MOUNT_TARGET="$MOUNT_TARGET"
+                    fi
+                    ;;
+            esac
+        fi
+        case "$MOUNT_TARGET" in
+            "$RESOLVED"|"$RESOLVED"/*)
+                rm -f "$LIST"
+                return 1
+                ;;
+        esac
+    done < "$LIST"
+    [ -n "$HOME_MOUNT_DEV" ] && [ -n "$HOME_MOUNT_TARGET" ] || {
+        rm -f "$LIST"
+        return 1
+    }
+    if [ "$HOME_MOUNT_TARGET" = "$RESOLVED" ]; then
+        HOME_FS_PATH="$HOME_MOUNT_ROOT"
+    else
+        RELATIVE=${RESOLVED#"$HOME_MOUNT_TARGET"}
+        HOME_FS_PATH="${HOME_MOUNT_ROOT%/}/${RELATIVE#/}"
+        [ -n "$HOME_FS_PATH" ] || HOME_FS_PATH=/
+    fi
+    while IFS=$'\t' read -r MOUNT_DEV MOUNT_ROOT MOUNT_TARGET; do
+        [ "$MOUNT_DEV" = "$HOME_MOUNT_DEV" ] || continue
+        MOUNT_ROOT=$(printf '%b' "$MOUNT_ROOT") || {
+            rm -f "$LIST"
+            return 1
+        }
+        MOUNT_TARGET=$(printf '%b' "$MOUNT_TARGET") || {
+            rm -f "$LIST"
+            return 1
+        }
+        if [ "$MOUNT_ROOT" = "$HOME_MOUNT_ROOT" ] \
+            && [ "$MOUNT_TARGET" = "$HOME_MOUNT_TARGET" ]; then
+            continue
+        fi
+        case "$MOUNT_TARGET" in "$RESOLVED"|"$RESOLVED"/*) continue ;; esac
+        if [ "$MOUNT_ROOT" = / ]; then
+            rm -f "$LIST"
+            return 1
+        fi
+        case "$MOUNT_ROOT" in
+            "$HOME_FS_PATH"|"$HOME_FS_PATH"/*)
+                rm -f "$LIST"
+                return 1
+                ;;
+        esac
+        case "$HOME_FS_PATH" in
+            "$MOUNT_ROOT"|"$MOUNT_ROOT"/*)
+                rm -f "$LIST"
+                return 1
+                ;;
+        esac
+    done < "$LIST"
+    rm -f "$LIST"
+    return 0
+}
+
+user_home_safe_to_remove() {
+    local HOME_DIR="$1" RESOLVED
+    RESOLVED=$(user_home_resolve_path "$HOME_DIR") || return 1
+    ! user_home_path_protected "$RESOLVED" \
+        && user_home_mounts_safe "$RESOLVED"
+}
+
+user_home_owned_by_uid() {
+    local HOME_DIR="$1" EXPECTED_UID="$2" RESOLVED OWNER_UID
+    [[ "$EXPECTED_UID" =~ ^[0-9]+$ ]] || return 1
+    RESOLVED=$(user_home_resolve_path "$HOME_DIR") || return 1
+    OWNER_UID=$(stat -c '%u' -- "$RESOLVED" 2>/dev/null) || return 1
+    [[ "$OWNER_UID" =~ ^[0-9]+$ ]] && [ "$OWNER_UID" = "$EXPECTED_UID" ]
+}
+
+user_home_stat_owner_mode() {
+    stat -c '%u:%a' -- "$1" 2>/dev/null
+}
+
+user_home_ancestor_acl_safe() {
+    local ANCESTOR="$1" ACL MODE_TEXT
+    if ! command -v getfacl >/dev/null 2>&1; then
+        MODE_TEXT=$(LC_ALL=C ls -ld -- "$ANCESTOR" 2>/dev/null \
+            | awk 'NR == 1 {print $1}') || return 1
+        [ -n "$MODE_TEXT" ] || return 1
+        case "$MODE_TEXT" in
+            *+) return 1 ;;
+        esac
+        return 0
+    fi
+    ACL=$(getfacl -cp -- "$ANCESTOR" 2>/dev/null) || return 1
+    if printf '%s\n' "$ACL" | awk -F: '
+        /^user:[^:]+:/ && $3 ~ /w/ {bad=1}
+        /^group:/ && $3 ~ /w/ {bad=1}
+        /^other::/ && $3 ~ /w/ {bad=1}
+        END {exit !bad}
+    '; then
+        return 1
+    fi
+    return 0
+}
+
+user_home_ancestors_root_safe() {
+    local HOME_DIR="$1" RESOLVED ANCESTOR META OWNER MODE MODE_VALUE
+    RESOLVED=$(user_home_resolve_path "$HOME_DIR") || return 1
+    ANCESTOR=$(dirname -- "$RESOLVED") || return 1
+    while :; do
+        META=$(user_home_stat_owner_mode "$ANCESTOR") || return 1
+        OWNER=${META%%:*}
+        MODE=${META#*:}
+        [[ "$OWNER" =~ ^[0-9]+$ ]] && [ "$OWNER" = 0 ] || return 1
+        [[ "$MODE" =~ ^[0-7]{3,4}$ ]] || return 1
+        MODE_VALUE=$((8#$MODE))
+        (( (MODE_VALUE & 0022) == 0 )) || return 1
+
+        # Mode bits do not expose named POSIX ACL grants. Be conservative when
+        # getfacl is available: any non-owner write grant makes the ancestor
+        # replaceable by a non-root principal.
+        user_home_ancestor_acl_safe "$ANCESTOR" || return 1
+        [ "$ANCESTOR" != "/" ] || break
+        ANCESTOR=$(dirname -- "$ANCESTOR") || return 1
+    done
+}
+
+user_home_path_snapshot() {
+    local HOME_DIR="$1" RESOLVED REL COMPONENT CURRENT="/" IDENTITY
+    local COMPONENTS=()
+    RESOLVED=$(user_home_resolve_path "$HOME_DIR") || return 1
+    IDENTITY=$(stat -c '%d:%i' -- / 2>/dev/null) || return 1
+    printf '%s\n' "$IDENTITY"
+    REL=${RESOLVED#/}
+    IFS='/' read -r -a COMPONENTS <<< "$REL"
+    for COMPONENT in "${COMPONENTS[@]}"; do
+        [ -n "$COMPONENT" ] || continue
+        if [ "$CURRENT" = "/" ]; then
+            CURRENT="/$COMPONENT"
+        else
+            CURRENT="$CURRENT/$COMPONENT"
+        fi
+        IDENTITY=$(stat -c '%d:%i' -- "$CURRENT" 2>/dev/null) || return 1
+        printf '%s\n' "$IDENTITY"
+    done
+}
+
+user_home_paths_overlap() {
+    local TARGET_HOME="$1" OTHER_HOME="$2"
+    [ "$TARGET_HOME" != "$OTHER_HOME" ] || return 0
+    case "$OTHER_HOME/" in
+        "$TARGET_HOME/"*) return 0 ;;
+    esac
+    case "$TARGET_HOME/" in
+        "$OTHER_HOME/"*)
+            user_home_path_protected "$OTHER_HOME" && return 1
+            return 0
+            ;;
+    esac
+    return 1
+}
+
+user_home_path_identity() {
+    stat -Lc '%d:%i' -- "$1" 2>/dev/null
+}
+
+user_home_component_identities() {
+    local HOME_DIR="$1" RESOLVED REL COMPONENT CURRENT="/" IDENTITY
+    local COMPONENTS=()
+    RESOLVED=$(user_home_canonical_path "$HOME_DIR") || return 1
+    REL=${RESOLVED#/}
+    IFS='/' read -r -a COMPONENTS <<< "$REL"
+    for COMPONENT in "${COMPONENTS[@]}"; do
+        [ -n "$COMPONENT" ] || continue
+        if [ "$CURRENT" = "/" ]; then
+            CURRENT="/$COMPONENT"
+        else
+            CURRENT="$CURRENT/$COMPONENT"
+        fi
+        IDENTITY=$(user_home_path_identity "$CURRENT") || return 1
+        printf '%s\n' "$IDENTITY"
+    done
+}
+
+user_home_is_shared() {
+    local USERNAME="$1" HOME_DIR="$2" TARGET_HOME TARGET_ID TARGET_COMPONENTS ACCOUNT_RECORDS
+    local OTHER_USER OTHER_HOME OTHER_RESOLVED OTHER_ID OTHER_COMPONENTS TARGET_TEXT OTHER_TEXT
+    TARGET_HOME=$(user_home_resolve_path "$HOME_DIR") || return 0
+    TARGET_TEXT=$(user_home_normalize_text "$HOME_DIR") || return 0
+    TARGET_ID=$(user_home_path_identity "$TARGET_HOME") || return 0
+    TARGET_COMPONENTS=$(user_home_component_identities "$TARGET_HOME") || return 0
+
+    if [ "$USER_PASSWD_FILE" = "/etc/passwd" ] && command -v getent >/dev/null 2>&1; then
+        ACCOUNT_RECORDS=$(getent passwd 2>/dev/null) \
+            || ACCOUNT_RECORDS=$(cat "$USER_PASSWD_FILE" 2>/dev/null) \
+            || return 0
+    else
+        ACCOUNT_RECORDS=$(cat "$USER_PASSWD_FILE" 2>/dev/null) || return 0
+    fi
+    [ -n "$ACCOUNT_RECORDS" ] || return 0
+
+    while IFS=: read -r OTHER_USER _ _ _ _ OTHER_HOME _; do
+        [ -n "$OTHER_USER" ] || continue
+        [ "$OTHER_USER" != "$USERNAME" ] || continue
+        if OTHER_TEXT=$(user_home_normalize_text "$OTHER_HOME"); then
+            ! user_home_paths_overlap "$TARGET_TEXT" "$OTHER_TEXT" || return 0
+        fi
+        OTHER_RESOLVED=$(user_home_canonical_path "$OTHER_HOME") || continue
+        ! user_home_paths_overlap "$TARGET_HOME" "$OTHER_RESOLVED" || return 0
+        OTHER_ID=$(user_home_path_identity "$OTHER_RESOLVED") || continue
+        [ "$OTHER_ID" != "$TARGET_ID" ] || return 0
+        OTHER_COMPONENTS=$(user_home_component_identities "$OTHER_RESOLVED") || return 0
+        printf '%s\n' "$OTHER_COMPONENTS" \
+            | awk -v identity="$TARGET_ID" '$0 == identity {found=1} END {exit !found}' \
+            && return 0
+        if ! user_home_path_protected "$OTHER_RESOLVED"; then
+            printf '%s\n' "$TARGET_COMPONENTS" \
+                | awk -v identity="$OTHER_ID" '$0 == identity {found=1} END {exit !found}' \
+                && return 0
+        fi
+    done <<< "$ACCOUNT_RECORDS"
+    return 1
 }
 
 user_create_system_account() {
@@ -146,12 +517,35 @@ user_create_system_account() {
 }
 
 user_remove_created_account() {
-    local USERNAME="$1"
+    local USERNAME="$1" REMOVE_RC=1 SUDOERS_TARGET
+    SUDOERS_TARGET="$USER_SUDOERS_DIR/vps-tools-$USERNAME"
     if command -v userdel >/dev/null 2>&1; then
-        userdel -r "$USERNAME" >/dev/null 2>&1 || userdel "$USERNAME" >/dev/null 2>&1 || true
+        if userdel -r "$USERNAME" >/dev/null 2>&1; then
+            REMOVE_RC=0
+        elif userdel "$USERNAME" >/dev/null 2>&1; then
+            REMOVE_RC=2
+        fi
     elif command -v deluser >/dev/null 2>&1; then
-        deluser --remove-home "$USERNAME" >/dev/null 2>&1 || deluser "$USERNAME" >/dev/null 2>&1 || true
+        if deluser --remove-home "$USERNAME" >/dev/null 2>&1; then
+            REMOVE_RC=0
+        elif deluser "$USERNAME" >/dev/null 2>&1; then
+            REMOVE_RC=2
+        fi
     fi
+    if user_account_exists "$USERNAME"; then
+        error "创建回滚失败：账号 $USERNAME 仍然存在，必须立即人工处理"
+        return 1
+    fi
+    if ! rm -f -- "$SUDOERS_TARGET" 2>/dev/null \
+        || [ -e "$SUDOERS_TARGET" ] || [ -L "$SUDOERS_TARGET" ]; then
+        error "创建回滚后仍有 sudoers 残留：$SUDOERS_TARGET"
+        return 1
+    fi
+    [ "$REMOVE_RC" -eq 0 ] || {
+        warn "账号已回滚，但主目录可能未完整清理，请人工核对 /home/$USERNAME"
+        return 2
+    }
+    return 0
 }
 
 user_delete_system_account() {
@@ -314,7 +708,7 @@ user_ensure_sudo() {
 user_write_sudoers() {
     local USERNAME="$1" TARGET TMP
     TARGET="$USER_SUDOERS_DIR/vps-tools-$USERNAME"
-    [ ! -e "$TARGET" ] || {
+    { [ ! -e "$TARGET" ] && [ ! -L "$TARGET" ]; } || {
         error "sudoers 文件已存在：$TARGET"
         return 1
     }
@@ -330,7 +724,18 @@ user_write_sudoers() {
         return 1
     fi
     mv "$TMP" "$TARGET" || { rm -f "$TMP"; return 1; }
-    chmod 440 "$TARGET"
+}
+
+user_rollback_admin_group() {
+    local USERNAME="$1" ADMIN_GROUP="$2" GROUP_ADDED="$3"
+    [ "$GROUP_ADDED" = 1 ] || return 0
+    if user_remove_from_group "$USERNAME" "$ADMIN_GROUP" >/dev/null 2>&1 \
+        && ! user_in_group "$USERNAME" "$ADMIN_GROUP"; then
+        return 0
+    fi
+    error "授权回滚不完整：$USERNAME 仍可能属于 $ADMIN_GROUP 管理员组"
+    audit_action "授予用户 $USERNAME 管理权限后用户组回滚不完整" PARTIAL
+    return 1
 }
 
 user_grant_admin() {
@@ -352,17 +757,26 @@ user_grant_admin() {
         GROUP_ADDED=1
     fi
     if ! user_write_sudoers "$USERNAME"; then
-        [ "$GROUP_ADDED" = "0" ] \
-            || user_remove_from_group "$USERNAME" "$ADMIN_GROUP" >/dev/null 2>&1 \
-            || warn "授权回滚不完整：请人工检查 $USERNAME 的 $ADMIN_GROUP 组成员资格"
+        user_rollback_admin_group "$USERNAME" "$ADMIN_GROUP" "$GROUP_ADDED" \
+            || return 2
         return 1
     fi
     SUDOERS_TARGET="$USER_SUDOERS_DIR/vps-tools-$USERNAME"
     if ! user_has_sudo_access "$USERNAME"; then
-        rm -f "$SUDOERS_TARGET"
-        [ "$GROUP_ADDED" = "0" ] \
-            || user_remove_from_group "$USERNAME" "$ADMIN_GROUP" >/dev/null 2>&1 \
-            || warn "授权回滚不完整：请人工检查 $USERNAME 的 $ADMIN_GROUP 组成员资格"
+        if ! rm -f -- "$SUDOERS_TARGET" \
+            || [ -e "$SUDOERS_TARGET" ] || [ -L "$SUDOERS_TARGET" ]; then
+            user_rollback_admin_group \
+                "$USERNAME" "$ADMIN_GROUP" "$GROUP_ADDED" || true
+            error "sudo 验证失败且授权规则无法撤销：$SUDOERS_TARGET"
+            warn "账号可能仍拥有 root 权限，请立即使用 visudo 人工处理"
+            audit_action "授予用户 $USERNAME 管理权限后回滚不完整" PARTIAL
+            return 2
+        fi
+        if ! user_rollback_admin_group \
+            "$USERNAME" "$ADMIN_GROUP" "$GROUP_ADDED"; then
+            warn "sudoers 规则已删除，但管理员组权限可能仍然存在"
+            return 2
+        fi
         error "sudo 未识别新管理员规则，已撤销授权"
         return 1
     fi
@@ -406,6 +820,7 @@ user_revoke_admin_rights() {
 
 user_create_account() {
     local ROLE="$1" ROLE_LABEL="普通" USERNAME="" LOGIN_SHELL SUDOERS_TARGET
+    local GRANT_RC=0
     [ "$ROLE" = admin ] && ROLE_LABEL="管理员"
     user_require_root || return 1
     print_header "创建${ROLE_LABEL}用户"
@@ -419,7 +834,7 @@ user_create_account() {
         return 1
     fi
     SUDOERS_TARGET="$USER_SUDOERS_DIR/vps-tools-$USERNAME"
-    if [ "$ROLE" = admin ] && [ -e "$SUDOERS_TARGET" ]; then
+    if [ -e "$SUDOERS_TARGET" ] || [ -L "$SUDOERS_TARGET" ]; then
         error "检测到残留 sudoers 文件：$SUDOERS_TARGET，请人工确认后再创建"
         return 1
     fi
@@ -441,16 +856,27 @@ user_create_account() {
     fi
     if ! user_prompt_password "$USERNAME"; then
         warn "密码设置失败，正在删除未完成的用户"
-        user_remove_created_account "$USERNAME"
-        audit_action "创建${ROLE_LABEL}用户 $USERNAME" FAILED
+        if user_remove_created_account "$USERNAME"; then
+            audit_action "创建${ROLE_LABEL}用户 $USERNAME" FAILED
+        else
+            audit_action "创建${ROLE_LABEL}用户 $USERNAME（回滚不完整）" PARTIAL
+            error "未完成用户的自动回滚不完整，请立即人工检查账号、主目录和 sudoers"
+        fi
         return 1
     fi
-    if [ "$ROLE" = admin ] && ! user_grant_admin "$USERNAME"; then
-        rm -f "$SUDOERS_TARGET" 2>/dev/null || true
-        warn "管理员授权失败，正在删除未完成的用户"
-        user_remove_created_account "$USERNAME"
-        audit_action "创建管理员用户 $USERNAME" FAILED
-        return 1
+    if [ "$ROLE" = admin ]; then
+        user_grant_admin "$USERNAME"
+        GRANT_RC=$?
+        if [ "$GRANT_RC" -ne 0 ]; then
+            warn "管理员授权失败，正在删除未完成的用户"
+            if user_remove_created_account "$USERNAME"; then
+                audit_action "创建管理员用户 $USERNAME" FAILED
+            else
+                audit_action "创建管理员用户 $USERNAME（回滚不完整）" PARTIAL
+                error "管理员创建回滚不完整，请立即人工检查账号、组成员和 sudoers"
+            fi
+            return 1
+        fi
     fi
     audit_action "创建${ROLE_LABEL}用户 $USERNAME" SUCCESS
     info "用户 $USERNAME 创建完成 ✓"
@@ -488,7 +914,7 @@ user_change_password() {
 }
 
 user_promote_admin() {
-    local USERNAME="" RECORD USER_ID HOME_DIR LOGIN_SHELL
+    local USERNAME="" RECORD USER_ID HOME_DIR LOGIN_SHELL GRANT_RC=0
     user_require_root || return 1
     print_header "增加管理员"
     read -rp "  输入要提升为管理员的用户名（输入 0 返回）: " USERNAME
@@ -512,7 +938,13 @@ user_promote_admin() {
         "用户名：$USERNAME" "UID：$USER_ID" \
         "主目录：$HOME_DIR" "登录 Shell：$LOGIN_SHELL" \
         "权限：可使用 sudo 执行管理员命令" || return 0
-    if ! user_grant_admin "$USERNAME"; then
+    user_grant_admin "$USERNAME"
+    GRANT_RC=$?
+    if [ "$GRANT_RC" -ne 0 ]; then
+        if [ "$GRANT_RC" -eq 2 ]; then
+            audit_action "增加管理员 $USERNAME（回滚不完整）" PARTIAL
+            return 2
+        fi
         audit_action "增加管理员 $USERNAME" FAILED
         return 1
     fi
@@ -585,6 +1017,8 @@ user_revoke_admin() {
 
 user_delete_account() {
     local USERNAME="" RECORD USER_ID HOME_DIR LOGIN_SHELL REMOVE_HOME MODE_LABEL CONFIRM_NAME CHOICE DELETE_RC=0
+    local HOME_RESOLVED="" HOME_PATH_SNAPSHOT=""
+    local CURRENT_RECORD CURRENT_USER_ID CURRENT_HOME CURRENT_RESOLVED CURRENT_PATH_SNAPSHOT
     user_require_root || return 1
     print_header "删除用户"
     read -rp "  输入要删除的用户名（输入 0 返回）: " USERNAME
@@ -600,14 +1034,8 @@ user_delete_account() {
         warn "root、系统账号以及当前 sudo/doas 提权账号不能通过本脚本删除"
         return 1
     fi
-    if user_has_active_session "$USERNAME"; then
-        error "用户 $USERNAME 当前仍有登录会话"
-        warn "请让该用户退出登录后再删除，避免中断正在进行的工作"
-        return 1
-    fi
-    if user_has_processes "$USERNAME"; then
-        error "用户 $USERNAME 当前仍有运行中的进程"
-        warn "请先确认并停止这些进程，然后再删除用户"
+    if ! user_runtime_quiescent "$USERNAME" "当前"; then
+        warn "请先确认该用户已退出且全部进程已停止，然后再删除用户"
         return 1
     fi
 
@@ -631,6 +1059,24 @@ user_delete_account() {
                     warn "账号尚未删除，请人工核对 /etc/passwd 中的主目录设置"
                     return 1
                 fi
+                HOME_RESOLVED=$(user_home_resolve_path "$HOME_DIR") || {
+                    error "主目录无法可靠解析，拒绝自动删除：$HOME_DIR"
+                    return 1
+                }
+                if ! user_home_owned_by_uid "$HOME_DIR" "$USER_ID"; then
+                    error "主目录所有者与目标账号 UID 不一致，拒绝自动删除：$HOME_RESOLVED"
+                    warn "请选择“保留工作空间”，或先人工核对目录所有权"
+                    return 1
+                fi
+                if ! user_home_ancestors_root_safe "$HOME_DIR"; then
+                    error "主目录的祖先路径可被非 root 改写，拒绝自动删除：$HOME_RESOLVED"
+                    warn "请选择“保留工作空间”，或先修正祖先目录的所有者、权限和 ACL"
+                    return 1
+                fi
+                HOME_PATH_SNAPSHOT=$(user_home_path_snapshot "$HOME_DIR") || {
+                    error "无法记录主目录路径的设备/inode 快照，拒绝自动删除"
+                    return 1
+                }
                 if user_home_is_shared "$USERNAME" "$HOME_DIR"; then
                     error "主目录被其他账号共用，拒绝删除：$HOME_DIR"
                     warn "请选择“保留工作空间”，或先解除共享关系"
@@ -659,6 +1105,47 @@ user_delete_account() {
         warn "用户名不匹配，已取消删除"
         return 0
     fi
+    CURRENT_RECORD=$(user_account_record "$USERNAME")
+    [ -n "$CURRENT_RECORD" ] || {
+        error "确认期间账号记录已发生变化，删除已取消"
+        return 1
+    }
+    IFS=: read -r _ _ CURRENT_USER_ID _ _ CURRENT_HOME _ <<< "$CURRENT_RECORD"
+    if [ "$CURRENT_RECORD" != "$RECORD" ] \
+        || [ "$CURRENT_USER_ID" != "$USER_ID" ] \
+        || user_is_protected_account "$USERNAME" "$CURRENT_USER_ID" \
+        || [ "$CURRENT_HOME" != "$HOME_DIR" ]; then
+        error "确认期间账号记录已发生变化，删除已取消"
+        return 1
+    fi
+    if [ "$REMOVE_HOME" = "yes" ]; then
+        CURRENT_RESOLVED=$(user_home_resolve_path "$CURRENT_HOME") || {
+            error "确认期间主目录已变为不安全路径，删除已取消"
+            return 1
+        }
+        CURRENT_PATH_SNAPSHOT=$(user_home_path_snapshot "$CURRENT_HOME") || {
+            error "确认期间无法复核主目录路径身份，删除已取消"
+            return 1
+        }
+        if [ "$CURRENT_RESOLVED" != "$HOME_RESOLVED" ] \
+            || [ "$CURRENT_PATH_SNAPSHOT" != "$HOME_PATH_SNAPSHOT" ] \
+            || user_home_path_protected "$CURRENT_RESOLVED" \
+            || ! user_home_mounts_safe "$CURRENT_RESOLVED" \
+            || ! user_home_owned_by_uid "$CURRENT_HOME" "$CURRENT_USER_ID" \
+            || ! user_home_ancestors_root_safe "$CURRENT_HOME" \
+            || user_home_is_shared "$USERNAME" "$CURRENT_HOME"; then
+            error "确认期间账号、主目录或共享关系已发生变化，删除已取消"
+            return 1
+        fi
+    fi
+    if ! user_runtime_quiescent "$USERNAME" "确认期间"; then
+        error "无法确认账号处于静止状态，删除已取消"
+        return 1
+    fi
+    if [ "$REMOVE_HOME" = yes ] && ! user_home_mounts_safe "$CURRENT_RESOLVED"; then
+        error "删除前检测到主目录本身或其子目录出现挂载点，删除已取消"
+        return 1
+    fi
 
     info "正在删除用户 $USERNAME..."
     user_delete_system_account "$USERNAME" "$REMOVE_HOME" || DELETE_RC=$?
@@ -667,7 +1154,13 @@ user_delete_account() {
         audit_action "删除用户 $USERNAME（$MODE_LABEL）" FAILED
         return 1
     fi
-    rm -f "$USER_SUDOERS_DIR/vps-tools-$USERNAME" 2>/dev/null || true
+    if ! rm -f -- "$USER_SUDOERS_DIR/vps-tools-$USERNAME" 2>/dev/null \
+        || [ -e "$USER_SUDOERS_DIR/vps-tools-$USERNAME" ] \
+        || [ -L "$USER_SUDOERS_DIR/vps-tools-$USERNAME" ]; then
+        error "账号已删除，但 sudoers 授权残留无法清理：$USER_SUDOERS_DIR/vps-tools-$USERNAME"
+        audit_action "删除用户 $USERNAME（sudoers 残留）" PARTIAL
+        return 1
+    fi
     if [ "$DELETE_RC" -ne 0 ]; then
         warn "账号已删除，但系统报告工作空间清理不完整"
         [ "$REMOVE_HOME" = "yes" ] && [ -e "$HOME_DIR" ] \

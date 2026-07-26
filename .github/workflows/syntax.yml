@@ -13,13 +13,13 @@ jobs:
         uses: actions/checkout@v5
 
       - name: Check shell syntax
-        run: bash -n SSH-Hardening.sh build-offline-package.sh tests/offline-package.sh
+        run: bash -n SSH-Hardening.sh build-offline-package.sh src/lib/core.sh src/modules/*.sh tests/*.sh
 
       - name: Verify generated release
         run: ./build.sh --check
 
       - name: Run ShellCheck
-        run: shellcheck --severity=warning -x SSH-Hardening.sh build-offline-package.sh tests/offline-package.sh
+        run: shellcheck --severity=warning -x SSH-Hardening.sh build-offline-package.sh tests/offline-package.sh tests/user-swap-regression.sh tests/scheduler-regression.sh
 
       - name: Verify release checksum
         run: sha256sum -c SSH-Hardening.sh.sha256
@@ -32,3 +32,8 @@ jobs:
 
       - name: Test offline package
         run: tests/offline-package.sh
+
+      - name: Run focused safety regressions
+        run: |
+          bash tests/user-swap-regression.sh
+          bash tests/scheduler-regression.sh
