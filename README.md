@@ -1,4 +1,4 @@
-# VPS 开荒脚本 V3.11.3
+# VPS 开荒脚本 V3.11.4
 
 > **银趴火山帮** 出品 · SSH · BBR · DDNS · Caddy · Firewall · NFT 转发
 
@@ -109,7 +109,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/chnnic/SSH-Hardening/refs/he
 ╚═╝╚═╝     ╚═╝╚═╝     ╚═╝  ╚═╝╚═╝  ╚═╝   ╚═╝        ╚═════╝ ╚═╝     ╚══════╝
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  VPS TOOLS  ·  V3.11.3
+  VPS TOOLS  ·  V3.11.4
   VPS 开荒脚本 · 银趴火山帮
 ────────────────────────────────────────────────────────────────
   SSH · BBR · DDNS · Caddy · Firewall · NFT · Monitor
@@ -215,7 +215,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/chnnic/SSH-Hardening/refs/he
 - 逐行 `sysctl -w` 应用；非核心参数不支持时注释跳过，BBR 核心参数失败则拒绝持久化
 
 **其他功能：**
-- tc 限速（200M / 500M / 780M / 1G / 2G / 自定义）：`htb` 聚合整形 + `fq` 叶子保留 BBR pacing；默认拒绝外部 QoS，输入精确确认词后可强制接管 `tbf` / CAKE / HTB 等 root qdisc，覆盖前诊断快照保存到 `/var/lib/vps-tools/tc-backups/`
+- tc 限速（200M / 500M / 780M / 1G / 2G / 自定义）：`htb` 聚合整形 + `fq` 叶子保留 BBR pacing；兼容不可直接删除的默认 `mq`；默认拒绝外部 QoS，输入精确确认词后可接管或删除 `tbf` / CAKE / HTB 等 root qdisc，操作前诊断快照保存到 `/var/lib/vps-tools/tc-backups/`
 - initcwnd（10 / 50 / 100 / 自定义），支持 IPv4/IPv6、无网关默认路由和 systemd/OpenRC/SysV 持久化
 - 备份 / 还原 sysctl（按时间戳）
 
@@ -646,6 +646,7 @@ tests/smoke.sh
 
 | 版本 | 主要变更 |
 |------|---------|
+| **V3.11.4** | 修复多队列网卡默认 `mq` 无法通过 `tc qdisc del` 删除而导致限速应用失败，改用 `replace` 原子安装 HTB，持久化辅助脚本同步修复；取消限速时会识别并标注外部 qdisc，输入 `DELETE <网卡>` 后可保存快照并明确删除 |
 | **V3.11.3** | tc 限速新增外部 root qdisc 强制接管：默认仍拒绝覆盖，展示现有 qdisc/class/filter 并要求输入 `FORCE <网卡>`；覆盖前保存文本与 JSON 诊断快照，持久化记录授权以便重启后继续接管 |
 | **V3.11.2** | HTTPS 时间同步新增自动定时管理，支持每 1/3/6/12/24 小时执行；优先使用 systemd timer、无 systemd 时回退 root crontab，记录最近结果并使用进程锁防止任务重叠 |
 | **V3.11.1** | 新增自包含离线安装包构建器和 GitHub Release 附件：归档包含完整脚本、SHA256、独立安装器与说明文档，可通过 SCP/SFTP/WinSCP 传入无法访问 GitHub 的 VPS 安装 |
