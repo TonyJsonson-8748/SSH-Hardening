@@ -127,7 +127,7 @@ BANNER_COMPACT=$(COLUMNS=60 NO_COLOR=1 volcano_art_banner)
 for fn in bbr_preflight bbr_runtime_snapshot bbr_ensure_baseline bbr_restore_runtime_snapshot bbr_baseline_value bbr_config_has_key \
     bbr_apply_sysctl bbr_generate_config bbr_bdp_mb bbr_buffer_target_mb bbr_recommend_profile \
     bbr_tc_qdisc_safe_to_replace bbr_tc_topology_matches bbr_tc_managed_artifact bbr_tc_is_legacy_owned \
-    bbr_tc_apply_runtime bbr_default_route_info bbr_route_token \
+    bbr_tc_snapshot_foreign bbr_tc_force_confirm bbr_tc_apply_runtime bbr_default_route_info bbr_route_token \
     bbr_route_strip_cwnd bbr_apply_initcwnd_route volcano_tcp_profile; do
     declare -F "$fn" >/dev/null || { echo "Missing BBR function: $fn" >&2; exit 1; }
 done
@@ -272,23 +272,75 @@ EOF
 (
     # shellcheck disable=SC2034 # consumed by bbr_tc_is_owned
     TC_STATE_FILE="$TMP/no-tc-state"
+    TC_BACKUP_DIR="$TMP/tc-backups"
     TC_TEST_LOG="$TMP/tc-test.log"
     export TC_TEST_LOG
     FAKE_TC="$TMP/fake-tc"
     cat > "$FAKE_TC" <<'EOF'
 #!/bin/sh
 if [ "$1 $2" = "qdisc show" ]; then
-    echo 'qdisc cake 8001: root refcnt 2 bandwidth 100Mbit'
+    echo 'qdisc tbf 8001: root refcnt 2 rate 1024Mbit burst 1Mb lat 50ms'
+    exit 0
+fi
+if [ "$1 $2" = "class show" ]; then
+    echo 'class tbf 8001:1 root'
+    exit 0
+fi
+if [ "$1 $2" = "filter show" ]; then
+    echo 'filter parent 8001: protocol ip pref 1 u32 chain 0'
+    exit 0
+fi
+if [ "$1 $2 $3" = "-j qdisc show" ]; then
+    echo '[{"kind":"tbf","root":true}]'
+    exit 0
+fi
+if [ "$1 $2 $3" = "-j class show" ]; then
+    echo '[{"kind":"tbf","classid":"8001:1"}]'
+    exit 0
+fi
+if [ "$1 $2 $3" = "-j filter show" ]; then
+    echo '[{"kind":"u32","parent":"8001:"}]'
     exit 0
 fi
 printf '%s\n' "$*" >> "$TC_TEST_LOG"
 EOF
     chmod +x "$FAKE_TC"
-    if bbr_tc_apply_runtime eth0 100 100 "$FAKE_TC" >/dev/null 2>&1; then
+    APPLY_RC=0
+    bbr_tc_apply_runtime eth0 100 100 "$FAKE_TC" >/dev/null 2>&1 || APPLY_RC=$?
+    if [ "$APPLY_RC" -ne 2 ]; then
         echo "BBR accepted a foreign root qdisc" >&2
         exit 1
     fi
     [ ! -s "$TC_TEST_LOG" ] || { echo "BBR modified a foreign root qdisc" >&2; exit 1; }
+
+    if bbr_tc_force_confirm eth0 100 "$FAKE_TC" >/dev/null 2>&1 <<'EOF'
+FORCE eth1
+EOF
+    then
+        echo "BBR accepted an incorrect force confirmation" >&2
+        exit 1
+    fi
+    bbr_tc_force_confirm eth0 100 "$FAKE_TC" >/dev/null <<'EOF'
+FORCE eth0
+EOF
+
+    bbr_tc_apply_runtime eth0 100 100 "$FAKE_TC" 1 >/dev/null \
+        || { echo "BBR refused an explicitly authorized foreign qdisc takeover" >&2; exit 1; }
+    grep -qx 'qdisc del dev eth0 root' "$TC_TEST_LOG" \
+        || { echo "BBR force takeover did not delete the foreign root qdisc" >&2; exit 1; }
+    grep -qx 'qdisc add dev eth0 root handle 1: htb default 10' "$TC_TEST_LOG" \
+        || { echo "BBR force takeover did not install its root qdisc" >&2; exit 1; }
+    grep -qx 'class add dev eth0 parent 1: classid 1:10 htb rate 100mbit ceil 100mbit burst 100kb cburst 100kb' "$TC_TEST_LOG" \
+        || { echo "BBR force takeover did not install its shaping class" >&2; exit 1; }
+    grep -qx 'qdisc add dev eth0 parent 1:10 handle 100: fq maxrate 100mbit' "$TC_TEST_LOG" \
+        || { echo "BBR force takeover did not install its fq leaf" >&2; exit 1; }
+    SNAPSHOT=$(find "$TC_BACKUP_DIR" -type f -name 'eth0_*.txt' -print -quit)
+    [ -n "$SNAPSHOT" ] || { echo "BBR force takeover did not save a tc snapshot" >&2; exit 1; }
+    grep -qF 'qdisc tbf 8001: root' "$SNAPSHOT" \
+        && grep -qF 'class tbf 8001:1 root' "$SNAPSHOT" \
+        && grep -qF 'filter parent 8001:' "$SNAPSHOT" \
+        && grep -qF '"kind":"tbf"' "$SNAPSHOT" \
+        || { echo "BBR tc snapshot omitted qdisc/class/filter diagnostics" >&2; exit 1; }
 )
 [[ "$(bbr_route_token 'default dev eth0 proto static metric 100' dev)" = eth0 ]] || { echo "BBR direct default route device parsing failed" >&2; exit 1; }
 [[ -z "$(bbr_route_token 'default dev eth0 proto static metric 100' via)" ]] || { echo "BBR direct default route invented a gateway" >&2; exit 1; }
@@ -314,6 +366,24 @@ awk 'p && /^TC_HELPER_EOF$/{exit} /<< '\''TC_HELPER_EOF'\''/{p=1; next} p{print}
 awk 'p && /^CWND_HELPER_EOF$/{exit} /<< '\''CWND_HELPER_EOF'\''/{p=1; next} p{print}' "$ROOT/src/modules/bbr.sh" > "$BBR_CWND_HELPER_TEST"
 sh -n "$BBR_TC_HELPER_TEST" || { echo "Generated tc helper has syntax errors" >&2; exit 1; }
 sh -n "$BBR_CWND_HELPER_TEST" || { echo "Generated initcwnd helper has syntax errors" >&2; exit 1; }
+
+(
+    TC_STATE_FILE="$TMP/tc-persistence.state"
+    TC_HELPER="$TMP/tc-persistence-helper"
+    SERVICE_TC="$TMP/tc-persistence.service"
+    # shellcheck disable=SC2034 # consumed indirectly by bbr_tc_write_persistence
+    SERVICE_TC_INIT="$TMP/tc-persistence.init"
+    # shellcheck disable=SC2329 # test stub used indirectly by bbr_tc_write_persistence
+    systemd_available() { return 0; }
+    # shellcheck disable=SC2329 # test stub used indirectly by bbr_tc_write_persistence
+    systemctl() { return 0; }
+    bbr_tc_write_persistence eth0 500 500 1 \
+        || { echo "BBR failed to persist an authorized tc takeover" >&2; exit 1; }
+    grep -qx 'FORCE=1' "$TC_STATE_FILE" \
+        || { echo "BBR tc persistence omitted force authorization" >&2; exit 1; }
+    grep -qF '*) [ "$FORCE" -eq 1 ] || exit 1 ;;' "$TC_HELPER" \
+        || { echo "Generated tc helper does not gate foreign qdisc takeover" >&2; exit 1; }
+)
 
 for fn in docker_install docker_status docker_select_container docker_upgrade_container docker_container_action docker_inspect_label docker_download_file docker_compose_basename docker_compose_fetch_and_deploy; do
     declare -F "$fn" >/dev/null || { echo "Missing Docker function: $fn" >&2; exit 1; }
