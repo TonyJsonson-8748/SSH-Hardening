@@ -712,7 +712,8 @@ self_offline_archive_raw_types_valid() {
 }
 
 self_offline_archive_validate() {
-    local PACKAGE="$1" MEMBER_LIST="$2" TYPE_LIST="$3" RAW_TAR="${TYPE_LIST}.raw"
+    local PACKAGE="$1" MEMBER_LIST="$2" TYPE_LIST="$3"
+    local RAW_TAR="${TYPE_LIST}.raw"
     if ! self_offline_archive_raw_types_valid "$PACKAGE" "$RAW_TAR"; then
         rm -f "$RAW_TAR"
         return 1

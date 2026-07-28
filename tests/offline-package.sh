@@ -38,6 +38,7 @@ shortcut_matches "$TMP/bin/V" || { echo "Offline installer did not create V shor
 VPS_DATA_DIR="$TMP/self-data"
 LOCAL_BIN_DIR="$TMP/self-import-bin"
 LOCAL_SCRIPT="$LOCAL_BIN_DIR/vps-tools"
+# shellcheck disable=SC2034  # read by self-update.sh after the dynamic `source` below
 UPDATE_NOTICE_FILE="$VPS_DATA_DIR/update_available"
 # shellcheck source=../src/modules/self-update.sh
 source "$ROOT/src/modules/self-update.sh"
@@ -157,6 +158,7 @@ if self_offline_bundle_install "$TMP/not-vps-tools.sh" >/dev/null 2>&1; then
     exit 1
 fi
 (
+    # shellcheck disable=SC2034  # read by self_offline_bundle_install in the sourced self-update.sh
     SELF_OFFLINE_MAX_COMPRESSED_BYTES=16
     LOCAL_BIN_DIR="$TMP/oversized-direct-bin"
     LOCAL_SCRIPT="$LOCAL_BIN_DIR/vps-tools"
@@ -166,6 +168,7 @@ fi
     fi
 )
 (
+    # shellcheck disable=SC2034  # read by self_offline_bundle_install in the sourced self-update.sh
     SELF_OFFLINE_MAX_RAW_BYTES=1024
     LOCAL_BIN_DIR="$TMP/oversized-raw-bin"
     LOCAL_SCRIPT="$LOCAL_BIN_DIR/vps-tools"

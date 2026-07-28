@@ -149,7 +149,7 @@ config_archive_validate() {
             return 1
         }
         case "$MEMBER" in
-            /*|\\*|*\\*|[A-Za-z]:/*|[A-Za-z]:\\*|..|../*|*/../*|*/..|\
+            /*|\\*|*\\*|[A-Za-z]:/*|..|../*|*/../*|*/..|\
             *//*|*/./*|*/.|*/)
                 exec 7<&- 8<&-
                 rm -f "$MEMBER_LIST" "$TYPE_LIST" "$NORMALIZED_LIST" "$LINK_LIST"
@@ -159,6 +159,7 @@ config_archive_validate() {
         esac
 
         OK=false
+        # shellcheck disable=SC2209  # "file" is a literal ROOT_KIND state value, not the `file` command
         ROOT_KIND=file
         while IFS= read -r ROOT; do
             if config_backup_root_is_directory "$ROOT"; then
@@ -168,6 +169,7 @@ config_archive_validate() {
                 esac
             elif [ "$MEMBER" = "$ROOT" ]; then
                 OK=true
+                # shellcheck disable=SC2209  # "file" is a literal ROOT_KIND state value, not the `file` command
                 ROOT_KIND=file
                 break
             fi
@@ -1052,7 +1054,7 @@ cancel_safety_timer() {
     local STATE_FILE="${SAFETY_STATE_FILE:-${VPS_DATA_DIR}/rollback.active}"
     local EXPECTED_PID="${1:-}" EXPECTED_SCRIPT="${2:-}" EXPECTED_ROOTS="${3:-}"
     local EXPECTED_SYSCTL="${4:-}" EXPECTED_SNAPSHOT="${5:-}" EXPECT_EXACT=no
-    local ATTEMPT ARTIFACT FAILED=no
+    local ARTIFACT FAILED=no
     [ "$#" -lt 5 ] || EXPECT_EXACT=yes
     if ! safety_lock_acquire; then
         error "自动回滚已开始执行或正由其他进程处理，不能安全取消"
@@ -1097,7 +1099,7 @@ cancel_safety_timer() {
     if [[ "${SAFETY_PID:-}" =~ ^[1-9][0-9]*$ ]]; then
         kill "$SAFETY_PID" 2>/dev/null || true
         wait "$SAFETY_PID" 2>/dev/null || true
-        for ATTEMPT in 1 2 3 4 5; do
+        for _ in 1 2 3 4 5; do
             kill -0 "$SAFETY_PID" 2>/dev/null || break
             sleep 0.05
         done
@@ -4370,7 +4372,7 @@ safety_arm() {
     local PROFILE_FIREWALL=no PROFILE_RESTART_SSH=no
     local PROFILE_RESTART_FAIL2BAN=no PROFILE_RESTART_DNS=no
     local TAR_ACLS=no TAR_XATTRS=no TAR_SELINUX=no TAR_OPTION
-    local STATE_TMP="" READY=no ATTEMPT
+    local STATE_TMP="" READY=no
     local STATE_FILE="${SAFETY_STATE_FILE:-${VPS_DATA_DIR}/rollback.active}"
     local RESTORE_ROOT="${SAFETY_RESTORE_ROOT:-/}"
     ROLLBACK_DELAY="${SAFETY_ROLLBACK_DELAY:-180}"
@@ -5335,7 +5337,7 @@ ROLLBACK_EOF
     SAFETY_APPLIED_ROOTS="${SCRIPT%.sh}.applied.roots"
     SAFETY_SNAPSHOT="$SNAP"
     SAFETY_STATUS=armed
-    for ATTEMPT in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+    for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
         if safety_worker_identity_valid "$SAFETY_PID" "$SAFETY_SCRIPT"; then
             READY=yes
             break

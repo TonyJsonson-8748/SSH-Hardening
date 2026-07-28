@@ -137,6 +137,7 @@ user_home_canonical_path() {
         *) return 1 ;;
     esac
     [ -d "$HOME_DIR" ] || return 1
+    # shellcheck disable=SC1007  # intentional: clear CDPATH for this one `cd`, not an empty-string assignment
     RESOLVED=$(CDPATH= cd -P -- "$HOME_DIR" 2>/dev/null && pwd -P) || return 1
     case "$RESOLVED" in /*) ;; *) return 1 ;; esac
     # POSIX permits an implementation to preserve exactly two leading slashes.
@@ -784,14 +785,14 @@ user_grant_admin() {
 }
 
 user_revoke_admin_rights() {
-    local USERNAME="$1" GROUP_NAME REMOVED_GROUPS="" SUDOERS_TARGET
+    local USERNAME="$1" GROUP_NAME RESTORE_GROUP REMOVED_GROUPS="" SUDOERS_TARGET
     SUDOERS_TARGET="$USER_SUDOERS_DIR/vps-tools-$USERNAME"
     for GROUP_NAME in sudo wheel; do
         user_group_exists "$GROUP_NAME" || continue
         user_in_group "$USERNAME" "$GROUP_NAME" || continue
         if ! user_remove_from_group "$USERNAME" "$GROUP_NAME"; then
-            for GROUP_NAME in $REMOVED_GROUPS; do
-                user_add_to_group "$USERNAME" "$GROUP_NAME" >/dev/null 2>&1 || true
+            for RESTORE_GROUP in $REMOVED_GROUPS; do
+                user_add_to_group "$USERNAME" "$RESTORE_GROUP" >/dev/null 2>&1 || true
             done
             error "无法将 $USERNAME 移出管理员组，已尝试恢复先前状态"
             return 1
@@ -1065,11 +1066,13 @@ user_delete_account() {
                 }
                 if ! user_home_owned_by_uid "$HOME_DIR" "$USER_ID"; then
                     error "主目录所有者与目标账号 UID 不一致，拒绝自动删除：$HOME_RESOLVED"
+                    # shellcheck disable=SC1111  # curly quotes are literal Chinese punctuation, not shell quoting
                     warn "请选择“保留工作空间”，或先人工核对目录所有权"
                     return 1
                 fi
                 if ! user_home_ancestors_root_safe "$HOME_DIR"; then
                     error "主目录的祖先路径可被非 root 改写，拒绝自动删除：$HOME_RESOLVED"
+                    # shellcheck disable=SC1111  # curly quotes are literal Chinese punctuation, not shell quoting
                     warn "请选择“保留工作空间”，或先修正祖先目录的所有者、权限和 ACL"
                     return 1
                 fi
@@ -1079,6 +1082,7 @@ user_delete_account() {
                 }
                 if user_home_is_shared "$USERNAME" "$HOME_DIR"; then
                     error "主目录被其他账号共用，拒绝删除：$HOME_DIR"
+                    # shellcheck disable=SC1111  # curly quotes are literal Chinese punctuation, not shell quoting
                     warn "请选择“保留工作空间”，或先解除共享关系"
                     return 1
                 fi

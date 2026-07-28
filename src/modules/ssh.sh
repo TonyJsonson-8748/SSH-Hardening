@@ -496,7 +496,7 @@ ssh_key_delete_safety_arm() {
     local EXPECTED_CURRENT_DIGEST="${8:-}"
     local SECURE_TARGET=yes
     local STATE_FILE="${SAFETY_STATE_FILE:-${VPS_DATA_DIR}/rollback.active}" SCRIPT LOCK_DIR SOURCE_IP=local
-    local STATE_TMP="" READY=no ATTEMPT
+    local STATE_TMP="" READY=no
     local BACKUP_DIGEST=""
     local ROLLBACK_DELAY="${SSH_KEY_ROLLBACK_DELAY:-180}"
     case "$ROLLBACK_DELAY" in ''|*[!0-9]*) ROLLBACK_DELAY=180 ;; esac
@@ -698,7 +698,7 @@ ssh_key_delete_safety_arm() {
     SAFETY_SYSCTL_FILE=""
     SAFETY_SNAPSHOT="$BACKUP"
     SAFETY_STATUS=armed
-    for ATTEMPT in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+    for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
         if ssh_safety_worker_identity_valid "$SAFETY_PID" "$SAFETY_SCRIPT"; then
             READY=yes
             break
@@ -767,8 +767,7 @@ ssh_key_file_count() {
 
 ssh_public_key_path_snapshot() {
     local TARGET="$1" SCOPE="$2" EXPECTED_UID="$3" HOME_DIR="$4"
-    local CURRENT="/" PART META META_DEV META_INODE OWNER META_GROUP MODE META_TYPE
-    local META_SIZE META_MTIME META_CTIME
+    local CURRENT="/" PART META _ OWNER MODE
     local IS_FINAL=no ROOT_UID=0
     local PARTS=()
 
@@ -787,8 +786,7 @@ ssh_public_key_path_snapshot() {
     IFS=/ read -r -a PARTS <<< "${TARGET#/}"
 
     META=$(stat -Lc '%d:%i:%u:%g:%a:%F:%s:%Y:%Z' -- / 2>/dev/null) || return 1
-    IFS=: read -r META_DEV META_INODE OWNER META_GROUP MODE META_TYPE \
-        META_SIZE META_MTIME META_CTIME <<< "$META"
+    IFS=: read -r _ _ OWNER _ MODE _ _ _ _ <<< "$META"
     [ "$OWNER" = "$ROOT_UID" ] || return 1
     [[ "$MODE" =~ ^[0-7]+$ ]] || return 1
     [ $((8#$MODE & 0022)) -eq 0 ] || return 1
@@ -816,8 +814,7 @@ ssh_public_key_path_snapshot() {
         fi
         META=$(stat -Lc '%d:%i:%u:%g:%a:%F:%s:%Y:%Z' -- "$CURRENT" 2>/dev/null) \
             || return 1
-        IFS=: read -r META_DEV META_INODE OWNER META_GROUP MODE META_TYPE \
-            META_SIZE META_MTIME META_CTIME <<< "$META"
+        IFS=: read -r _ _ OWNER _ MODE _ _ _ _ <<< "$META"
         [[ "$MODE" =~ ^[0-7]+$ ]] || return 1
 
         if [ "$SCOPE" = global ]; then
@@ -1027,7 +1024,7 @@ ssh_cancel_safety_timer_checked() {
     local OLD_IP6TABLES="${SAFETY_IP6TABLES_FILE:-}"
     local OLD_APPLIED="${SAFETY_APPLIED_SNAPSHOT:-}"
     local OLD_APPLIED_ROOTS="${SAFETY_APPLIED_ROOTS:-}"
-    local ARTIFACT FAILED=no ATTEMPT
+    local ARTIFACT FAILED=no
 
     [[ "$OLD_PID" =~ ^[1-9][0-9]*$ ]] && [ -n "$OLD_SCRIPT" ] || {
         error "缺少待取消防断联事务的身份信息，拒绝取消未知任务"
@@ -1060,7 +1057,7 @@ ssh_cancel_safety_timer_checked() {
             ;;
     esac
     if [[ "$OLD_PID" =~ ^[1-9][0-9]*$ ]]; then
-        for ATTEMPT in 1 2 3; do
+        for _ in 1 2 3; do
             kill -0 "$OLD_PID" 2>/dev/null || break
             sleep 0.05
         done
@@ -1076,7 +1073,7 @@ ssh_cancel_safety_timer_checked() {
 ssh_cancel_loaded_timer_locked() {
     local STATE_FILE="$1" STATE_PID="$2" STATE_SCRIPT="$3" STATE_ROOTS="$4"
     local STATE_SYSCTL="$5" STATE_SNAPSHOT="$6"
-    local STATE_IPTABLES STATE_IP6TABLES STATE_APPLIED STATE_APPLIED_ROOTS ATTEMPT
+    local STATE_IPTABLES STATE_IP6TABLES STATE_APPLIED STATE_APPLIED_ROOTS
     local ARTIFACT FAILED=no
     STATE_IPTABLES="${STATE_SCRIPT%.sh}.iptables"
     STATE_IP6TABLES="${STATE_SCRIPT%.sh}.ip6tables"
@@ -1086,7 +1083,7 @@ ssh_cancel_loaded_timer_locked() {
         ssh_safety_worker_identity_valid "$STATE_PID" "$STATE_SCRIPT" || return 1
         kill "$STATE_PID" 2>/dev/null || true
         wait "$STATE_PID" 2>/dev/null || true
-        for ATTEMPT in 1 2 3 4 5; do
+        for _ in 1 2 3 4 5; do
             kill -0 "$STATE_PID" 2>/dev/null || break
             sleep 0.05
         done
@@ -1977,6 +1974,7 @@ ssh_strict_key_file_has_unrestricted_key() {
 
 ssh_strict_pattern_matches() {
     local VALUE="$1" PATTERN="$2"
+    # shellcheck disable=SC2053  # PATTERN is an intentional glob, not a literal to quote
     [[ "$VALUE" == $PATTERN ]]
 }
 
@@ -2175,6 +2173,7 @@ ssh_authentication_route() {
     EMPTY_PASSWORDS=$(ssh_config_dump_value "$DUMP" permitemptypasswords)
     USE_PAM=$(ssh_config_dump_value "$DUMP" usepam)
     if [ "$HAS_PASSWORD" = empty ]; then
+        # shellcheck disable=SC2209  # "set"/"locked" are literal state values, not the `set` builtin
         if [ "$EMPTY_PASSWORDS" = yes ]; then HAS_PASSWORD=set; else HAS_PASSWORD=locked; fi
     fi
 

@@ -8,6 +8,7 @@ trap 'rm -rf "$TMP"' EXIT
 VPS_DATA_DIR="$TMP/data"
 LOCAL_BIN_DIR="$TMP/bin"
 LOCAL_SCRIPT="$LOCAL_BIN_DIR/vps-tools"
+# shellcheck disable=SC2034  # read by self-update.sh/main.sh after the dynamic `source` below
 UPDATE_NOTICE_FILE="$VPS_DATA_DIR/update_available"
 NFT_DDNS_SERVICE_FILE="$TMP/systemd/nftpf-ddns.service"
 NFT_DDNS_TIMER_FILE="$TMP/systemd/nftpf-ddns.timer"

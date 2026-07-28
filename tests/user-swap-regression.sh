@@ -165,10 +165,15 @@ user_home_is_shared alice "$SAFE_HOME" \
 # Session/process checks must be repeated after the destructive confirmation.
 USER_PASSWD_FILE="$TMP/delete-passwd"
 printf 'alice:x:2000:2000::%s:/bin/bash\n' "$SAFE_HOME" > "$USER_PASSWD_FILE"
+# shellcheck disable=SC2034  # read by user_effective_uid in the sourced users.sh
 VPS_TOOLS_UID_OVERRIDE=0
+# shellcheck disable=SC2034  # color vars referenced by info/warn/error/menu_* in the sourced modules
 DIM=""
+# shellcheck disable=SC2034
 NC=""
+# shellcheck disable=SC2034
 RED=""
+# shellcheck disable=SC2034
 BOLD=""
 print_header() { :; }
 menu_item() { :; }
