@@ -19,7 +19,8 @@ for fn in systemd_available show_cli_help main_menu ssh_tools_menu ssh_key_count
     ddns_latest_log_line ddns_latest_change_log_line ddns_line_time ddns_line_result_ip ddns_newer_line ddns_change_matches_status ddns_record_status_line ddns_record_change_line ddns_print_record_summary \
     system_toolbox_menu security_password_auth_effective security_password_methods_disabled security_root_password_restricted \
     resource_health_check system_update_manager system_hostname_apply config_backup_create safety_load_pending safety_lock_acquire safety_lock_release self_update docker_menu change_port \
-    ssh_socket_activated ssh_socket_override_backup ssh_socket_override_restore ssh_socket_override_write; do
+    ssh_socket_activated ssh_socket_override_backup ssh_socket_override_restore ssh_socket_override_write \
+    ssh_sudo_list_grants_full_root; do
     declare -F "$fn" >/dev/null || { echo "Missing function: $fn" >&2; exit 1; }
 done
 
@@ -110,6 +111,55 @@ ssh_login_candidates_have_admin $'root|密钥|yes\nguest|密码|no' \
     }
     ! ssh_user_has_full_sudo_access tony >/dev/null 2>&1 \
         || { echo "Limited sudo command was treated as full recovery access" >&2; exit 1; }
+)
+(
+    # 常规管理员的 sudo 需要输入自己的密码，无法通过 `sudo -n` 提权探测；
+    # 授权查询必须仍能把它识别为完整 root 入口，否则严格模式、撤销登录和
+    # 删除公钥都会误判为"没有可恢复的管理入口"而拒绝执行。
+    sudo() {
+        printf '%s\n' \
+            'User tony may run the following commands on test-host:' \
+            '    (ALL : ALL) ALL' \
+            '    (ALL) ALL'
+    }
+    ssh_sudo_list_grants_full_root tony \
+        || { echo "Password-required full sudo admin was not recognized" >&2; exit 1; }
+    sudo() {
+        printf '%s\n' \
+            'User tony may run the following commands on test-host:' \
+            '    (ALL : ALL) NOPASSWD: ALL'
+    }
+    ssh_sudo_list_grants_full_root tony \
+        || { echo "NOPASSWD full sudo grant was not recognized" >&2; exit 1; }
+    sudo() {
+        printf '%s\n' \
+            'User tony may run the following commands on test-host:' \
+            '    (root) SETENV: ALL'
+    }
+    ssh_sudo_list_grants_full_root tony \
+        || { echo "Tagged full sudo grant was not recognized" >&2; exit 1; }
+    sudo() {
+        printf '%s\n' \
+            'User tony may run the following commands on test-host:' \
+            '    (www-data) ALL'
+    }
+    ! ssh_sudo_list_grants_full_root tony >/dev/null 2>&1 \
+        || { echo "Non-root RunAs grant was treated as full root access" >&2; exit 1; }
+    sudo() {
+        printf '%s\n' \
+            'User tony may run the following commands on test-host:' \
+            '    (ALL) ALL, !/bin/su'
+    }
+    ! ssh_sudo_list_grants_full_root tony >/dev/null 2>&1 \
+        || { echo "Grant with a negated command was treated as unrestricted" >&2; exit 1; }
+    sudo() {
+        printf '%s\n' 'Sorry, user tony may not run sudo on test-host.'
+    }
+    ! ssh_sudo_list_grants_full_root tony >/dev/null 2>&1 \
+        || { echo "Account without sudo access was treated as an admin" >&2; exit 1; }
+    sudo() { return 1; }
+    ! ssh_sudo_list_grants_full_root tony >/dev/null 2>&1 \
+        || { echo "Failed sudo query was treated as full root access" >&2; exit 1; }
 )
 
 (

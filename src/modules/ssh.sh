@@ -2285,8 +2285,56 @@ ssh_admin_capability_probe_worker \"\$@\""
         "$ELEVATOR" "$ID_BIN"
 }
 
+# 解析 `sudo -l -U <用户>` 的实际授权，判断是否为完整 root 权限。
+# 只认 RunAs 可为 root/ALL 且命令列表含裸 ALL 的规则；带 `!` 排除项或
+# 只授权具体命令的账号不算完整权限（与撤权、删除公钥的管理入口口径一致）。
+ssh_sudo_list_grants_full_root() {
+    local USERNAME="$1" SUDO_OUTPUT
+    command -v sudo >/dev/null 2>&1 || return 1
+    SUDO_OUTPUT=$(LC_ALL=C sudo -n -l -U "$USERNAME" 2>/dev/null) || return 1
+    printf '%s\n' "$SUDO_OUTPUT" | awk '
+        /may run the following commands/ {in_cmds=1; next}
+        !in_cmds {next}
+        {
+            line=$0
+            sub(/^[[:space:]]+/, "", line)
+            if (line == "" || line !~ /^\(/) next
+            if (index(line, "!") > 0) next
+            close_paren=index(line, ")")
+            if (close_paren == 0) next
+            runas=substr(line, 2, close_paren - 2)
+            cmds=substr(line, close_paren + 1)
+            colon=index(runas, ":")
+            runas_user=(colon > 0) ? substr(runas, 1, colon - 1) : runas
+            gsub(/[[:space:]]/, "", runas_user)
+            if (runas_user != "ALL" && runas_user != "root") next
+            sub(/^[[:space:]]+/, "", cmds)
+            while (match(cmds, /^[A-Z_]+:[[:space:]]*/) \
+                || match(cmds, /^[A-Z_]+=[^[:space:]]+[[:space:]]*/)) {
+                cmds=substr(cmds, RSTART + RLENGTH)
+            }
+            count=split(cmds, parts, /[[:space:]]*,[[:space:]]*/)
+            for (i = 1; i <= count; i++) {
+                entry=parts[i]
+                gsub(/^[[:space:]]+|[[:space:]]+$/, "", entry)
+                while (match(entry, /^[A-Z_]+:[[:space:]]*/)) {
+                    entry=substr(entry, RSTART + RLENGTH)
+                }
+                if (entry == "ALL") {found=1; exit}
+            }
+        }
+        END {exit !found}
+    '
+}
+
 ssh_user_has_full_sudo_access() {
-    ssh_user_has_root_capability "$1" sudo
+    local USERNAME="$1"
+    # 先尝试真实提权探测：成功即确证具备 root 能力
+    ssh_user_has_root_capability "$USERNAME" sudo && return 0
+    # 常规管理员的 sudo 需要输入自己的密码（本脚本不配置 NOPASSWD），
+    # 因此 `sudo -n` 提权探测必然失败；改以 root 身份查询 sudoers 实际
+    # 授权，该查询不需要目标用户密码，可正确识别这类管理员。
+    ssh_sudo_list_grants_full_root "$USERNAME"
 }
 
 ssh_user_can_admin() {

@@ -1,4 +1,4 @@
-# VPS 开荒脚本 V3.50.3
+# VPS 开荒脚本 V3.50.4
 
 > **银趴火山帮** 出品 · SSH · BBR · DDNS · Caddy · Firewall · NFT 转发
 
@@ -123,7 +123,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/TonyJsonson-8748/SSH-Hardeni
 ╚═╝╚═╝     ╚═╝╚═╝     ╚═╝  ╚═╝╚═╝  ╚═╝   ╚═╝        ╚═════╝ ╚═╝     ╚══════╝
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  VPS TOOLS  ·  V3.50.3
+  VPS TOOLS  ·  V3.50.4
   VPS 开荒脚本 · 银趴火山帮
 ────────────────────────────────────────────────────────────────
   SSH · BBR · DDNS · Caddy · Firewall · NFT · Monitor
@@ -198,6 +198,8 @@ X11Forwarding no
 | `X11Forwarding no` | 禁止通过 SSH 转发 X11 图形界面，减少不需要的攻击面 |
 
 严格模式没有强制绕过入口。脚本只接受拥有完整 sudo/doas root 管理权限、可交互登录、未被 Allow/Deny 规则阻止，且存在格式有效、路径与权限安全、无前置限制选项公钥的非 root 用户。候选配置还必须同时通过 `sshd -t` 和按当前连接条件执行的 `sshd -T -C` 校验。应用后会启动 180 秒自动回滚；必须从新终端强制使用该用户的公钥成功登录，并输入用户名确认，才会取消回滚。
+
+“完整 root 权限”的判定先尝试以目标身份执行 `sudo -n` 提权探测；因为本脚本创建的管理员需要输入自己的密码（不配置 `NOPASSWD`），该探测对其必然失败，所以会再以 root 身份查询 `sudo -l -U` 的实际授权——该查询不需要目标用户密码。只有 RunAs 可为 `root`/`ALL`、命令列表含裸 `ALL` 且不含 `!` 排除项的规则才算完整权限；仅授权具体命令、RunAs 为其他账号或没有授权的用户不计作管理入口。
 
 撤销用户登录同样先生成候选配置并验证。撤权后至少要保留一个其他可登录账号，并且剩余入口中必须有可登录的 root，或拥有完整 sudo/doas root 权限的可登录用户；只具备有限 sudo 命令的账号不计作恢复入口。否则脚本拒绝执行。应用后也必须从新终端验证所选备用账号，未确认时配置会自动恢复。
 
@@ -739,6 +741,7 @@ tests/smoke.sh
 
 | 版本 | 主要变更 |
 |------|---------|
+| **V3.50.4** | 修复需要输入密码的常规 sudo 管理员被误判为"没有完整 root 权限"：管理入口检测原先只用 `sudo -n` 做提权探测，而本脚本创建管理员时刻意不配置 `NOPASSWD`，导致这类账号必然探测失败。受影响的是严格模式（报"未找到可确认安全登录的非 root 密钥账号"而拒绝开启）、撤销 SSH 登录与删除公钥的剩余管理入口预检（误判为无管理员入口而拒绝执行）。现在提权探测失败后会改以 root 身份查询 `sudo -l -U` 的实际授权（该查询不需要目标用户密码），仅当 RunAs 可为 root/ALL 且命令列表含裸 `ALL`、且无 `!` 排除项时才认定为完整 root 权限；只有具体命令授权、非 root RunAs 或无授权的账号仍会被拒绝 |
 | **V3.50.3** | 修复 Ubuntu 22.10+/Debian 新版默认的 systemd socket 激活 sshd 场景下修改 SSH 端口不生效：只改 `sshd_config` 的 `Port` 并 `systemctl restart ssh` 不会让 `ssh.socket` 实际监听新端口（旧端口继续监听，新端口从未打开）；现在会运行时探测 `ssh.socket` 是否是当前的监听单元，是则额外写入 `/etc/systemd/system/ssh.socket.d/99-vps-tools-port.conf` 覆盖 `ListenStream`，并在重启时改为 `daemon-reload` + `restart ssh.socket`；该覆盖文件已并入端口修改的备份、180 秒自动回滚与立即回滚路径，任一失败都会精确恢复到变更前状态 |
 | **V3.50.2** | 修复离线包校验函数 `self_offline_archive_validate` 中 `RAW_TAR` 在同一条 `local` 语句内引用刚声明的 `TYPE_LIST` 导致取值错误的作用域 bug；移除已被拆分字段取代的死变量 `FIREWALL_IPTABLES_RULES`/`FIREWALL_ALLOW_FIREWALLD_ADDED`；清理归档路径校验中被更宽泛规则覆盖的冗余模式；消除全部 CI shellcheck 警告 |
 | **V3.50.1** | 合并上游 BBR tc 限速修复：多队列网卡默认 `mq` 无法 `tc qdisc del` 导致限速失败，改用 `replace` 原子安装 HTB 并同步修复持久化辅助脚本；默认仍拒绝覆盖外部 QoS，展示现有 qdisc/class/filter 后输入 `FORCE <网卡>` 可强制接管、输入 `DELETE <网卡>` 可删除外部限速，操作前将文本与 JSON 诊断快照保存到 `/var/lib/vps-tools/tc-backups/` |
