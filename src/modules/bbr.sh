@@ -6,6 +6,7 @@ SERVICE_TC="/etc/systemd/system/tc-fq.service"
 SERVICE_TC_INIT="/etc/init.d/tc-fq"
 TC_HELPER="/usr/local/libexec/vps-tools-tc-fq"
 TC_STATE_FILE="/var/lib/vps-tools/tc-fq.state"
+TC_BACKUP_DIR="/var/lib/vps-tools/tc-backups"
 SERVICE_CWND="/etc/systemd/system/initcwnd.service"
 SERVICE_CWND_INIT="/etc/init.d/initcwnd"
 CWND_HELPER="/usr/local/libexec/vps-tools-initcwnd"
@@ -187,9 +188,11 @@ bbr_config_dynamic_scene_keys() {
 
 # ── 状态显示 ──────────────────────────────────────────────
 bbr_print_status() {
-    local DEV; DEV=$(default_iface)
-    local RATE; RATE=$(tc qdisc show dev "$DEV" 2>/dev/null | grep -oE '(maxrate|rate) [^ ]+' | head -1 | awk '{print $2}')
-    [ -z "$RATE" ] && RATE="未设置"
+    local DEV TC_BIN RATE
+    DEV=$(default_iface)
+    TC_BIN=$(command -v tc 2>/dev/null || true)
+    RATE="未设置"
+    [ -z "$TC_BIN" ] || RATE=$(bbr_tc_rate_display "$DEV" "$TC_BIN")
     local BBR; BBR=$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null || echo "未知")
     local CWND
     CWND=$(ip -4 route show default 2>/dev/null | grep -oE 'initcwnd [0-9]+' | head -1 | awk '{print $2}')
@@ -432,6 +435,106 @@ bbr_tc_qdisc_safe_to_replace() {
     esac
 }
 
+bbr_tc_current_rate() {
+    local DEV="$1" TC_BIN="$2" RATE
+    RATE=$("$TC_BIN" class show dev "$DEV" 2>/dev/null | grep -oE 'rate [^ ]+' | head -1 | awk '{print $2}')
+    [ -z "$RATE" ] && RATE=$("$TC_BIN" qdisc show dev "$DEV" 2>/dev/null | grep -oE 'rate [^ ]+' | head -1 | awk '{print $2}')
+    [ -z "$RATE" ] && RATE=$("$TC_BIN" qdisc show dev "$DEV" 2>/dev/null | grep -oE 'maxrate [^ ]+' | head -1 | awk '{print $2}')
+    printf '%s\n' "$RATE"
+}
+
+bbr_tc_rate_display() {
+    local DEV="$1" TC_BIN="$2" RATE QDISCS LINE TYPE
+    RATE=$(bbr_tc_current_rate "$DEV" "$TC_BIN")
+    [ -n "$RATE" ] || { echo "未设置"; return; }
+    QDISCS=$("$TC_BIN" qdisc show dev "$DEV" 2>/dev/null || true)
+    LINE=$(bbr_tc_root_line "$QDISCS")
+    TYPE=$(bbr_tc_qdisc_type "$LINE")
+    if ! bbr_tc_is_owned "$DEV" "$TC_BIN" \
+        && ! bbr_tc_is_legacy_owned "$DEV" "$TC_BIN" \
+        && ! bbr_tc_qdisc_safe_to_replace "$TYPE"; then
+        printf '%s（外部 %s）\n' "$RATE" "${TYPE:-未知}"
+    else
+        printf '%s\n' "$RATE"
+    fi
+}
+
+bbr_tc_snapshot_foreign() {
+    local DEV="$1" TC_BIN="$2" TMP SNAPSHOT STAMP
+    echo "$DEV" | grep -qE '^[[:alnum:]_.-]{1,15}$' || return 1
+    mkdir -p "$TC_BACKUP_DIR" 2>/dev/null || return 1
+    chmod 700 "$TC_BACKUP_DIR" 2>/dev/null || true
+    STAMP=$(date '+%Y%m%d_%H%M%S')
+    SNAPSHOT="$TC_BACKUP_DIR/${DEV}_${STAMP}_$$.txt"
+    TMP="${SNAPSHOT}.tmp"
+    {
+        printf 'VPS TOOLS foreign tc snapshot\n'
+        printf 'Captured: %s\n' "$(date '+%Y-%m-%d %H:%M:%S %Z')"
+        printf 'Device: %s\n\n' "$DEV"
+        printf '[qdisc]\n'
+        "$TC_BIN" qdisc show dev "$DEV" 2>&1 || true
+        printf '\n[class]\n'
+        "$TC_BIN" class show dev "$DEV" 2>&1 || true
+        printf '\n[filter]\n'
+        "$TC_BIN" filter show dev "$DEV" 2>&1 || true
+        printf '\n[qdisc-json]\n'
+        "$TC_BIN" -j qdisc show dev "$DEV" 2>&1 || true
+        printf '\n[class-json]\n'
+        "$TC_BIN" -j class show dev "$DEV" 2>&1 || true
+        printf '\n[filter-json]\n'
+        "$TC_BIN" -j filter show dev "$DEV" 2>&1 || true
+    } > "$TMP" || { rm -f "$TMP"; return 1; }
+    chmod 600 "$TMP" && mv "$TMP" "$SNAPSHOT" || { rm -f "$TMP"; return 1; }
+    printf '%s\n' "$SNAPSHOT"
+}
+
+bbr_tc_force_confirm() {
+    local DEV="$1" RATE="$2" TC_BIN="$3" QDISCS CLASSES FILTERS CONFIRM
+    QDISCS=$("$TC_BIN" qdisc show dev "$DEV" 2>/dev/null || true)
+    CLASSES=$("$TC_BIN" class show dev "$DEV" 2>/dev/null || true)
+    FILTERS=$("$TC_BIN" filter show dev "$DEV" 2>/dev/null || true)
+    echo ""
+    menu_div
+    warn "强制接管会删除 ${DEV} 的全部 root qdisc、子 class 和 filter"
+    warn "现有 QoS 无法通用自动恢复；重启后本工具仍会覆盖外部 qdisc"
+    echo -e "  ${DIM}目标限速：${RATE} Mbps${NC}"
+    echo -e "  ${DIM}当前 qdisc：${NC}"
+    printf '%s\n' "$QDISCS" | sed 's/^/    /'
+    [ -z "$CLASSES" ] || { echo -e "  ${DIM}当前 class：${NC}"; printf '%s\n' "$CLASSES" | sed 's/^/    /'; }
+    [ -z "$FILTERS" ] || { echo -e "  ${DIM}当前 filter：${NC}"; printf '%s\n' "$FILTERS" | sed 's/^/    /'; }
+    menu_div
+    echo ""
+    read -rp "  输入 FORCE ${DEV} 确认强制覆盖: " CONFIRM
+    if [ "$CONFIRM" != "FORCE ${DEV}" ]; then
+        warn "确认词不匹配，已取消强制覆盖"
+        return 1
+    fi
+    return 0
+}
+
+bbr_tc_remove_confirm() {
+    local DEV="$1" TC_BIN="$2" QDISCS CLASSES FILTERS CONFIRM
+    QDISCS=$("$TC_BIN" qdisc show dev "$DEV" 2>/dev/null || true)
+    CLASSES=$("$TC_BIN" class show dev "$DEV" 2>/dev/null || true)
+    FILTERS=$("$TC_BIN" filter show dev "$DEV" 2>/dev/null || true)
+    echo ""
+    menu_div
+    warn "检测到 ${DEV} 仍有非本工具管理的 root qdisc"
+    warn "删除会清除该 root qdisc 的全部子 class 和 filter；clsact 不受影响"
+    echo -e "  ${DIM}当前 qdisc：${NC}"
+    printf '%s\n' "$QDISCS" | sed 's/^/    /'
+    [ -z "$CLASSES" ] || { echo -e "  ${DIM}当前 class：${NC}"; printf '%s\n' "$CLASSES" | sed 's/^/    /'; }
+    [ -z "$FILTERS" ] || { echo -e "  ${DIM}当前 filter：${NC}"; printf '%s\n' "$FILTERS" | sed 's/^/    /'; }
+    menu_div
+    echo ""
+    read -rp "  输入 DELETE ${DEV} 确认删除外部限速: " CONFIRM
+    if [ "$CONFIRM" != "DELETE ${DEV}" ]; then
+        warn "确认词不匹配，外部 qdisc 已保留"
+        return 1
+    fi
+    return 0
+}
+
 bbr_state_value() {
     local FILE="$1" KEY="$2"
     [ -f "$FILE" ] || return 1
@@ -498,8 +601,8 @@ bbr_tc_restore_owned() {
 }
 
 bbr_tc_apply_runtime() {
-    local DEV="$1" RATE="$2" BURST_KB="$3" TC_BIN="$4"
-    local QDISCS LINE TYPE WAS_OWNED=0
+    local DEV="$1" RATE="$2" BURST_KB="$3" TC_BIN="$4" FORCE="${5:-0}"
+    local QDISCS LINE TYPE WAS_OWNED=0 FORCED_FOREIGN=0 SNAPSHOT="" ROOT_ACTION=add
     if ! QDISCS=$("$TC_BIN" qdisc show dev "$DEV" 2>/dev/null); then
         error "无法读取 ${DEV} 的当前 tc 配置，已拒绝修改"
         return 1
@@ -513,34 +616,64 @@ bbr_tc_apply_runtime() {
         info "识别到旧版 VPS Tools tc 限速规则，将自动迁移"
     fi
     if [ "$WAS_OWNED" -eq 0 ] && ! bbr_tc_qdisc_safe_to_replace "$TYPE"; then
-        error "检测到非本工具管理的 root qdisc：${TYPE:-未知}，已拒绝覆盖"
-        echo -e "  ${DIM}请先用 tc qdisc show dev ${DEV} 确认现有 QoS 配置${NC}"
-        return 1
+        if [ "$FORCE" != 1 ]; then
+            error "检测到非本工具管理的 root qdisc：${TYPE:-未知}，需要强制确认"
+            echo -e "  ${DIM}默认不会覆盖；确认后可由本工具强制接管${NC}"
+            return 2
+        fi
+        SNAPSHOT=$(bbr_tc_snapshot_foreign "$DEV" "$TC_BIN") || {
+            error "无法保存现有 tc 诊断快照，已拒绝强制覆盖"
+            return 1
+        }
+        FORCED_FOREIGN=1
+        warn "已保存现有 tc 诊断快照：${SNAPSHOT}"
     fi
 
-    [ -n "$LINE" ] && "$TC_BIN" qdisc del dev "$DEV" root 2>/dev/null || true
-    if ! "$TC_BIN" qdisc add dev "$DEV" root handle 1: htb default 10 2>/dev/null \
-        || ! "$TC_BIN" class add dev "$DEV" parent 1: classid 1:10 htb \
+    if [ -n "$LINE" ]; then
+        if [ "$WAS_OWNED" -eq 0 ] && [ "$FORCED_FOREIGN" -eq 0 ]; then
+            # mq/noqueue 等内核默认 qdisc 不能可靠 del，replace 可原子接管 root。
+            ROOT_ACTION=replace
+        elif ! "$TC_BIN" qdisc del dev "$DEV" root 2>/dev/null; then
+            error "无法删除 ${DEV} 的现有 root qdisc"
+            return 1
+        fi
+    fi
+
+    if ! "$TC_BIN" qdisc "$ROOT_ACTION" dev "$DEV" root handle 1: htb default 10 2>/dev/null; then
+        error "无法在 ${DEV} 安装 HTB root qdisc（内核可能缺 sch_htb 模块）"
+        if [ "$WAS_OWNED" -eq 1 ]; then
+            bbr_tc_restore_owned || warn "旧 tc 限速规则自动恢复失败"
+        elif [ "$FORCED_FOREIGN" -eq 1 ]; then
+            warn "外部 qdisc 已删除且无法通用自动恢复，请按原管理工具重建"
+            warn "删除前诊断快照：${SNAPSHOT}"
+        fi
+        return 1
+    fi
+    if ! "$TC_BIN" class add dev "$DEV" parent 1: classid 1:10 htb \
                 rate "${RATE}mbit" ceil "${RATE}mbit" burst "${BURST_KB}kb" cburst "${BURST_KB}kb" 2>/dev/null \
         || ! "$TC_BIN" qdisc add dev "$DEV" parent 1:10 handle 100: fq maxrate "${RATE}mbit" 2>/dev/null; then
         error "tc 规则应用失败（内核可能缺 sch_htb / sch_fq 模块）"
         "$TC_BIN" qdisc del dev "$DEV" root 2>/dev/null || true
         if [ "$WAS_OWNED" -eq 1 ]; then
             bbr_tc_restore_owned || warn "旧 tc 限速规则自动恢复失败"
+        elif [ "$FORCED_FOREIGN" -eq 1 ]; then
+            warn "外部 qdisc 已删除且无法通用自动恢复，请按原管理工具重建"
+            warn "删除前诊断快照：${SNAPSHOT}"
         fi
         return 1
     fi
+    [ "$FORCED_FOREIGN" -eq 0 ] || warn "已强制接管 ${DEV} 的 root qdisc"
     return 0
 }
 
 bbr_tc_write_persistence() {
-    local DEV="$1" RATE="$2" BURST_KB="$3" TMP
+    local DEV="$1" RATE="$2" BURST_KB="$3" FORCE="${4:-0}" TMP
     mkdir -p "$(dirname "$TC_HELPER")" "$(dirname "$TC_STATE_FILE")" 2>/dev/null || {
         error "无法创建 tc 持久化目录"
         return 1
     }
     TMP=$(mktemp "${TC_STATE_FILE}.tmp.XXXXXX") || return 1
-    printf 'DEV=%s\nRATE=%s\nBURST_KB=%s\n' "$DEV" "$RATE" "$BURST_KB" > "$TMP" || {
+    printf 'DEV=%s\nRATE=%s\nBURST_KB=%s\nFORCE=%s\n' "$DEV" "$RATE" "$BURST_KB" "$FORCE" > "$TMP" || {
         rm -f "$TMP"
         return 1
     }
@@ -554,6 +687,8 @@ state_value() { awk -F= -v key="$1" '$1 == key { sub(/^[^=]*=/, ""); print; exit
 DEV=$(state_value DEV)
 RATE=$(state_value RATE)
 BURST_KB=$(state_value BURST_KB)
+FORCE=$(state_value FORCE)
+[ "$FORCE" = 1 ] || FORCE=0
 TC=$(command -v tc 2>/dev/null || echo /sbin/tc)
 [ -n "$DEV" ] && echo "$RATE" | grep -qE '^[0-9]+$' && echo "$BURST_KB" | grep -qE '^[0-9]+$' || exit 1
 QDISCS=$("$TC" qdisc show dev "$DEV" 2>/dev/null)
@@ -576,9 +711,16 @@ if [ "${1:-apply}" = status ]; then
     [ "$OWNED" -eq 1 ]
     exit $?
 fi
-case "$TYPE" in ""|mq|fq|fq_codel|noqueue|pfifo_fast) : ;; htb) [ "$OWNED" -eq 1 ] || exit 1 ;; *) exit 1 ;; esac
-[ -z "$LINE" ] || "$TC" qdisc del dev "$DEV" root 2>/dev/null || true
-"$TC" qdisc add dev "$DEV" root handle 1: htb default 10 && \
+ROOT_ACTION=add
+case "$TYPE" in
+    ""|mq|fq|fq_codel|noqueue|pfifo_fast) ROOT_ACTION=replace ;;
+    htb) [ "$OWNED" -eq 1 ] || [ "$FORCE" -eq 1 ] || exit 1 ;;
+    *) [ "$FORCE" -eq 1 ] || exit 1 ;;
+esac
+if [ "$OWNED" -eq 1 ] || { [ -n "$LINE" ] && [ "$ROOT_ACTION" != replace ]; }; then
+    "$TC" qdisc del dev "$DEV" root 2>/dev/null || exit 1
+fi
+"$TC" qdisc "$ROOT_ACTION" dev "$DEV" root handle 1: htb default 10 && \
 "$TC" class add dev "$DEV" parent 1: classid 1:10 htb rate "${RATE}mbit" ceil "${RATE}mbit" burst "${BURST_KB}kb" cburst "${BURST_KB}kb" && \
 "$TC" qdisc add dev "$DEV" parent 1:10 handle 100: fq maxrate "${RATE}mbit"
 TC_HELPER_EOF
@@ -661,7 +803,7 @@ EOF
 }
 
 bbr_apply_tc() {
-    local RATE="$1"
+    local RATE="$1" FORCE="${2:-0}" APPLY_RC
     local DEV; DEV=$(default_iface)
     [ -z "$DEV" ] && { error "无法确定默认出口网卡"; return 1; }
     local TC_BIN
@@ -673,8 +815,10 @@ bbr_apply_tc() {
     local BURST_KB=$RATE
     [ "$BURST_KB" -lt 32 ] && BURST_KB=32
 
-    bbr_tc_apply_runtime "$DEV" "$RATE" "$BURST_KB" "$TC_BIN" || return 1
-    bbr_tc_write_persistence "$DEV" "$RATE" "$BURST_KB" || {
+    bbr_tc_apply_runtime "$DEV" "$RATE" "$BURST_KB" "$TC_BIN" "$FORCE"
+    APPLY_RC=$?
+    [ "$APPLY_RC" -eq 0 ] || return "$APPLY_RC"
+    bbr_tc_write_persistence "$DEV" "$RATE" "$BURST_KB" "$FORCE" || {
         error "tc 已立即生效，但持久化配置未完成"
         return 1
     }
@@ -683,15 +827,28 @@ bbr_apply_tc() {
 }
 
 bbr_remove_tc() {
-    local TC_BIN DEV FAILED=0
+    local FORCE="${1:-0}" TC_BIN DEV FAILED=0 FOREIGN=0 QDISCS LINE TYPE SNAPSHOT=""
     TC_BIN=$(command -v tc 2>/dev/null || echo /sbin/tc)
     DEV=$(bbr_state_value "$TC_STATE_FILE" DEV 2>/dev/null || true)
     [ -n "$DEV" ] || DEV=$(default_iface)
     if [ -x "$TC_BIN" ] && [ -n "$DEV" ]; then
         if bbr_tc_is_owned "$DEV" "$TC_BIN" || bbr_tc_is_legacy_owned "$DEV" "$TC_BIN"; then
             "$TC_BIN" qdisc del dev "$DEV" root 2>/dev/null || FAILED=1
-        elif [ -f "$TC_STATE_FILE" ] || bbr_tc_managed_artifact; then
-            warn "当前 root qdisc 已不是本工具规则，未执行删除"
+        else
+            QDISCS=$("$TC_BIN" qdisc show dev "$DEV" 2>/dev/null || true)
+            LINE=$(bbr_tc_root_line "$QDISCS")
+            TYPE=$(bbr_tc_qdisc_type "$LINE")
+            if [ -n "$LINE" ] && ! bbr_tc_qdisc_safe_to_replace "$TYPE"; then
+                if [ "$FORCE" = 1 ]; then
+                    SNAPSHOT=$(bbr_tc_snapshot_foreign "$DEV" "$TC_BIN") || FAILED=1
+                    if [ "$FAILED" -eq 0 ]; then
+                        warn "已保存外部 tc 诊断快照：${SNAPSHOT}"
+                        "$TC_BIN" qdisc del dev "$DEV" root 2>/dev/null || FAILED=1
+                    fi
+                else
+                    FOREIGN=1
+                fi
+            fi
         fi
     fi
 
@@ -711,6 +868,11 @@ bbr_remove_tc() {
         error "取消 tc 限速时发生错误"
         return 1
     fi
+    if [ "$FOREIGN" -eq 1 ]; then
+        warn "本工具的 tc 持久化已取消，但外部 root qdisc ${TYPE:-未知} 仍在生效"
+        return 2
+    fi
+    [ "$FORCE" != 1 ] || info "外部 root qdisc 已删除 ✓"
     info "已取消本工具管理的 tc 限速 ✓"
 }
 
@@ -1182,13 +1344,13 @@ bbr_menu_tc() {
         return
     fi
 
-    local DEV; DEV=$(default_iface)
-    local QTYPE; QTYPE=$(tc qdisc show dev "$DEV" 2>/dev/null | awk 'NR==1{print $2}')
+    local DEV QDISCS ROOT_LINE
+    DEV=$(default_iface)
+    QDISCS=$(tc qdisc show dev "$DEV" 2>/dev/null || true)
+    ROOT_LINE=$(bbr_tc_root_line "$QDISCS")
+    local QTYPE; QTYPE=$(bbr_tc_qdisc_type "$ROOT_LINE")
     [ -z "$QTYPE" ] && QTYPE="未知"
-    # 当前限速：优先取 htb class 的 rate，其次 fq maxrate
-    local CUR; CUR=$(tc class show dev "$DEV" 2>/dev/null | grep -oE 'rate [^ ]+' | head -1 | awk '{print $2}')
-    [ -z "$CUR" ] && CUR=$(tc qdisc show dev "$DEV" 2>/dev/null | grep -oE 'maxrate [^ ]+' | head -1 | awk '{print $2}')
-    [ -z "$CUR" ] && CUR="未设置"
+    local CUR; CUR=$(bbr_tc_rate_display "$DEV" "$(command -v tc 2>/dev/null || echo /sbin/tc)")
 
     echo -e "  网卡：${BOLD}${DEV}${NC}  当前 qdisc：${BOLD}${QTYPE}${NC}  当前限速：${BOLD}${CUR}${NC}"
     echo ""
@@ -1222,9 +1384,27 @@ bbr_menu_tc() {
     esac
 
     if [ "$RATE" -eq 0 ]; then
+        local REMOVE_RC TC_BIN
         bbr_remove_tc
+        REMOVE_RC=$?
+        if [ "$REMOVE_RC" -eq 2 ]; then
+            TC_BIN=$(command -v tc 2>/dev/null || echo /sbin/tc)
+            bbr_tc_remove_confirm "$DEV" "$TC_BIN" || return
+            bbr_remove_tc 1
+        elif [ "$REMOVE_RC" -ne 0 ]; then
+            return "$REMOVE_RC"
+        fi
     else
+        local APPLY_RC TC_BIN
         bbr_apply_tc "$RATE"
+        APPLY_RC=$?
+        if [ "$APPLY_RC" -eq 2 ]; then
+            TC_BIN=$(command -v tc 2>/dev/null || echo /sbin/tc)
+            bbr_tc_force_confirm "$DEV" "$RATE" "$TC_BIN" || return
+            bbr_apply_tc "$RATE" 1
+        elif [ "$APPLY_RC" -ne 0 ]; then
+            return "$APPLY_RC"
+        fi
     fi
 }
 
@@ -1693,9 +1873,7 @@ bbr_diagnose() {
     RATE="未设置"
 
     if [ -n "$DEV" ] && [ -n "$TC_BIN" ]; then
-        RATE=$("$TC_BIN" class show dev "$DEV" 2>/dev/null | grep -oE 'rate [^ ]+' | head -1 | awk '{print $2}')
-        [ -z "$RATE" ] && RATE=$("$TC_BIN" qdisc show dev "$DEV" 2>/dev/null | grep -oE 'maxrate [^ ]+' | head -1 | awk '{print $2}')
-        [ -z "$RATE" ] && RATE="未设置"
+        RATE=$(bbr_tc_rate_display "$DEV" "$TC_BIN")
     fi
 
     SYSCTL_WRITABLE="否"

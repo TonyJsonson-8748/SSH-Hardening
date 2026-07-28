@@ -1,4 +1,4 @@
-# VPS 开荒脚本 V3.50.0
+# VPS 开荒脚本 V3.50.1
 
 > **银趴火山帮** 出品 · SSH · BBR · DDNS · Caddy · Firewall · NFT 转发
 
@@ -123,7 +123,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/TonyJsonson-8748/SSH-Hardeni
 ╚═╝╚═╝     ╚═╝╚═╝     ╚═╝  ╚═╝╚═╝  ╚═╝   ╚═╝        ╚═════╝ ╚═╝     ╚══════╝
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  VPS TOOLS  ·  V3.50.0
+  VPS TOOLS  ·  V3.50.1
   VPS 开荒脚本 · 银趴火山帮
 ────────────────────────────────────────────────────────────────
   SSH · BBR · DDNS · Caddy · Firewall · NFT · Monitor
@@ -295,7 +295,7 @@ X11Forwarding no
 - 逐行 `sysctl -w` 应用；非核心参数不支持时注释跳过，BBR 核心参数失败则拒绝持久化
 
 **其他功能：**
-- tc 限速（200M / 500M / 780M / 1G / 2G / 自定义）：`htb` 聚合整形 + `fq` 叶子保留 BBR pacing；拒绝覆盖 CAKE 等非本工具 QoS
+- tc 限速（200M / 500M / 780M / 1G / 2G / 自定义）：`htb` 聚合整形 + `fq` 叶子保留 BBR pacing；兼容不可直接删除的默认 `mq`；默认拒绝外部 QoS，输入精确确认词后可接管或删除 `tbf` / CAKE / HTB 等 root qdisc，操作前诊断快照保存到 `/var/lib/vps-tools/tc-backups/`
 - initcwnd（10 / 50 / 100 / 自定义），支持 IPv4/IPv6、无网关默认路由和 systemd/OpenRC/SysV 持久化
 - 备份 / 还原 sysctl（按时间戳）
 
@@ -739,6 +739,7 @@ tests/smoke.sh
 
 | 版本 | 主要变更 |
 |------|---------|
+| **V3.50.1** | 合并上游 BBR tc 限速修复：多队列网卡默认 `mq` 无法 `tc qdisc del` 导致限速失败，改用 `replace` 原子安装 HTB 并同步修复持久化辅助脚本；默认仍拒绝覆盖外部 QoS，展示现有 qdisc/class/filter 后输入 `FORCE <网卡>` 可强制接管、输入 `DELETE <网卡>` 可删除外部限速，操作前将文本与 JSON 诊断快照保存到 `/var/lib/vps-tools/tc-backups/` |
 | **V3.50.0** | 全面强化 SSH、公钥、防火墙、用户管理及防断联事务：配置和密钥写入加入并发变更检测；防火墙覆盖双栈、区域绑定和部分回滚；回滚状态校验文件内容、存在性、进程身份与服务启用状态；离线包、监控/NFT 定时任务、Swap 与自更新进一步增加完整校验、原子替换和失败恢复 |
 | **V3.20.3** | SSH 工具集生成密钥对后不再固定写入 root：默认目标仍为 root，也可指定其他可交互登录用户或完全跳过服务器写入；复用有效 `AuthorizedKeysFile`、文件类型、属主、权限、公钥格式与去重校验，并记录生成、写入和跳过操作日志 |
 | **V3.20.2** | 合并上游离线安装包、GitHub Release 发布工作流与 HTTPS 自动校时：支持每 1/3/6/12/24 小时通过 systemd timer 或 root crontab 执行，记录最近结果并防止任务重叠；修复交互式首次同步后锁文件描述符未及时释放的问题；README 的安装、离线构建和仓库地址继续以长期维护 Fork 为准 |
