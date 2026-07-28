@@ -18,7 +18,8 @@ for fn in systemd_available show_cli_help main_menu ssh_tools_menu ssh_key_count
     ddns_cfg_enable_a ddns_cfg_enable_aaaa ddns_cfg_domain4 ddns_cfg_domain6 ddns_primary_domain ddns_mode_label ddns_build_domain ddns_replace_link_host \
     ddns_latest_log_line ddns_latest_change_log_line ddns_line_time ddns_line_result_ip ddns_newer_line ddns_change_matches_status ddns_record_status_line ddns_record_change_line ddns_print_record_summary \
     system_toolbox_menu security_password_auth_effective security_password_methods_disabled security_root_password_restricted \
-    resource_health_check system_update_manager system_hostname_apply config_backup_create safety_load_pending safety_lock_acquire safety_lock_release self_update docker_menu change_port; do
+    resource_health_check system_update_manager system_hostname_apply config_backup_create safety_load_pending safety_lock_acquire safety_lock_release self_update docker_menu change_port \
+    ssh_socket_activated ssh_socket_override_backup ssh_socket_override_restore ssh_socket_override_write; do
     declare -F "$fn" >/dev/null || { echo "Missing function: $fn" >&2; exit 1; }
 done
 
@@ -1640,6 +1641,81 @@ grep -q '^[[:space:]]*Port 2200$' "$SSHD_PORT_SAMPLE" \
         || { echo "Multiple effective SSH ports from Include were accepted" >&2; exit 1; }
 )
 (
+    systemd_available() { return 0; }
+    systemctl() { [ "$1" = is-active ] && [ "$3" = ssh.socket ]; }
+    ssh_socket_activated \
+        || { echo "Active ssh.socket was not detected" >&2; exit 1; }
+    systemctl() { [ "$1" = is-active ] && return 1; }
+    ! ssh_socket_activated \
+        || { echo "Inactive ssh.socket was treated as active" >&2; exit 1; }
+    systemd_available() { return 1; }
+    systemctl() { return 0; }
+    ! ssh_socket_activated \
+        || { echo "ssh.socket was treated as active without systemd" >&2; exit 1; }
+)
+(
+    SSHD_SOCKET_OVERRIDE_DIR="$TMP/ssh.socket.d"
+    SSHD_SOCKET_OVERRIDE_FILE="$SSHD_SOCKET_OVERRIDE_DIR/99-vps-tools-port.conf"
+    ssh_socket_override_write 2222 \
+        || { echo "ssh_socket_override_write failed on a fresh directory" >&2; exit 1; }
+    [ -f "$SSHD_SOCKET_OVERRIDE_FILE" ] \
+        || { echo "ssh.socket override file was not created" >&2; exit 1; }
+    grep -qx 'ListenStream=' "$SSHD_SOCKET_OVERRIDE_FILE" \
+        || { echo "ssh.socket override did not clear inherited ListenStream entries" >&2; exit 1; }
+    grep -qx 'ListenStream=0.0.0.0:2222' "$SSHD_SOCKET_OVERRIDE_FILE" \
+        || { echo "ssh.socket override is missing the IPv4 listener" >&2; exit 1; }
+    grep -qxF 'ListenStream=[::]:2222' "$SSHD_SOCKET_OVERRIDE_FILE" \
+        || { echo "ssh.socket override is missing the IPv6 listener" >&2; exit 1; }
+)
+(
+    SSHD_SOCKET_OVERRIDE_DIR="$TMP/ssh.socket.d-roundtrip"
+    SSHD_SOCKET_OVERRIDE_FILE="$SSHD_SOCKET_OVERRIDE_DIR/99-vps-tools-port.conf"
+    ssh_socket_override_backup \
+        || { echo "Backing up a missing ssh.socket override failed" >&2; exit 1; }
+    [ "$LAST_SOCKET_OVERRIDE_EXISTED" = no ] \
+        || { echo "Missing ssh.socket override was recorded as existing" >&2; exit 1; }
+    ssh_socket_override_write 3333 \
+        || { echo "ssh_socket_override_write failed before restore round-trip" >&2; exit 1; }
+    ssh_socket_override_restore \
+        || { echo "ssh_socket_override_restore failed for a previously-absent override" >&2; exit 1; }
+    [ ! -e "$SSHD_SOCKET_OVERRIDE_FILE" ] \
+        || { echo "ssh_socket_override_restore left behind a file that did not exist before" >&2; exit 1; }
+    ssh_socket_override_write 2222 \
+        || { echo "ssh_socket_override_write failed to seed an existing override" >&2; exit 1; }
+    ssh_socket_override_backup \
+        || { echo "Backing up an existing ssh.socket override failed" >&2; exit 1; }
+    [ "$LAST_SOCKET_OVERRIDE_EXISTED" = yes ] \
+        || { echo "Existing ssh.socket override was not recorded as existing" >&2; exit 1; }
+    ssh_socket_override_write 4444 \
+        || { echo "ssh_socket_override_write failed to apply a new port" >&2; exit 1; }
+    ssh_socket_override_restore \
+        || { echo "ssh_socket_override_restore failed for a previously-present override" >&2; exit 1; }
+    grep -qx 'ListenStream=0.0.0.0:2222' "$SSHD_SOCKET_OVERRIDE_FILE" \
+        || { echo "ssh_socket_override_restore did not roll back to the prior port" >&2; exit 1; }
+)
+(
+    SYSTEMCTL_LOG="$TMP/restart-ssh-systemctl.log"
+    systemd_available() { return 0; }
+    ssh_socket_activated() { return 0; }
+    systemctl() { printf '%s\n' "$*" >> "$SYSTEMCTL_LOG"; return 0; }
+    restart_ssh \
+        || { echo "restart_ssh failed while ssh.socket is active" >&2; exit 1; }
+    grep -qx 'daemon-reload' "$SYSTEMCTL_LOG" \
+        || { echo "restart_ssh did not reload systemd before restarting ssh.socket" >&2; exit 1; }
+    grep -qx 'restart ssh.socket' "$SYSTEMCTL_LOG" \
+        || { echo "restart_ssh did not restart ssh.socket" >&2; exit 1; }
+    RELOAD_LINE=$(grep -nx 'daemon-reload' "$SYSTEMCTL_LOG" | cut -d: -f1)
+    SOCKET_LINE=$(grep -nx 'restart ssh.socket' "$SYSTEMCTL_LOG" | cut -d: -f1)
+    [ "$RELOAD_LINE" -lt "$SOCKET_LINE" ] \
+        || { echo "restart_ssh reloaded systemd after restarting ssh.socket" >&2; exit 1; }
+    systemctl() {
+        [ "$1" = restart ] && [ "$2" = ssh.socket ] && return 1
+        return 0
+    }
+    ! restart_ssh >/dev/null 2>&1 \
+        || { echo "restart_ssh reported success despite ssh.socket restart failure" >&2; exit 1; }
+)
+(
     IPTABLES_RULE_PRESENT=yes
     IPTABLES_DELETE_LOG="$TMP/iptables-delete.log"
     IPTABLES_RULES_FILE="$TMP/rules.v4"
@@ -1809,6 +1885,73 @@ grep -q '^[[:space:]]*Port 2200$' "$SSHD_PORT_SAMPLE" \
         || { echo "SSH config was not restored after apply failure" >&2; exit 1; }
     [ -e "$PORT_FIREWALL_ROLLBACK" ] && [ -e "$PORT_TIMER_CANCEL" ] \
         || { echo "SSH apply failure did not roll back firewall and cancel safety timer" >&2; exit 1; }
+)
+(
+    SSHD_CONFIG="$TMP/change-port-socket-active"
+    printf '%s\n' 'Port 22' > "$SSHD_CONFIG"
+    get_config() { printf '%s\n' 22; }
+    sshd() {
+        if [ "$1" = -T ]; then
+            awk 'tolower($1) == "port" {print "port " $2}' "$3"
+        else
+            return 0
+        fi
+    }
+    print_header() { :; }
+    menu_div() { :; }
+    confirm_file_diff() { return 0; }
+    backup_config() {
+        LAST_SSHD_BACKUP="$SSHD_CONFIG.before"
+        cp -p -- "$SSHD_CONFIG" "$LAST_SSHD_BACKUP"
+    }
+    safety_arm() { return 0; }
+    ssh_socket_activated() { return 0; }
+    SOCKET_WRITE_LOG="$TMP/change-port-socket-write.log"
+    ssh_socket_override_write() { printf '%s\n' "$1" > "$SOCKET_WRITE_LOG"; }
+    firewall_allow_port() { return 1; }
+    ssh_restore_and_cancel_safety() { : > "$TMP/change-port-socket-active-restored"; }
+    info() { :; }
+    warn() { :; }
+    error() { :; }
+    ! change_port <<< "2222" \
+        || { echo "SSH port change continued after firewall allowance failure" >&2; exit 1; }
+    [ "$(cat "$SOCKET_WRITE_LOG" 2>/dev/null)" = 2222 ] \
+        || { echo "ssh.socket override was not written with the new port before applying" >&2; exit 1; }
+)
+(
+    SSHD_CONFIG="$TMP/change-port-socket-write-failure"
+    printf '%s\n' 'Port 22' > "$SSHD_CONFIG"
+    get_config() { printf '%s\n' 22; }
+    sshd() {
+        if [ "$1" = -T ]; then
+            awk 'tolower($1) == "port" {print "port " $2}' "$3"
+        else
+            return 0
+        fi
+    }
+    print_header() { :; }
+    menu_div() { :; }
+    confirm_file_diff() { return 0; }
+    backup_config() {
+        LAST_SSHD_BACKUP="$SSHD_CONFIG.before"
+        cp -p -- "$SSHD_CONFIG" "$LAST_SSHD_BACKUP"
+    }
+    safety_arm() { return 0; }
+    ssh_socket_activated() { return 0; }
+    ssh_socket_override_write() { return 1; }
+    PORT_SOCKET_RESTORE="$TMP/change-port-socket-write-failure-restored"
+    PORT_FIREWALL_CALLED="$TMP/change-port-socket-write-failure-firewall-called"
+    ssh_restore_and_cancel_safety() { : > "$PORT_SOCKET_RESTORE"; }
+    firewall_allow_port() { : > "$PORT_FIREWALL_CALLED"; return 0; }
+    info() { :; }
+    warn() { :; }
+    error() { :; }
+    ! change_port <<< "2222" \
+        || { echo "SSH port change reported success despite ssh.socket override failure" >&2; exit 1; }
+    [ -e "$PORT_SOCKET_RESTORE" ] \
+        || { echo "ssh.socket override failure did not trigger rollback" >&2; exit 1; }
+    [ ! -e "$PORT_FIREWALL_CALLED" ] \
+        || { echo "SSH port change opened the firewall despite ssh.socket override failure" >&2; exit 1; }
 )
 (
     NFT_RULES_FILE="$TMP/nft-rules.db"

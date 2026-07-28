@@ -1,4 +1,4 @@
-# VPS 开荒脚本 V3.50.2
+# VPS 开荒脚本 V3.50.3
 
 > **银趴火山帮** 出品 · SSH · BBR · DDNS · Caddy · Firewall · NFT 转发
 
@@ -123,7 +123,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/TonyJsonson-8748/SSH-Hardeni
 ╚═╝╚═╝     ╚═╝╚═╝     ╚═╝  ╚═╝╚═╝  ╚═╝   ╚═╝        ╚═════╝ ╚═╝     ╚══════╝
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  VPS TOOLS  ·  V3.50.2
+  VPS TOOLS  ·  V3.50.3
   VPS 开荒脚本 · 银趴火山帮
 ────────────────────────────────────────────────────────────────
   SSH · BBR · DDNS · Caddy · Firewall · NFT · Monitor
@@ -164,7 +164,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/TonyJsonson-8748/SSH-Hardeni
 | 删除指定用户公钥 | 只删除所选文件中的指定公钥行；删除前预演全机登录路径，必须保留可登录的 root，或可登录且拥有完整 sudo/doas root 权限的用户，并提供独立备份与 180 秒自动回滚 |
 | 生成密钥对 | Ed25519 或 RSA-4096；生成后默认加入 root，也可指定其他可登录用户，或仅复制密钥而不写入服务器；统一按实际 `AuthorizedKeysFile` 校验、去重并设置属主和权限 |
 | 设置登录方式 | 仅密钥 / 密码+密钥 / 仅密码 / 严格模式 |
-| 修改 SSH 端口 | 自动备份、语法验证、防火墙放行，并同步 Fail2ban 监控端口 |
+| 修改 SSH 端口 | 自动备份、语法验证、防火墙放行，并同步 Fail2ban 监控端口；自动探测 systemd socket 激活的 sshd（Ubuntu 22.10+/Debian 新版默认），额外写入 `ssh.socket` 的 drop-in 覆盖监听端口，避免仅改 `sshd_config` 不生效 |
 | 撤销指定用户 SSH 登录权限 | 通过 `DenyUsers` 禁止目标用户的新 SSH 登录；应用前综合密码、密钥、键盘交互、AuthenticationMethods、Allow/Deny、账号期限和 root 策略确认仍有备用登录及管理入口 |
 
 查看、添加、删除以及“生成密钥对后添加”都会依据 `sshd -T -C` 解析目标用户实际生效的 `AuthorizedKeysFile`。生成密钥对后的目标用户名直接回车时默认使用 root，也可输入其他可登录用户；在是否添加时选择 `n`，或在用户名处输入 `0`，均只生成和显示密钥而不写入服务器。查看功能会标明密钥所在文件及物理行号；删除功能不会按公钥主体批量删除重复项，而是只删除本次选中的那一行。
@@ -739,6 +739,7 @@ tests/smoke.sh
 
 | 版本 | 主要变更 |
 |------|---------|
+| **V3.50.3** | 修复 Ubuntu 22.10+/Debian 新版默认的 systemd socket 激活 sshd 场景下修改 SSH 端口不生效：只改 `sshd_config` 的 `Port` 并 `systemctl restart ssh` 不会让 `ssh.socket` 实际监听新端口（旧端口继续监听，新端口从未打开）；现在会运行时探测 `ssh.socket` 是否是当前的监听单元，是则额外写入 `/etc/systemd/system/ssh.socket.d/99-vps-tools-port.conf` 覆盖 `ListenStream`，并在重启时改为 `daemon-reload` + `restart ssh.socket`；该覆盖文件已并入端口修改的备份、180 秒自动回滚与立即回滚路径，任一失败都会精确恢复到变更前状态 |
 | **V3.50.2** | 修复离线包校验函数 `self_offline_archive_validate` 中 `RAW_TAR` 在同一条 `local` 语句内引用刚声明的 `TYPE_LIST` 导致取值错误的作用域 bug；移除已被拆分字段取代的死变量 `FIREWALL_IPTABLES_RULES`/`FIREWALL_ALLOW_FIREWALLD_ADDED`；清理归档路径校验中被更宽泛规则覆盖的冗余模式；消除全部 CI shellcheck 警告 |
 | **V3.50.1** | 合并上游 BBR tc 限速修复：多队列网卡默认 `mq` 无法 `tc qdisc del` 导致限速失败，改用 `replace` 原子安装 HTB 并同步修复持久化辅助脚本；默认仍拒绝覆盖外部 QoS，展示现有 qdisc/class/filter 后输入 `FORCE <网卡>` 可强制接管、输入 `DELETE <网卡>` 可删除外部限速，操作前将文本与 JSON 诊断快照保存到 `/var/lib/vps-tools/tc-backups/` |
 | **V3.50.0** | 全面强化 SSH、公钥、防火墙、用户管理及防断联事务：配置和密钥写入加入并发变更检测；防火墙覆盖双栈、区域绑定和部分回滚；回滚状态校验文件内容、存在性、进程身份与服务启用状态；离线包、监控/NFT 定时任务、Swap 与自更新进一步增加完整校验、原子替换和失败恢复 |

@@ -2738,6 +2738,55 @@ ssh_candidate_has_unique_port() {
     [ "$COUNT" -eq 1 ] && [ "$UNIQUE_PORTS" = "$EXPECTED_PORT" ]
 }
 
+# 备份当前 ssh.socket 端口覆盖文件（若不存在则记录为"不存在"，
+# 以便 ssh_socket_override_restore 精确恢复到变更前状态而不是留下残留文件）
+ssh_socket_override_backup() {
+    LAST_SOCKET_OVERRIDE_BACKUP=""
+    LAST_SOCKET_OVERRIDE_EXISTED=no
+    [ -f "$SSHD_SOCKET_OVERRIDE_FILE" ] && [ ! -L "$SSHD_SOCKET_OVERRIDE_FILE" ] || return 0
+    LAST_SOCKET_OVERRIDE_BACKUP=$(mktemp "${SSHD_SOCKET_OVERRIDE_FILE}.bak.XXXXXX") || return 1
+    if ! cp -a -- "$SSHD_SOCKET_OVERRIDE_FILE" "$LAST_SOCKET_OVERRIDE_BACKUP"; then
+        rm -f -- "$LAST_SOCKET_OVERRIDE_BACKUP"
+        LAST_SOCKET_OVERRIDE_BACKUP=""
+        return 1
+    fi
+    LAST_SOCKET_OVERRIDE_EXISTED=yes
+}
+
+ssh_socket_override_restore() {
+    if [ "${LAST_SOCKET_OVERRIDE_EXISTED:-no}" = yes ]; then
+        [ -n "${LAST_SOCKET_OVERRIDE_BACKUP:-}" ] && [ -f "$LAST_SOCKET_OVERRIDE_BACKUP" ] \
+            || return 1
+        mv -f -- "$LAST_SOCKET_OVERRIDE_BACKUP" "$SSHD_SOCKET_OVERRIDE_FILE" 2>/dev/null \
+            || return 1
+    else
+        rm -f -- "$SSHD_SOCKET_OVERRIDE_FILE" 2>/dev/null || true
+    fi
+    return 0
+}
+
+# 显式覆盖 ssh.socket 的监听端口。经验证：部分 openssh-server 版本会用
+# systemd generator 动态把 sshd_config 的 Port 同步进 socket 单元并在合并时
+# 优先于本文件生效，但两者写入的是同一个端口号，结果始终一致；
+# 没有该 generator（或未被采用）的系统则完全依赖本文件生效。
+ssh_socket_override_write() {
+    local PORT="$1" TMP
+    mkdir -p "$SSHD_SOCKET_OVERRIDE_DIR" 2>/dev/null || return 1
+    chmod 755 "$SSHD_SOCKET_OVERRIDE_DIR" 2>/dev/null || true
+    TMP=$(mktemp "${SSHD_SOCKET_OVERRIDE_FILE}.XXXXXX") || return 1
+    if ! {
+        printf '[Socket]\n'
+        printf 'ListenStream=\n'
+        printf 'ListenStream=0.0.0.0:%s\n' "$PORT"
+        printf 'ListenStream=[::]:%s\n' "$PORT"
+    } > "$TMP"; then
+        rm -f -- "$TMP"
+        return 1
+    fi
+    chmod 644 "$TMP" 2>/dev/null || true
+    mv -f -- "$TMP" "$SSHD_SOCKET_OVERRIDE_FILE"
+}
+
 change_port() {
     print_header "修改 SSH 端口"
 
@@ -2798,6 +2847,12 @@ change_port() {
         return 1
     fi
     rm -f -- "$CANDIDATE"
+
+    if ssh_socket_activated && ! ssh_socket_override_write "$INPUT_PORT"; then
+        ssh_restore_and_cancel_safety || true
+        error "检测到 systemd socket 激活的 sshd，但无法写入 ssh.socket 端口覆盖，修改未应用"
+        return 1
+    fi
 
     OLD_PORT="${CURRENT_PORT:-22}"
     # 先放行新端口（旧端口暂不删，避免 restart 失败/连不上时被锁外面）

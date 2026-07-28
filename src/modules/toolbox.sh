@@ -601,6 +601,7 @@ safety_roots_for_label() {
         ssh_port)
             printf '%s\n' \
                 etc/ssh/sshd_config \
+                etc/systemd/system/ssh.socket.d \
                 etc/fail2ban \
                 etc/ufw \
                 etc/firewalld \
@@ -4624,6 +4625,9 @@ TAR_EXTRA=()
 rollback_systemd_available() {
     command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]
 }
+rollback_ssh_socket_active() {
+    rollback_systemd_available && systemctl is-active --quiet ssh.socket 2>/dev/null
+}
 rollback_service_start() {
     local SERVICE_NAME="\$1"
     if rollback_systemd_available; then
@@ -5129,9 +5133,13 @@ rm -rf -- "\$STAGE"
 rm -rf -- "\$APPLIED_STAGE" "\$VERIFY_STAGE"
 if [ "\$FAILED" = no ] && [ "\$RESTORE_ROOT" = / ]; then
 if [ "\$PROFILE_RESTART_SSH" = yes ] && command -v sshd >/dev/null 2>&1; then
-    if ! sshd -t >/dev/null 2>&1 \
-        || ! (rollback_service_restart ssh \
-            || rollback_service_restart sshd); then
+    if ! sshd -t >/dev/null 2>&1; then
+        FAILED=yes
+    elif rollback_ssh_socket_active \
+        && { ! systemctl daemon-reload >/dev/null 2>&1 \
+            || ! systemctl restart ssh.socket >/dev/null 2>&1; }; then
+        FAILED=yes
+    elif ! (rollback_service_restart ssh || rollback_service_restart sshd); then
         FAILED=yes
     fi
 fi
