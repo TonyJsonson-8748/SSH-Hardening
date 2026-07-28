@@ -36,7 +36,11 @@ ddns_sed_escape() {
 }
 
 ddns_install_transaction_begin() {
-    local DIR SPEC NAME PATH
+    # NOTE: never name a local var PATH — it shadows the shell's command
+    # search path for the rest of this function's scope (and anything it
+    # calls), so every external command (mktemp, cp, ...) starts failing
+    # with a bogus "No such file or directory" the moment it's assigned.
+    local DIR SPEC NAME DEST_PATH
     DIR=$(mktemp -d "${TMPDIR:-/tmp}/vps-ddns-install.XXXXXX") || return 1
     chmod 700 "$DIR" 2>/dev/null || true
     for SPEC in \
@@ -45,9 +49,9 @@ ddns_install_transaction_begin() {
         "huawei_key|$DDNS_HUAWEI_KEY_FILE" \
         "zone|$DDNS_ZONE_FILE"; do
         NAME=${SPEC%%|*}
-        PATH=${SPEC#*|}
-        if [ -e "$PATH" ] || [ -L "$PATH" ]; then
-            cp -a "$PATH" "$DIR/$NAME" || { rm -rf "$DIR"; return 1; }
+        DEST_PATH=${SPEC#*|}
+        if [ -e "$DEST_PATH" ] || [ -L "$DEST_PATH" ]; then
+            cp -a "$DEST_PATH" "$DIR/$NAME" || { rm -rf "$DIR"; return 1; }
         else
             : > "$DIR/$NAME.absent" || { rm -rf "$DIR"; return 1; }
         fi
@@ -56,7 +60,7 @@ ddns_install_transaction_begin() {
 }
 
 ddns_install_transaction_restore() {
-    local DIR="$1" SPEC NAME PATH
+    local DIR="$1" SPEC NAME DEST_PATH
     [ -d "$DIR" ] || return 1
     for SPEC in \
         "script|$DDNS_SCRIPT" \
@@ -64,12 +68,12 @@ ddns_install_transaction_restore() {
         "huawei_key|$DDNS_HUAWEI_KEY_FILE" \
         "zone|$DDNS_ZONE_FILE"; do
         NAME=${SPEC%%|*}
-        PATH=${SPEC#*|}
+        DEST_PATH=${SPEC#*|}
         if [ -f "$DIR/$NAME.absent" ]; then
-            rm -f "$PATH" || { rm -rf "$DIR"; return 1; }
+            rm -f "$DEST_PATH" || { rm -rf "$DIR"; return 1; }
         elif [ -e "$DIR/$NAME" ] || [ -L "$DIR/$NAME" ]; then
-            mkdir -p "$(dirname "$PATH")" || { rm -rf "$DIR"; return 1; }
-            cp -a "$DIR/$NAME" "$PATH" || { rm -rf "$DIR"; return 1; }
+            mkdir -p "$(dirname "$DEST_PATH")" || { rm -rf "$DIR"; return 1; }
+            cp -a "$DIR/$NAME" "$DEST_PATH" || { rm -rf "$DIR"; return 1; }
         else
             rm -rf "$DIR"
             return 1

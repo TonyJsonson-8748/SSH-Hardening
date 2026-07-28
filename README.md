@@ -1,4 +1,4 @@
-# VPS 开荒脚本 V3.50.4
+# VPS 开荒脚本 V3.50.5
 
 > **银趴火山帮** 出品 · SSH · BBR · DDNS · Caddy · Firewall · NFT 转发
 
@@ -123,7 +123,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/TonyJsonson-8748/SSH-Hardeni
 ╚═╝╚═╝     ╚═╝╚═╝     ╚═╝  ╚═╝╚═╝  ╚═╝   ╚═╝        ╚═════╝ ╚═╝     ╚══════╝
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  VPS TOOLS  ·  V3.50.4
+  VPS TOOLS  ·  V3.50.5
   VPS 开荒脚本 · 银趴火山帮
 ────────────────────────────────────────────────────────────────
   SSH · BBR · DDNS · Caddy · Firewall · NFT · Monitor
@@ -741,6 +741,7 @@ tests/smoke.sh
 
 | 版本 | 主要变更 |
 |------|---------|
+| **V3.50.5** | 修复两处独立的生产缺陷：① 公钥添加、删除、回滚恢复共用的并发修改检测会把祖先目录的 size/mtime/ctime 也纳入 BEFORE/AFTER 快照比对，而这三个操作自身在同目录创建原子写入用的临时文件必然改变父目录的这些字段——只要操作恰好跨越系统时钟整秒边界就会被自己的临时文件误判为"并发修改"而失败（容器内 30 次重复调用测得约 20% 概率触发）；现在祖先目录只比对身份与权限（dev/inode/uid/gid/mode/type），目标文件本身仍做完整比对。② DDNS 安装事务的 `ddns_install_transaction_begin`/`ddns_install_transaction_restore` 把局部变量命名为 `PATH`，遮蔽了 shell 用于查找外部命令的同名环境变量，导致 `mktemp`/`cp` 等命令在赋值前就已失效，使 Cloudflare 与华为云 DDNS 的安装配置在任何机器上都必现失败；现已改用不冲突的变量名。同时补齐并修复了 `tests/smoke.sh` 中此前从未被完整执行到（因更早的环境依赖提前中止）的公钥查看/删除、防断联回滚、用户主目录共享检测、iptables 端口清理等测试用例 |
 | **V3.50.4** | 修复需要输入密码的常规 sudo 管理员被误判为"没有完整 root 权限"：管理入口检测原先只用 `sudo -n` 做提权探测，而本脚本创建管理员时刻意不配置 `NOPASSWD`，导致这类账号必然探测失败。受影响的是严格模式（报"未找到可确认安全登录的非 root 密钥账号"而拒绝开启）、撤销 SSH 登录与删除公钥的剩余管理入口预检（误判为无管理员入口而拒绝执行）。现在提权探测失败后会改以 root 身份查询 `sudo -l -U` 的实际授权（该查询不需要目标用户密码），仅当 RunAs 可为 root/ALL 且命令列表含裸 `ALL`、且无 `!` 排除项时才认定为完整 root 权限；只有具体命令授权、非 root RunAs 或无授权的账号仍会被拒绝 |
 | **V3.50.3** | 修复 Ubuntu 22.10+/Debian 新版默认的 systemd socket 激活 sshd 场景下修改 SSH 端口不生效：只改 `sshd_config` 的 `Port` 并 `systemctl restart ssh` 不会让 `ssh.socket` 实际监听新端口（旧端口继续监听，新端口从未打开）；现在会运行时探测 `ssh.socket` 是否是当前的监听单元，是则额外写入 `/etc/systemd/system/ssh.socket.d/99-vps-tools-port.conf` 覆盖 `ListenStream`，并在重启时改为 `daemon-reload` + `restart ssh.socket`；该覆盖文件已并入端口修改的备份、180 秒自动回滚与立即回滚路径，任一失败都会精确恢复到变更前状态 |
 | **V3.50.2** | 修复离线包校验函数 `self_offline_archive_validate` 中 `RAW_TAR` 在同一条 `local` 语句内引用刚声明的 `TYPE_LIST` 导致取值错误的作用域 bug；移除已被拆分字段取代的死变量 `FIREWALL_IPTABLES_RULES`/`FIREWALL_ALLOW_FIREWALLD_ADDED`；清理归档路径校验中被更宽泛规则覆盖的冗余模式；消除全部 CI shellcheck 警告 |

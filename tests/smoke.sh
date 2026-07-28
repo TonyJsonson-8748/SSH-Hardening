@@ -374,6 +374,12 @@ EOF
     VIEW_HOME="$TMP/view-key-home"
     mkdir -p "$VIEW_HOME/.ssh"
     printf '%s\n' 'ssh-ed25519 VALID_KEY_DATA view-key' > "$VIEW_HOME/.ssh/authorized_keys"
+    # ssh_public_key_path_snapshot enforces real path ownership even in test
+    # mode; the fake passwd entry below claims UID 1000, so the directory
+    # tree must actually be owned by that UID or the capture is silently
+    # skipped as an ownership mismatch.
+    chown -R 1000:1000 "$VIEW_HOME"
+    chmod 700 "$VIEW_HOME" "$VIEW_HOME/.ssh"
     SSH_PASSWD_FILE="$TMP/view-key-passwd"
     printf '%s\n' "tony:x:1000:1000::${VIEW_HOME}:/bin/bash" > "$SSH_PASSWD_FILE"
     SSHD_CONFIG="$TMP/view-key-sshd"
@@ -391,6 +397,15 @@ EOF
     error() { printf '%s\n' "$*" >&2; }
     VIEW_AUDIT_LOG="$TMP/view-key-audit"
     audit_action() { printf '%s|%s\n' "$1" "$2" >> "$VIEW_AUDIT_LOG"; }
+    # tony's UID (1000) must satisfy ssh_key_target_allowed's UID_MIN check,
+    # so it cannot be aliased to the test runner's real UID (0 in CI) to take
+    # ssh_run_as_target's same-user fast path; run the worker inline instead
+    # of dropping privileges, since this test isn't exercising that boundary.
+    ssh_run_as_target() {
+        local WORKER_SCRIPT="$4"
+        shift 4
+        bash -c "$WORKER_SCRIPT" vps-tools-key-worker "$@"
+    }
     show_keys <<< "tony" >/dev/null
     grep -q '查看用户 tony SSH 公钥（1 个）|SUCCESS' "$VIEW_AUDIT_LOG" \
         || { echo "SSH public key viewing was not written to the audit log" >&2; exit 1; }
@@ -401,6 +416,13 @@ EOF
     DELETE_KEY_FILE="$DELETE_HOME/.ssh/authorized_keys"
     mkdir -p "$DELETE_HOME/.ssh"
     printf '%s\n' 'ssh-ed25519 VALID_KEY_DATA only-key' > "$DELETE_KEY_FILE"
+    chown -R 1000:1000 "$DELETE_HOME"
+    chmod 700 "$DELETE_HOME" "$DELETE_HOME/.ssh"
+    ssh_run_as_target() {
+        local WORKER_SCRIPT="$4"
+        shift 4
+        bash -c "$WORKER_SCRIPT" vps-tools-key-worker "$@"
+    }
     SSH_PASSWD_FILE="$TMP/delete-key-no-fallback-passwd"
     printf '%s\n' "tony:x:1000:1000::${DELETE_HOME}:/bin/bash" > "$SSH_PASSWD_FILE"
     SSHD_CONFIG="$TMP/delete-key-no-fallback-sshd"
@@ -450,6 +472,13 @@ EOF
     printf '%s\n' \
         'ssh-ed25519 VALID_KEY_DATA delete-me' \
         'ssh-ed25519 SECOND_KEY_DATA keep-me' > "$DELETE_KEY_FILE"
+    chown -R 1000:1000 "$DELETE_HOME"
+    chmod 700 "$DELETE_HOME" "$DELETE_HOME/.ssh"
+    ssh_run_as_target() {
+        local WORKER_SCRIPT="$4"
+        shift 4
+        bash -c "$WORKER_SCRIPT" vps-tools-key-worker "$@"
+    }
     DELETE_ORIGINAL=$(cat "$DELETE_KEY_FILE")
     SSH_PASSWD_FILE="$TMP/delete-key-success-passwd"
     printf '%s\n' "tony:x:1000:1000::${DELETE_HOME}:/bin/bash" > "$SSH_PASSWD_FILE"
@@ -487,6 +516,15 @@ EOF
     ssh_key_delete_safety_arm() {
         printf '%s|%s|%s\n' "$1" "$2" "$3" > "$DELETE_SAFETY_CALLED"
     }
+    # ssh_key_delete_apply_transaction cross-checks real safety-arm state
+    # (SAFETY_PID/SAFETY_SCRIPT/SAFETY_SNAPSHOT against a live watcher
+    # process); that plumbing is already covered end-to-end by the dedicated
+    # "delete-key-safety"/"delete-key-executed-safety" tests below, so here
+    # delegate straight to the underlying as-target write to verify
+    # delete_key()'s own orchestration instead.
+    ssh_key_delete_apply_transaction() {
+        ssh_key_delete_as_target "$@"
+    }
     DELETE_CONFIRM_LOG="$TMP/delete-key-success-confirm"
     ssh_key_delete_confirm_new_session() {
         printf '%s|%s\n' "$1" "$2" > "$DELETE_CONFIRM_LOG"
@@ -519,7 +557,11 @@ EOF
     error() { printf '%s\n' "$*" >&2; }
     warn() { :; }
     audit_action() { :; }
-    nohup() { return 0; }
+    # `nohup FUNC &` never runs FUNC's arguments as a separate command, so
+    # stubbing nohup as a no-op silently prevents the watcher from ever
+    # being spawned; the readiness check that follows then has no real
+    # process to find. Let the real nohup run (as the sibling
+    # "delete-key-executed-safety" test below already does).
     ssh_key_delete_safety_arm "$SAFETY_KEY_FILE" "$SAFETY_BACKUP" tony \
         || { echo "Public key safety rollback could not be armed" >&2; exit 1; }
     IFS='|' read -r SAFETY_TEST_PID SAFETY_TEST_SCRIPT _ _ SAFETY_TEST_BACKUP SAFETY_TEST_STATUS \
@@ -535,6 +577,7 @@ EOF
         || { echo "Generated public key rollback script lost the target path" >&2; exit 1; }
     grep -Fq "$VPS_AUDIT_LOG" "$SAFETY_TEST_SCRIPT" \
         || { echo "Automatic public key rollback was not connected to the audit log" >&2; exit 1; }
+    kill "$SAFETY_TEST_PID" 2>/dev/null || true
     rm -f "$SAFETY_STATE_FILE" "$SAFETY_TEST_SCRIPT"
 )
 
@@ -552,6 +595,12 @@ EOF
     audit_action() { :; }
     ssh_key_delete_safety_arm "$SAFETY_KEY_FILE" "$SAFETY_BACKUP" tony \
         || { echo "Executable public key rollback could not be armed" >&2; exit 1; }
+    # The watcher only acts once status is "applied" (set by
+    # ssh_key_delete_apply_transaction after the real deletion is written);
+    # arming alone leaves it "armed" and the watcher waits indefinitely.
+    # Flip it here to simulate a completed, unconfirmed deletion so the
+    # stale-lock recovery path below actually gets exercised.
+    sed -i 's/|armed$/|applied/' "$SAFETY_STATE_FILE"
     printf 'after\n' > "$SAFETY_KEY_FILE"
     mkdir "${SAFETY_STATE_FILE}.lock"
     printf 'stale-owner\n' > "${SAFETY_STATE_FILE}.lock/pid"
@@ -770,12 +819,16 @@ user_home_safe_to_remove "$REMOVABLE_HOME" || { echo "Normal existing user home 
 ! user_home_safe_to_remove // >/dev/null 2>&1 || { echo "Double-slash filesystem root was accepted" >&2; exit 1; }
 ! user_home_safe_to_remove /home/alice/../bob >/dev/null 2>&1 || { echo "Traversal path was accepted as user workspace" >&2; exit 1; }
 (
+    # user_home_canonical_path resolves paths with a real `cd -P`, so the
+    # candidate homes must actually exist on disk or resolution fails and
+    # user_home_is_shared conservatively reports "shared" either way.
+    mkdir -p "$TMP/home/shared" "$TMP/home/alice"
     USER_PASSWD_FILE="$TMP/passwd"
     printf '%s\n' \
-        'alice:x:1000:1000::/home/shared:/bin/bash' \
-        'bob:x:1001:1001::/home/shared:/bin/bash' > "$USER_PASSWD_FILE"
-    user_home_is_shared alice /home/shared || { echo "Shared user home was not detected" >&2; exit 1; }
-    ! user_home_is_shared alice /home/alice >/dev/null 2>&1 || { echo "Unique user home was treated as shared" >&2; exit 1; }
+        "alice:x:1000:1000::${TMP}/home/shared:/bin/bash" \
+        "bob:x:1001:1001::${TMP}/home/shared:/bin/bash" > "$USER_PASSWD_FILE"
+    user_home_is_shared alice "$TMP/home/shared" || { echo "Shared user home was not detected" >&2; exit 1; }
+    ! user_home_is_shared alice "$TMP/home/alice" >/dev/null 2>&1 || { echo "Unique user home was treated as shared" >&2; exit 1; }
 )
 (
     VPS_TOOLS_UID_OVERRIDE=1000
@@ -1772,6 +1825,7 @@ grep -q '^[[:space:]]*Port 2200$' "$SSHD_PORT_SAMPLE" \
     : > "$IPTABLES_RULES_FILE"
     iptables() {
         case "$1" in
+            -S) printf '%s\n' '-P INPUT DROP' '-A INPUT -p tcp --dport 22 -j ACCEPT' ;;
             -C) [ "$IPTABLES_RULE_PRESENT" = yes ] ;;
             -D)
                 printf '%s\n' "$*" > "$IPTABLES_DELETE_LOG"
@@ -1793,6 +1847,7 @@ grep -q '^[[:space:]]*Port 2200$' "$SSHD_PORT_SAMPLE" \
 (
     iptables() {
         case "$1" in
+            -S) printf '%s\n' '-P INPUT DROP' '-A INPUT -p tcp --dport 22 -j ACCEPT' ;;
             -C) return 0 ;;
             -D) return 1 ;;
             *) return 1 ;;
@@ -1806,14 +1861,18 @@ grep -q '^[[:space:]]*Port 2200$' "$SSHD_PORT_SAMPLE" \
 (
     [ "$(firewall_ufw_port_state $'Status: active\n2222/tcp DENY IN Anywhere' 2222)" = deny ] \
         || { echo "UFW deny rule was mistaken for an allowance" >&2; exit 1; }
-    [ "$(firewall_ufw_port_state $'Status: active\n2222/tcp LIMIT IN Anywhere' 2222)" = allow ] \
-        || { echo "Unconditional UFW limit rule was not treated as reachable" >&2; exit 1; }
+    [ "$(firewall_ufw_port_state $'Status: active\n2222/tcp LIMIT IN Anywhere' 2222)" = limit ] \
+        || { echo "Unconditional UFW limit rule was not classified as reachable" >&2; exit 1; }
     [ "$(firewall_ufw_port_state $'Status: active\n2222/tcp on eth0 LIMIT IN Anywhere' 2222)" = policy ] \
         || { echo "Interface-scoped UFW limit policy was treated as unconditional" >&2; exit 1; }
     [ "$(firewall_ufw_port_state $'Status: active\n2222/tcp ALLOW IN 192.0.2.1' 2222)" = policy ] \
         || { echo "Source-scoped UFW allow rule was not preserved as policy" >&2; exit 1; }
-    [ "$(firewall_ufw_port_state $'Status: active\n10.0.0.5 2222/tcp ALLOW IN Anywhere' 2222)" = allow ] \
-        || { echo "UFW rule with a destination address was not recognized" >&2; exit 1; }
+    # A destination-address-qualified rule only opens the port on that one
+    # local address; on a multi-homed host it would not cover the others,
+    # so firewall_allow_port deliberately treats "policy" as a hard refusal
+    # (src/lib/core.sh:1586-1588) rather than assuming it's fully open.
+    [ "$(firewall_ufw_port_state $'Status: active\n10.0.0.5 2222/tcp ALLOW IN Anywhere' 2222)" = policy ] \
+        || { echo "UFW rule with a destination address was not treated as scoped" >&2; exit 1; }
 )
 (
     UFW_RULE_PRESENT=no

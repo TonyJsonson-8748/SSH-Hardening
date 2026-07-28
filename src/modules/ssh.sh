@@ -767,7 +767,7 @@ ssh_key_file_count() {
 
 ssh_public_key_path_snapshot() {
     local TARGET="$1" SCOPE="$2" EXPECTED_UID="$3" HOME_DIR="$4"
-    local CURRENT="/" PART META _ OWNER MODE
+    local CURRENT="/" PART META DEV INODE OWNER GROUP MODE FTYPE
     local IS_FINAL=no ROOT_UID=0
     local PARTS=()
 
@@ -786,11 +786,16 @@ ssh_public_key_path_snapshot() {
     IFS=/ read -r -a PARTS <<< "${TARGET#/}"
 
     META=$(stat -Lc '%d:%i:%u:%g:%a:%F:%s:%Y:%Z' -- / 2>/dev/null) || return 1
-    IFS=: read -r _ _ OWNER _ MODE _ _ _ _ <<< "$META"
+    IFS=: read -r DEV INODE OWNER GROUP MODE FTYPE _ _ _ <<< "$META"
     [ "$OWNER" = "$ROOT_UID" ] || return 1
     [[ "$MODE" =~ ^[0-7]+$ ]] || return 1
     [ $((8#$MODE & 0022)) -eq 0 ] || return 1
-    printf '/|%s\n' "$META"
+    # / is never the final target; only compare the identity/permission
+    # fields that indicate real tampering (a same-directory sibling write
+    # elsewhere on the path — including this function's own atomic temp
+    # file — legitimately bumps size/mtime/ctime without anything unsafe
+    # happening).
+    printf '/|%s\n' "$DEV:$INODE:$OWNER:$GROUP:$MODE:$FTYPE"
 
     for PART in "${PARTS[@]}"; do
         [ -n "$PART" ] || continue
@@ -814,7 +819,7 @@ ssh_public_key_path_snapshot() {
         fi
         META=$(stat -Lc '%d:%i:%u:%g:%a:%F:%s:%Y:%Z' -- "$CURRENT" 2>/dev/null) \
             || return 1
-        IFS=: read -r _ _ OWNER _ MODE _ _ _ _ <<< "$META"
+        IFS=: read -r DEV INODE OWNER GROUP MODE FTYPE _ _ _ <<< "$META"
         [[ "$MODE" =~ ^[0-7]+$ ]] || return 1
 
         if [ "$SCOPE" = global ]; then
@@ -831,7 +836,20 @@ ssh_public_key_path_snapshot() {
                 [ $((8#$MODE & 1000)) -ne 0 ] || return 1
             fi
         fi
-        printf '%s|%s\n' "$CURRENT" "$META"
+        if [ "$IS_FINAL" = yes ]; then
+            # The actual target file: compare the full stat string,
+            # including size/mtime/ctime, to catch genuine concurrent
+            # content changes.
+            printf '%s|%s\n' "$CURRENT" "$META"
+        else
+            # An ancestor directory: only its identity/ownership/mode
+            # matters for detecting tampering (symlink swap, ownership or
+            # permission change). Its size/mtime/ctime legitimately churn
+            # from ordinary directory activity — including this same
+            # operation's own same-directory atomic temp file — and must
+            # not be treated as a concurrent-modification signal.
+            printf '%s|%s\n' "$CURRENT" "$DEV:$INODE:$OWNER:$GROUP:$MODE:$FTYPE"
+        fi
     done
 }
 
