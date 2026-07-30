@@ -126,7 +126,8 @@ BANNER_COMPACT=$(COLUMNS=60 NO_COLOR=1 volcano_art_banner)
 
 for fn in bbr_preflight bbr_runtime_snapshot bbr_ensure_baseline bbr_restore_runtime_snapshot bbr_baseline_value bbr_config_has_key bbr_config_value \
     bbr_apply_sysctl bbr_generate_config bbr_physical_memory_mb bbr_effective_memory_mb bbr_buffer_cap_bytes bbr_conntrack_max_for_memory bbr_bdp_mb bbr_buffer_target_mb bbr_recommend_profile \
-    bbr_tc_qdisc_safe_to_replace bbr_tc_current_rate bbr_tc_rate_display bbr_tc_topology_matches bbr_tc_managed_artifact bbr_tc_is_legacy_owned \
+    bbr_tc_qdisc_safe_to_replace bbr_tc_current_rate bbr_tc_saved_values bbr_tc_saved_rate_display bbr_tc_rate_display \
+    bbr_tc_topology_matches bbr_tc_managed_artifact bbr_tc_is_legacy_owned bbr_tc_persistence_current bbr_tc_reconcile_saved \
     bbr_tc_snapshot_foreign bbr_tc_force_confirm bbr_tc_remove_confirm bbr_tc_apply_runtime bbr_default_route_info bbr_route_token \
     bbr_route_strip_cwnd bbr_apply_initcwnd_route volcano_tcp_profile; do
     declare -F "$fn" >/dev/null || { echo "Missing BBR function: $fn" >&2; exit 1; }
@@ -348,6 +349,112 @@ EOF
         || { echo "BBR tried to delete an undeletable mq root" >&2; exit 1; }
 )
 (
+    TC_STATE_FILE="$TMP/saved-tc.state"
+    TC_HELPER="$TMP/saved-tc-helper"
+    SERVICE_TC="$TMP/saved-tc.service"
+    SERVICE_TC_INIT="$TMP/saved-tc.init"
+    TC_MARKER="$TMP/saved-tc-active"
+    export TC_MARKER
+    printf 'DEV=eth0\nRATE=2200\nBURST_KB=2200\nFORCE=0\n' > "$TC_STATE_FILE"
+    TC_BIN_DIR="$TMP/saved-tc-bin"
+    mkdir -p "$TC_BIN_DIR"
+    cat > "$TC_BIN_DIR/tc" <<'EOF'
+#!/bin/sh
+if [ "$1 $2" = "qdisc show" ]; then
+    if [ -f "$TC_MARKER" ]; then
+        printf '%s\n' \
+            'qdisc htb 1: root refcnt 3 default 0x10' \
+            'qdisc fq 100: parent 1:10 limit 10000p maxrate 2200Mbit'
+    else
+        echo 'qdisc mq 0: root'
+    fi
+elif [ "$1 $2" = "class show" ] && [ -f "$TC_MARKER" ]; then
+    echo 'class htb 1:10 root rate 2200Mbit ceil 2200Mbit'
+fi
+EOF
+    chmod +x "$TC_BIN_DIR/tc"
+    cat > "$TC_HELPER" <<'EOF'
+#!/bin/sh
+# VPS_TOOLS_TC_HELPER_VERSION=2
+[ "${1:-}" = apply ] || exit 1
+: > "$TC_MARKER"
+EOF
+    chmod +x "$TC_HELPER"
+    PATH="$TC_BIN_DIR:$PATH"
+    default_iface() { echo eth0; }
+    [ "$(bbr_tc_rate_display eth0 "$TC_BIN_DIR/tc")" = "2200Mbit（已保存，未生效）" ] \
+        || { echo "BBR did not expose an inactive saved tc rate" >&2; exit 1; }
+    unset VPS_TOOLS_TEST_MODE BBR_TUNE_TEST_MODE
+    bbr_tc_reconcile_saved >/dev/null \
+        || { echo "BBR could not restore an inactive saved tc rate" >&2; exit 1; }
+    [ -f "$TC_MARKER" ] || { echo "BBR tc reconciliation did not invoke the saved helper" >&2; exit 1; }
+    [ "$(bbr_tc_rate_display eth0 "$TC_BIN_DIR/tc")" = "2200Mbit" ] \
+        || { echo "BBR tc rate remained inactive after reconciliation" >&2; exit 1; }
+)
+(
+    TC_STATE_FILE="$TMP/stale-helper.state"
+    TC_HELPER="$TMP/stale-helper"
+    SERVICE_TC="$TMP/stale-helper.service"
+    SERVICE_TC_INIT="$TMP/stale-helper.init"
+    TC_MARKER="$TMP/stale-helper-active"
+    PERSIST_MARKER="$TMP/stale-helper-refreshed"
+    export TC_MARKER
+    printf 'DEV=eth0\nRATE=780\nBURST_KB=780\nFORCE=0\n' > "$TC_STATE_FILE"
+    cat > "$TC_HELPER" <<'EOF'
+#!/bin/sh
+exit 1
+EOF
+    chmod +x "$TC_HELPER"
+    TC_BIN_DIR="$TMP/stale-helper-bin"
+    mkdir -p "$TC_BIN_DIR"
+    cat > "$TC_BIN_DIR/tc" <<'EOF'
+#!/bin/sh
+if [ "$1 $2" = "qdisc show" ]; then
+    if [ -f "$TC_MARKER" ]; then
+        printf '%s\n' 'qdisc htb 1: root default 0x10' 'qdisc fq 100: parent 1:10 maxrate 780Mbit'
+    else
+        echo 'qdisc mq 0: root'
+    fi
+elif [ "$1 $2" = "class show" ]; then
+    [ ! -f "$TC_MARKER" ] || echo 'class htb 1:10 root rate 780Mbit ceil 780Mbit'
+elif [ "$1 $2 $3" = "qdisc replace dev" ]; then
+    : > "$TC_MARKER"
+fi
+exit 0
+EOF
+    chmod +x "$TC_BIN_DIR/tc"
+    PATH="$TC_BIN_DIR:$PATH"
+    default_iface() { echo eth0; }
+    bbr_tc_write_persistence() {
+        printf '%s %s %s %s\n' "$1" "$2" "$3" "$4" > "$PERSIST_MARKER"
+    }
+    unset VPS_TOOLS_TEST_MODE BBR_TUNE_TEST_MODE
+    bbr_tc_reconcile_saved >/dev/null \
+        || { echo "BBR could not recover from a stale tc helper" >&2; exit 1; }
+    [ -f "$TC_MARKER" ] || { echo "BBR reused a stale tc helper" >&2; exit 1; }
+    grep -qx 'eth0 780 780 0' "$PERSIST_MARKER" \
+        || { echo "BBR did not refresh stale tc persistence" >&2; exit 1; }
+)
+(
+    TC_STATE_FILE="$TMP/saved-other-interface.state"
+    TC_HELPER="$TMP/saved-other-interface-helper"
+    TC_MARKER="$TMP/saved-other-interface-called"
+    export TC_MARKER
+    printf 'DEV=eth9\nRATE=500\nBURST_KB=500\nFORCE=0\n' > "$TC_STATE_FILE"
+    cat > "$TC_HELPER" <<'EOF'
+#!/bin/sh
+: > "$TC_MARKER"
+EOF
+    chmod +x "$TC_HELPER"
+    default_iface() { echo eth0; }
+    [ "$(bbr_tc_saved_rate_display eth0)" = "500Mbit（保存于 eth9，当前未生效）" ] \
+        || { echo "BBR did not identify a saved rate from another interface" >&2; exit 1; }
+    unset VPS_TOOLS_TEST_MODE BBR_TUNE_TEST_MODE
+    ! bbr_tc_reconcile_saved >/dev/null \
+        || { echo "BBR silently migrated tc state to another interface" >&2; exit 1; }
+    [ ! -e "$TC_MARKER" ] || { echo "BBR invoked tc helper for the wrong interface" >&2; exit 1; }
+)
+(
     TC_STATE_FILE="$TMP/legacy-tc-no-state"
     SERVICE_TC="$TMP/legacy-tc-fq.service"
     # shellcheck disable=SC2034 # consumed indirectly by bbr_tc_managed_artifact
@@ -542,6 +649,8 @@ awk 'p && /^TC_HELPER_EOF$/{exit} /<< '\''TC_HELPER_EOF'\''/{p=1; next} p{print}
 awk 'p && /^CWND_HELPER_EOF$/{exit} /<< '\''CWND_HELPER_EOF'\''/{p=1; next} p{print}' "$ROOT/src/modules/bbr.sh" > "$BBR_CWND_HELPER_TEST"
 sh -n "$BBR_TC_HELPER_TEST" || { echo "Generated tc helper has syntax errors" >&2; exit 1; }
 sh -n "$BBR_CWND_HELPER_TEST" || { echo "Generated initcwnd helper has syntax errors" >&2; exit 1; }
+grep -qxF '# VPS_TOOLS_TC_HELPER_VERSION=2' "$BBR_TC_HELPER_TEST" \
+    || { echo "Generated tc helper is missing its compatibility version" >&2; exit 1; }
 
 (
     HELPER_STATE="$TMP/tc-helper-mq.state"
@@ -591,9 +700,11 @@ for fn in docker_install docker_status docker_select_container docker_upgrade_co
     declare -F "$fn" >/dev/null || { echo "Missing Docker function: $fn" >&2; exit 1; }
 done
 
-for fn in self_install self_script_valid self_resolve_script_source self_fetch_script self_shortcut_owned self_install_shortcut self_remove_shortcut self_offline_bundle_create self_offline_bundle_install self_update self_manifest_value self_remote_main_sha monitor_alert_check monitor_alert_config_menu monitor_alert_home_menu monitor_alert_daily_report monitor_alert_host_label monitor_alert_host_label_html monitor_alert_html_escape monitor_alert_set_host_label monitor_time_normalize monitor_date_normalize monitor_int_normalize monitor_positive_number_valid monitor_positive_int_valid monitor_percent_valid monitor_renew_notice_days_valid monitor_renew_future_date monitor_traffic_interfaces monitor_traffic_reset_day_valid monitor_traffic_totals monitor_traffic_delta_bytes monitor_traffic_reconcile_counters monitor_traffic_usage_triplet monitor_traffic_usage_text monitor_traffic_set_cycle_usage_split_gb monitor_alert_service_state monitor_alert_any_service_state monitor_alert_ssh_state monitor_alert_test_snapshot monitor_alert_resource_snapshot monitor_alert_traffic_snapshot monitor_alert_renew_snapshot monitor_alert_renew_mark_paid monitor_alert_renew_auto_advance_toggle monitor_alert_renew_auto_advance monitor_alert_renew_reset_state monitor_alert_notify monitor_alert_telegram_send monitor_alert_history_add monitor_alert_history_view monitor_alert_cooldown_seconds monitor_alert_time_to_minutes monitor_alert_in_silence monitor_alert_metrics monitor_alert_metrics_sample monitor_alert_trend_line monitor_alert_trend_summary monitor_alert_level_label monitor_alert_level_icon monitor_alert_level_rank monitor_alert_worst_level monitor_alert_daily_cron_expr monitor_alert_cron_command monitor_alert_cron_without_managed monitor_alert_acquire_lock monitor_alert_install_cron monitor_alert_remove_cron monitor_alert_cron_status monitor_alert_next_daily_time monitor_alert_configured_without_cron monitor_alert_service_menu monitor_alert_notify_menu monitor_alert_resource_menu monitor_alert_traffic_menu monitor_alert_daily_menu monitor_alert_renew_menu monitor_alert_advanced_menu monitor_alert_quick_setup_menu config_health_check diagnostic_bundle_create; do
+for fn in self_install self_script_valid self_resolve_script_source self_reconcile_tc_after_update self_fetch_script self_shortcut_owned self_install_shortcut self_remove_shortcut self_offline_bundle_create self_offline_bundle_install self_update self_manifest_value self_remote_main_sha monitor_alert_check monitor_alert_config_menu monitor_alert_home_menu monitor_alert_daily_report monitor_alert_host_label monitor_alert_host_label_html monitor_alert_html_escape monitor_alert_set_host_label monitor_time_normalize monitor_date_normalize monitor_int_normalize monitor_positive_number_valid monitor_positive_int_valid monitor_percent_valid monitor_renew_notice_days_valid monitor_renew_future_date monitor_traffic_interfaces monitor_traffic_reset_day_valid monitor_traffic_totals monitor_traffic_delta_bytes monitor_traffic_reconcile_counters monitor_traffic_usage_triplet monitor_traffic_usage_text monitor_traffic_set_cycle_usage_split_gb monitor_alert_service_state monitor_alert_any_service_state monitor_alert_ssh_state monitor_alert_test_snapshot monitor_alert_resource_snapshot monitor_alert_traffic_snapshot monitor_alert_renew_snapshot monitor_alert_renew_mark_paid monitor_alert_renew_auto_advance_toggle monitor_alert_renew_auto_advance monitor_alert_renew_reset_state monitor_alert_notify monitor_alert_telegram_send monitor_alert_history_add monitor_alert_history_view monitor_alert_cooldown_seconds monitor_alert_time_to_minutes monitor_alert_in_silence monitor_alert_metrics monitor_alert_metrics_sample monitor_alert_trend_line monitor_alert_trend_summary monitor_alert_level_label monitor_alert_level_icon monitor_alert_level_rank monitor_alert_worst_level monitor_alert_daily_cron_expr monitor_alert_cron_command monitor_alert_cron_without_managed monitor_alert_acquire_lock monitor_alert_install_cron monitor_alert_remove_cron monitor_alert_cron_status monitor_alert_next_daily_time monitor_alert_configured_without_cron monitor_alert_service_menu monitor_alert_notify_menu monitor_alert_resource_menu monitor_alert_traffic_menu monitor_alert_daily_menu monitor_alert_renew_menu monitor_alert_advanced_menu monitor_alert_quick_setup_menu config_health_check diagnostic_bundle_create; do
     declare -F "$fn" >/dev/null || { echo "Missing new function: $fn" >&2; exit 1; }
 done
+grep -q -- '--bbr-reconcile-tc)' "$ROOT/src/modules/main.sh" \
+    || { echo "Missing internal tc reconciliation CLI dispatch" >&2; exit 1; }
 
 for fn in common_software_menu system_reinstall_menu software_reinstall_menu software_group_packages; do
     declare -F "$fn" >/dev/null || { echo "Missing function: $fn" >&2; exit 1; }

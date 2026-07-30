@@ -363,4 +363,23 @@ curl() {
 self_update >/dev/null 2>&1
 grep -qx 'original' "$LOCAL_SCRIPT" || { echo "Updater replaced script after checksum mismatch" >&2; exit 1; }
 
+# Post-update tc reconciliation must execute the newly installed script, not a function from the old process.
+TC_STATE_FILE="$TMP/update-tc.state"
+LOCAL_SCRIPT="$TMP/newly-installed-vps-tools"
+UPDATE_TC_MARKER="$TMP/update-tc.marker"
+export UPDATE_TC_MARKER
+printf 'DEV=eth0\nRATE=2200\nBURST_KB=2200\nFORCE=0\n' > "$TC_STATE_FILE"
+cat > "$LOCAL_SCRIPT" <<'EOF'
+#!/bin/bash
+[ "${1:-}" = "--bbr-reconcile-tc" ] || exit 1
+[ "${VPS_TOOLS_TEST_MODE:-}" = 0 ] || exit 1
+[ "${BBR_TUNE_TEST_MODE:-}" = 0 ] || exit 1
+: > "$UPDATE_TC_MARKER"
+EOF
+chmod +x "$LOCAL_SCRIPT"
+self_reconcile_tc_after_update >/dev/null \
+    || { echo "Updater could not invoke the new tc reconciliation endpoint" >&2; exit 1; }
+[ -f "$UPDATE_TC_MARKER" ] \
+    || { echo "Updater reconciled tc through the old process" >&2; exit 1; }
+
 echo "Fault injection tests passed."

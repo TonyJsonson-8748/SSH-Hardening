@@ -1,4 +1,4 @@
-# VPS 开荒脚本 V3.11.5
+# VPS 开荒脚本 V3.11.6
 
 > **银趴火山帮** 出品 · SSH · BBR · DDNS · Caddy · Firewall · NFT 转发
 
@@ -19,24 +19,24 @@ bash <(curl -fsSL https://raw.githubusercontent.com/chnnic/SSH-Hardening/refs/he
 适合不能访问 GitHub 的中国内地 VPS。先在一台可以访问 GitHub 的电脑或跳板机下载：
 
 ```bash
-curl -fLO https://github.com/chnnic/SSH-Hardening/releases/download/v3.11.2/vps-tools-offline-V3.11.2.tar.gz
-curl -fLO https://github.com/chnnic/SSH-Hardening/releases/download/v3.11.2/vps-tools-offline-V3.11.2.tar.gz.sha256
-sha256sum -c vps-tools-offline-V3.11.2.tar.gz.sha256
+curl -fLO https://github.com/chnnic/SSH-Hardening/releases/download/v3.11.6/vps-tools-offline-V3.11.6.tar.gz
+curl -fLO https://github.com/chnnic/SSH-Hardening/releases/download/v3.11.6/vps-tools-offline-V3.11.6.tar.gz.sha256
+sha256sum -c vps-tools-offline-V3.11.6.tar.gz.sha256
 ```
 
 再通过 `scp`、SFTP 或 WinSCP 将两个文件传到 VPS。Linux/macOS 示例：
 
 ```bash
-scp vps-tools-offline-V3.11.2.tar.gz* root@你的VPS地址:/root/
+scp vps-tools-offline-V3.11.6.tar.gz* root@你的VPS地址:/root/
 ```
 
 登录 VPS 后离线安装：
 
 ```bash
 cd /root
-sha256sum -c vps-tools-offline-V3.11.2.tar.gz.sha256
-tar -xzf vps-tools-offline-V3.11.2.tar.gz
-cd vps-tools-offline-V3.11.2
+sha256sum -c vps-tools-offline-V3.11.6.tar.gz.sha256
+tar -xzf vps-tools-offline-V3.11.6.tar.gz
+cd vps-tools-offline-V3.11.6
 bash install.sh
 v
 ```
@@ -109,7 +109,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/chnnic/SSH-Hardening/refs/he
 ╚═╝╚═╝     ╚═╝╚═╝     ╚═╝  ╚═╝╚═╝  ╚═╝   ╚═╝        ╚═════╝ ╚═╝     ╚══════╝
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  VPS TOOLS  ·  V3.11.5
+  VPS TOOLS  ·  V3.11.6
   VPS 开荒脚本 · 银趴火山帮
 ────────────────────────────────────────────────────────────────
   SSH · BBR · DDNS · Caddy · Firewall · NFT · Monitor
@@ -219,6 +219,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/chnnic/SSH-Hardening/refs/he
 
 **其他功能：**
 - tc 限速（200M / 500M / 780M / 1G / 2G / 自定义）：`htb` 聚合整形 + `fq` 叶子保留 BBR pacing；兼容不可直接删除的默认 `mq`；默认拒绝外部 QoS，输入精确确认词后可接管或删除 `tbf` / CAKE / HTB 等 root qdisc，操作前诊断快照保存到 `/var/lib/vps-tools/tc-backups/`
+- tc 限速状态保存在 `/var/lib/vps-tools/tc-fq.state`；网卡重建导致运行规则丢失时，更新脚本、应用 BBR 配置或进入 BBR 菜单会自动恢复。若默认网卡名称变化，只显示保存状态并提示人工确认，不会静默迁移
 - initcwnd（10 / 50 / 100 / 自定义），支持 IPv4/IPv6、无网关默认路由和 systemd/OpenRC/SysV 持久化
 - 备份 / 还原 sysctl（按时间戳）
 
@@ -650,6 +651,7 @@ tests/smoke.sh
 
 | 版本 | 主要变更 |
 |------|---------|
+| **V3.11.6** | 修复更新或网卡重建后 tc 运行规则丢失却显示“无限速”：区分活动规则与“已保存、未生效”状态，更新完成、应用 BBR 配置及进入 BBR 菜单时按状态文件自动恢复；更新器通过新安装脚本的内部入口执行，首次升级即可生效，并自动刷新旧版 tc 持久化助手；默认网卡变化时拒绝静默迁移 |
 | **V3.11.5** | BBR 自动/智能配置按实际物理内存计算并将缓冲上限收紧至 25%，TCP 每连接默认缓冲恢复保守值；停止覆盖内核计算的 `tcp_mem`、`min_free_kbytes` 及过时/高风险全局参数，升级时恢复原始基线；场景转发改为按需确认，补齐默认网卡 IPv6 RA，conntrack 按内存分档，并对 BBR 与 `fq` 执行写后回读及失败回滚 |
 | **V3.11.4** | 修复多队列网卡默认 `mq` 无法通过 `tc qdisc del` 删除而导致限速应用失败，改用 `replace` 原子安装 HTB，持久化辅助脚本同步修复；取消限速时会识别并标注外部 qdisc，输入 `DELETE <网卡>` 后可保存快照并明确删除 |
 | **V3.11.3** | tc 限速新增外部 root qdisc 强制接管：默认仍拒绝覆盖，展示现有 qdisc/class/filter 并要求输入 `FORCE <网卡>`；覆盖前保存文本与 JSON 诊断快照，持久化记录授权以便重启后继续接管 |
