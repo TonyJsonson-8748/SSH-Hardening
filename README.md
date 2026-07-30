@@ -1,4 +1,4 @@
-# VPS 开荒脚本 V3.11.4
+# VPS 开荒脚本 V3.11.5
 
 > **银趴火山帮** 出品 · SSH · BBR · DDNS · Caddy · Firewall · NFT 转发
 
@@ -109,7 +109,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/chnnic/SSH-Hardening/refs/he
 ╚═╝╚═╝     ╚═╝╚═╝     ╚═╝  ╚═╝╚═╝  ╚═╝   ╚═╝        ╚═════╝ ╚═╝     ╚══════╝
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  VPS TOOLS  ·  V3.11.4
+  VPS TOOLS  ·  V3.11.5
   VPS 开荒脚本 · 银趴火山帮
 ────────────────────────────────────────────────────────────────
   SSH · BBR · DDNS · Caddy · Firewall · NFT · Monitor
@@ -206,13 +206,16 @@ bash <(curl -fsSL https://raw.githubusercontent.com/chnnic/SSH-Hardening/refs/he
 **手动配置（两步式：选用途 → 选缓冲）：** 12 / 16 / 20 / **32** / 40 / 64 / 128 / 256 / 512 / 1024 MB 共 10 档（新增 32MB 为 1G 跨境甜点区）
 
 **安全保护：**
-- 缓冲区超过物理内存一半自动降级或警告
+- 自动配置与智能预设的缓冲上限为实际物理内存的 25%；手动配置超过该值时二次确认
+- 自动配置误选高内存档位时按实际物理内存计算，例如 512MB 机器选择 16GB 仍按 512MB 限制
+- TCP 每连接初始/默认缓冲保持内核保守值（接收 4KB/128KB、发送 4KB/16KB），仅提高自动扩展上限
+- `tcp_mem`、`min_free_kbytes`、`tcp_adv_win_scale` 及高风险全局连接参数交还内核管理；升级时恢复首次调优前基线
 - 无 sysctl 写入权限（无特权容器）自动检测并提示
 - 内核 BBR 支持检测（kernel ≥ 4.9）
 - 首次调优保存运行参数基线，每次应用保存运行快照；失败时自动回滚
 - 切换预设时检测上一场景遗留的转发/conntrack 参数，并恢复到首次调优前基线（`ip_forward` 单独警告）
-- 中转/落地场景开启 IPv6 forwarding 时，为公网出口设置 `accept_ra=2`，保留 SLAAC 路由通告
-- 逐行 `sysctl -w` 应用；非核心参数不支持时注释跳过，BBR 核心参数失败则拒绝持久化
+- 中转/落地场景默认不修改内核转发；仅在用户确认路由/NAT 用途后启用，并同时设置默认与当前出口 `accept_ra=2`
+- 逐行 `sysctl -w` 应用；非核心参数不支持时注释跳过，BBR 与 `fq` 写入失败或回读不一致都会回滚
 
 **其他功能：**
 - tc 限速（200M / 500M / 780M / 1G / 2G / 自定义）：`htb` 聚合整形 + `fq` 叶子保留 BBR pacing；兼容不可直接删除的默认 `mq`；默认拒绝外部 QoS，输入精确确认词后可接管或删除 `tbf` / CAKE / HTB 等 root qdisc，操作前诊断快照保存到 `/var/lib/vps-tools/tc-backups/`
@@ -222,6 +225,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/chnnic/SSH-Hardening/refs/he
 **代理专项参数：**
 - 通用核心含 UDP 缓冲（`udp_rmem_min/wmem_min`），优化 QUIC / Hysteria2 / TUIC
 - 场景预设（中转/落地）额外含扩大出站端口范围、`tcp_max_tw_buckets`、`fs.file-max`，防高并发端口/fd 耗尽
+- 仅用户启用内核转发的中转预设写入 conntrack 参数，`nf_conntrack_max` 按 512MB / 1GB / 2GB / 4GB 内存分档
 - 应用场景预设后自动检测代理 service 的 `LimitNOFILE`，偏低时询问写入 drop-in
 
 **写入位置：** `/etc/sysctl.d/99-vps-bbr.conf`（不污染主配置）
@@ -646,6 +650,7 @@ tests/smoke.sh
 
 | 版本 | 主要变更 |
 |------|---------|
+| **V3.11.5** | BBR 自动/智能配置按实际物理内存计算并将缓冲上限收紧至 25%，TCP 每连接默认缓冲恢复保守值；停止覆盖内核计算的 `tcp_mem`、`min_free_kbytes` 及过时/高风险全局参数，升级时恢复原始基线；场景转发改为按需确认，补齐默认网卡 IPv6 RA，conntrack 按内存分档，并对 BBR 与 `fq` 执行写后回读及失败回滚 |
 | **V3.11.4** | 修复多队列网卡默认 `mq` 无法通过 `tc qdisc del` 删除而导致限速应用失败，改用 `replace` 原子安装 HTB，持久化辅助脚本同步修复；取消限速时会识别并标注外部 qdisc，输入 `DELETE <网卡>` 后可保存快照并明确删除 |
 | **V3.11.3** | tc 限速新增外部 root qdisc 强制接管：默认仍拒绝覆盖，展示现有 qdisc/class/filter 并要求输入 `FORCE <网卡>`；覆盖前保存文本与 JSON 诊断快照，持久化记录授权以便重启后继续接管 |
 | **V3.11.2** | HTTPS 时间同步新增自动定时管理，支持每 1/3/6/12/24 小时执行；优先使用 systemd timer、无 systemd 时回退 root crontab，记录最近结果并使用进程锁防止任务重叠 |

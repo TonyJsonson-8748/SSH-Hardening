@@ -124,8 +124,8 @@ BANNER_COMPACT=$(COLUMNS=60 NO_COLOR=1 volcano_art_banner)
 [[ "$BANNER_COMPACT" = *'██╗███╗'* && "$BANNER_COMPACT" = *'██████╗ ██████╗ ███████╗'* ]] || { echo "Compact IMPART OPS banner is missing" >&2; exit 1; }
 [[ "$(COLUMNS=40 NO_COLOR=1 volcano_art_banner)" = *'IMPART OPS'* ]] || { echo "Narrow IMPART OPS banner fallback is missing" >&2; exit 1; }
 
-for fn in bbr_preflight bbr_runtime_snapshot bbr_ensure_baseline bbr_restore_runtime_snapshot bbr_baseline_value bbr_config_has_key \
-    bbr_apply_sysctl bbr_generate_config bbr_bdp_mb bbr_buffer_target_mb bbr_recommend_profile \
+for fn in bbr_preflight bbr_runtime_snapshot bbr_ensure_baseline bbr_restore_runtime_snapshot bbr_baseline_value bbr_config_has_key bbr_config_value \
+    bbr_apply_sysctl bbr_generate_config bbr_physical_memory_mb bbr_effective_memory_mb bbr_buffer_cap_bytes bbr_conntrack_max_for_memory bbr_bdp_mb bbr_buffer_target_mb bbr_recommend_profile \
     bbr_tc_qdisc_safe_to_replace bbr_tc_current_rate bbr_tc_rate_display bbr_tc_topology_matches bbr_tc_managed_artifact bbr_tc_is_legacy_owned \
     bbr_tc_snapshot_foreign bbr_tc_force_confirm bbr_tc_remove_confirm bbr_tc_apply_runtime bbr_default_route_info bbr_route_token \
     bbr_route_strip_cwnd bbr_apply_initcwnd_route volcano_tcp_profile; do
@@ -177,17 +177,49 @@ unset -f sysctl
     }
     # shellcheck disable=SC2329 # test stub used indirectly by bbr_apply_sysctl
     sysctl() {
-        case "${2:-}" in net.ipv4.tcp_congestion_control=bbr) return 1 ;; *) return 0 ;; esac
+        case "${1:-} ${2:-}" in
+            '-w net.core.default_qdisc=fq') return 1 ;;
+            '-n net.ipv4.tcp_congestion_control') echo bbr ;;
+            '-n net.core.default_qdisc') echo fq ;;
+            *) return 0 ;;
+        esac
     }
     CONFIG=$(printf '%s\n' 'net.core.default_qdisc = fq' 'net.ipv4.tcp_congestion_control = bbr')
     if bbr_apply_sysctl "$CONFIG" baseline >/dev/null 2>&1; then
-        echo "BBR core sysctl failure returned success" >&2
+        echo "BBR fq sysctl failure returned success" >&2
         exit 1
     fi
     grep -qx 'net.ipv4.tcp_congestion_control = cubic' "$SYSCTL_FILE" || {
         echo "BBR failed apply replaced the previous persistent config" >&2
         exit 1
     }
+)
+
+(
+    SYSCTL_FILE="$TMP/bbr-readback-sysctl.conf"
+    BBR_BASELINE_FILE="$TMP/bbr-readback-baseline.conf"
+    printf 'net.core.default_qdisc = fq_codel\nnet.ipv4.tcp_congestion_control = cubic\n' > "$SYSCTL_FILE"
+    ROLLBACK_LOG="$TMP/bbr-readback-rollback.log"
+    ensure_sysctl() { :; }
+    bbr_ensure_baseline() { :; }
+    bbr_runtime_snapshot() {
+        printf 'net.core.default_qdisc = fq_codel\nnet.ipv4.tcp_congestion_control = cubic\n' > "$1"
+    }
+    sysctl() {
+        case "${1:-} ${2:-}" in
+            '-n net.ipv4.tcp_congestion_control') echo bbr ;;
+            '-n net.core.default_qdisc') echo fq_codel ;;
+            '-w net.core.default_qdisc=fq_codel'|'-w net.ipv4.tcp_congestion_control=cubic') printf '%s\n' "$2" >> "$ROLLBACK_LOG" ;;
+            *) return 0 ;;
+        esac
+    }
+    CONFIG=$(printf '%s\n' 'net.core.default_qdisc = fq' 'net.ipv4.tcp_congestion_control = bbr')
+    if bbr_apply_sysctl "$CONFIG" baseline >/dev/null 2>&1; then
+        echo "BBR core readback mismatch returned success" >&2
+        exit 1
+    fi
+    grep -qx 'net.core.default_qdisc=fq_codel' "$ROLLBACK_LOG" \
+        || { echo "BBR readback mismatch did not roll back qdisc" >&2; exit 1; }
 )
 
 (
@@ -208,8 +240,77 @@ unset -f sysctl
 (
     # shellcheck disable=SC2329 # test stub used indirectly by bbr_generate_config
     bbr_default_ipv6_iface() { echo eth0; }
-    CONFIG=$(bbr_generate_config 12582912 12582912 '32768 49152 98304' 131072 2 32768 10 1048576 relay)
-    grep -qx 'net.ipv6.conf.eth0.accept_ra = 2' <<< "$CONFIG" || { echo "BBR forwarding profile missing IPv6 accept_ra=2" >&2; exit 1; }
+    bbr_physical_memory_mb() { echo 512; }
+    CONFIG=$(bbr_generate_config 12582912 12582912 131072 10 relay 0)
+    grep -qx 'net.ipv4.tcp_rmem = 4096 131072 12582912' <<< "$CONFIG" || { echo "BBR receive defaults are unsafe" >&2; exit 1; }
+    grep -qx 'net.ipv4.tcp_wmem = 4096 16384 12582912' <<< "$CONFIG" || { echo "BBR send defaults are unsafe" >&2; exit 1; }
+    grep -qx 'net.core.somaxconn = 8192' <<< "$CONFIG" || { echo "BBR proxy concurrency settings are missing" >&2; exit 1; }
+    ! grep -qE '^(vm\.min_free_kbytes|net\.ipv4\.(tcp_mem|tcp_adv_win_scale|tcp_tw_reuse|tcp_fin_timeout|tcp_keepalive_time|tcp_ecn|tcp_slow_start_after_idle|tcp_fastopen_blackhole_timeout_sec))[[:space:]]*=' <<< "$CONFIG" \
+        || { echo "BBR generated retired or risky TCP settings" >&2; exit 1; }
+    ! grep -qE '^net\.ipv4\.ip_forward[[:space:]]*=' <<< "$CONFIG" || { echo "BBR enabled forwarding without consent" >&2; exit 1; }
+    ! grep -qE '^net\.netfilter\.nf_conntrack_max[[:space:]]*=' <<< "$CONFIG" || { echo "BBR tuned conntrack while forwarding was disabled" >&2; exit 1; }
+
+    CONFIG=$(bbr_generate_config 12582912 12582912 131072 10 relay 1)
+    grep -qx 'net.ipv6.conf.default.accept_ra = 2' <<< "$CONFIG" || { echo "BBR forwarding profile missing default IPv6 accept_ra=2" >&2; exit 1; }
+    grep -qx 'net.ipv6.conf.eth0.accept_ra = 2' <<< "$CONFIG" || { echo "BBR forwarding profile missing interface IPv6 accept_ra=2" >&2; exit 1; }
+    grep -qx 'net.ipv4.ip_forward = 1' <<< "$CONFIG" || { echo "BBR forwarding profile missing IPv4 forwarding" >&2; exit 1; }
+    grep -qx 'net.netfilter.nf_conntrack_max = 131072' <<< "$CONFIG" || { echo "BBR conntrack limit was not scaled for 512MB" >&2; exit 1; }
+)
+
+[[ "$(bbr_effective_memory_mb 16384 512)" = 512 ]] || { echo "BBR memory selection was not clamped to physical RAM" >&2; exit 1; }
+[[ "$(bbr_buffer_cap_bytes 512)" = 134217728 ]] || { echo "BBR buffer cap is not 25 percent of RAM" >&2; exit 1; }
+! bbr_managed_keys | grep -qx 'vm.min_free_kbytes' || { echo "BBR retired settings could be captured as a new baseline" >&2; exit 1; }
+[[ "$(bbr_conntrack_max_for_memory 512)" = 131072 ]] || { echo "BBR 512MB conntrack tier is wrong" >&2; exit 1; }
+[[ "$(bbr_conntrack_max_for_memory 1024)" = 262144 ]] || { echo "BBR 1GB conntrack tier is wrong" >&2; exit 1; }
+[[ "$(bbr_conntrack_max_for_memory 2048)" = 524288 ]] || { echo "BBR 2GB conntrack tier is wrong" >&2; exit 1; }
+[[ "$(bbr_conntrack_max_for_memory 4096)" = 1048576 ]] || { echo "BBR 4GB conntrack tier is wrong" >&2; exit 1; }
+
+(
+    bbr_physical_memory_mb() { echo 512; }
+    bbr_confirm_apply() { printf '%s %s %s %s\n' "$1" "$2" "$3" "$4"; }
+    AUTO_RESULT=$(bbr_auto_calc 16384 250 10240 16GB+ 200ms以上 10Gbps)
+    AUTO_PARAMS=$(tail -n 1 <<< "$AUTO_RESULT")
+    [[ "$AUTO_PARAMS" = '134217728 134217728 2097152 10' ]] \
+        || { echo "BBR 512MB auto calculation trusted a 16GB selection: $AUTO_PARAMS" >&2; exit 1; }
+    for PROFILE in balanced latency throughput relay landing line_landing; do
+        PROFILE_PARAMS=$(volcano_tcp_profile "$PROFILE")
+        PROFILE_RMEM=${PROFILE_PARAMS%% *}
+        [ "$PROFILE_RMEM" -le 134217728 ] \
+            || { echo "BBR profile $PROFILE exceeded the physical-memory buffer cap" >&2; exit 1; }
+    done
+)
+
+(
+    SYSCTL_FILE="$TMP/bbr-retired-sysctl.conf"
+    BBR_BASELINE_FILE="$TMP/bbr-retired-baseline.conf"
+    RETIRED_LOG="$TMP/bbr-retired-restore.log"
+    cat > "$SYSCTL_FILE" <<'EOF'
+net.core.default_qdisc = fq
+net.ipv4.tcp_congestion_control = bbr
+vm.min_free_kbytes = 262144
+net.ipv4.tcp_tw_reuse = 1
+EOF
+    cat > "$BBR_BASELINE_FILE" <<'EOF'
+vm.min_free_kbytes = 32768
+net.ipv4.tcp_tw_reuse = 2
+EOF
+    ensure_sysctl() { :; }
+    bbr_ensure_baseline() { :; }
+    bbr_runtime_snapshot() { printf 'net.core.default_qdisc = fq\nnet.ipv4.tcp_congestion_control = bbr\n' > "$1"; }
+    sysctl() {
+        case "${1:-} ${2:-}" in
+            '-n net.ipv4.tcp_congestion_control') echo bbr ;;
+            '-n net.core.default_qdisc') echo fq ;;
+            '-w vm.min_free_kbytes=32768'|'-w net.ipv4.tcp_tw_reuse=2') printf '%s\n' "$2" >> "$RETIRED_LOG" ;;
+            *) return 0 ;;
+        esac
+    }
+    CONFIG=$(bbr_generate_config 12582912 12582912 131072 10 default 0)
+    bbr_apply_sysctl "$CONFIG" baseline >/dev/null
+    grep -qx 'vm.min_free_kbytes=32768' "$RETIRED_LOG" || { echo "BBR did not restore retired min_free_kbytes" >&2; exit 1; }
+    grep -qx 'net.ipv4.tcp_tw_reuse=2' "$RETIRED_LOG" || { echo "BBR did not restore retired tcp_tw_reuse" >&2; exit 1; }
+    ! grep -qE '^(vm\.min_free_kbytes|net\.ipv4\.tcp_tw_reuse)[[:space:]]*=' "$SYSCTL_FILE" \
+        || { echo "BBR persisted retired settings after upgrade" >&2; exit 1; }
 )
 
 bbr_tc_qdisc_safe_to_replace fq || { echo "BBR rejected a safe default qdisc" >&2; exit 1; }
