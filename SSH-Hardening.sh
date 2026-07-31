@@ -14857,7 +14857,7 @@ DDNS_INNER
         return 1
     fi
     ddns_install_tx_commit
-    rm -f "$DDNS_HUAWEI_KEY_FILE"
+    rm -f "$DDNS_HUAWEI_KEY_FILE" || warn "旧华为云凭据文件无法删除，请手动检查 ${DDNS_HUAWEI_KEY_FILE}"
     info "crontab 已设置（每 ${DDNS_INTERVAL_MIN} 分钟自动更新）✓"
     echo ""
     info "DDNS 配置完成 ✓"
@@ -15596,7 +15596,7 @@ DDNS_HUAWEI_INNER
         return 1
     fi
     ddns_install_tx_commit
-    rm -f "$DDNS_TOKEN_FILE"
+    rm -f "$DDNS_TOKEN_FILE" || warn "旧 Cloudflare Token 文件无法删除，请手动检查 ${DDNS_TOKEN_FILE}"
     info "crontab 已设置（每 ${DDNS_INTERVAL_MIN} 分钟自动更新）✓"
     echo ""
     info "华为云 DDNS 配置完成 ✓"

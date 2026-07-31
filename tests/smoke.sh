@@ -846,6 +846,7 @@ CF_DUPLICATE_RECORDS='{"success":true,"result":[{"id":"a-1","type":"A","name":"d
     mkdir -p "$DDNS_TEST/state"
     DDNS_SCRIPT="$DDNS_TEST/ddns.sh"
     DDNS_TOKEN_FILE="$DDNS_TEST/cf_token"
+    DDNS_HUAWEI_KEY_FILE="$DDNS_TEST/huawei_keys"
     DDNS_LOG="$DDNS_TEST/ddns.log"
     DDNS_ZONE_FILE="$DDNS_TEST/cf_zone"
     DDNS_STATE_DIR="$DDNS_TEST/state"
