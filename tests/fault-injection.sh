@@ -731,6 +731,210 @@ grep -Fq 'STAGE=\$(mktemp -d' "$ROOT/src/modules/toolbox.sh" \
     ! ddns_install_cron_job '* * * * * /root/ddns.sh' >/dev/null 2>&1 \
         || { echo "DDNS cron helper hid a write failure" >&2; exit 1; }
 )
+(
+    CRONTAB_DATA="$TMP/ddns-cron-start"
+    : > "$CRONTAB_DATA"
+    crontab() {
+        if [ "${1:-}" = -l ]; then cat "$CRONTAB_DATA"; elif [ "${1:-}" = - ]; then cat > "$CRONTAB_DATA"; else cp "$1" "$CRONTAB_DATA"; fi
+    }
+    ddns_start_cron_service() { return 1; }
+    ! ddns_install_cron_job '* * * * * /root/ddns.sh # VPS_TOOLS_DDNS' >/dev/null 2>&1 \
+        || { echo "DDNS cron helper accepted a stopped daemon" >&2; exit 1; }
+    ! grep -Fq VPS_TOOLS_DDNS "$CRONTAB_DATA" || { echo "DDNS cron startup failure left a managed job" >&2; exit 1; }
+)
+(
+    DDNS_SCRIPT="$TMP/ddns-status-script"
+    : > "$DDNS_SCRIPT"
+    crontab() { [ "${1:-}" = -l ] && printf '* * * * * %s %s\n' "$DDNS_SCRIPT" "$DDNS_CRON_MARKER"; }
+    ddns_cron_service_running() { return 1; }
+    [ "$(ddns_status)" = cron_stopped ] || { echo "DDNS status hid a stopped cron daemon" >&2; exit 1; }
+)
+
+# DDNS local configuration changes must be fully reversible, including root crontab.
+(
+    DDNS_TX_TEST="$TMP/ddns-transaction"
+    mkdir -p "$DDNS_TX_TEST"
+    DDNS_SCRIPT="$DDNS_TX_TEST/ddns.sh"
+    DDNS_TOKEN_FILE="$DDNS_TX_TEST/cf-token"
+    DDNS_HUAWEI_KEY_FILE="$DDNS_TX_TEST/huawei-keys"
+    DDNS_ZONE_FILE="$DDNS_TX_TEST/zone"
+    CRONTAB_DATA="$DDNS_TX_TEST/crontab"
+    printf 'old-script\n' > "$DDNS_SCRIPT"
+    printf 'old-token\n' > "$DDNS_TOKEN_FILE"
+    printf 'old-keys\n' > "$DDNS_HUAWEI_KEY_FILE"
+    printf 'old-zone\n' > "$DDNS_ZONE_FILE"
+    printf '5 * * * * /usr/local/bin/unrelated\n' > "$CRONTAB_DATA"
+    crontab() {
+        if [ "${1:-}" = -l ]; then
+            cat "$CRONTAB_DATA"
+        elif [ "${1:-}" = - ]; then
+            cat > "$CRONTAB_DATA"
+        else
+            cp "$1" "$CRONTAB_DATA"
+        fi
+    }
+    ddns_install_tx_begin || { echo "DDNS transaction snapshot failed" >&2; exit 1; }
+    printf 'new-script\n' > "$DDNS_SCRIPT"
+    printf 'new-token\n' > "$DDNS_TOKEN_FILE"
+    rm -f "$DDNS_HUAWEI_KEY_FILE"
+    printf 'new-zone\n' > "$DDNS_ZONE_FILE"
+    printf 'managed-cron\n' > "$CRONTAB_DATA"
+    ddns_install_tx_restore || { echo "DDNS transaction rollback failed" >&2; exit 1; }
+    grep -qx old-script "$DDNS_SCRIPT" || { echo "DDNS rollback did not restore the script" >&2; exit 1; }
+    grep -qx old-token "$DDNS_TOKEN_FILE" || { echo "DDNS rollback did not restore the Cloudflare token" >&2; exit 1; }
+    grep -qx old-keys "$DDNS_HUAWEI_KEY_FILE" || { echo "DDNS rollback did not restore Huawei credentials" >&2; exit 1; }
+    grep -qx old-zone "$DDNS_ZONE_FILE" || { echo "DDNS rollback did not restore provider config" >&2; exit 1; }
+    grep -Fq /usr/local/bin/unrelated "$CRONTAB_DATA" || { echo "DDNS rollback did not restore crontab" >&2; exit 1; }
+)
+
+# Failed provider test runs must restore the previously working local configuration.
+(
+    DDNS_TEST="$TMP/ddns-cloudflare-rollback"
+    mkdir -p "$DDNS_TEST"
+    DDNS_SCRIPT="$DDNS_TEST/ddns.sh"
+    DDNS_TOKEN_FILE="$DDNS_TEST/cf-token"
+    DDNS_HUAWEI_KEY_FILE="$DDNS_TEST/huawei-keys"
+    DDNS_ZONE_FILE="$DDNS_TEST/zone"
+    # shellcheck disable=SC2034 # consumed by the sourced DDNS installer
+    DDNS_LOG="$DDNS_TEST/ddns.log"
+    CRONTAB_DATA="$DDNS_TEST/crontab"
+    printf 'old-script\n' > "$DDNS_SCRIPT"
+    printf 'old-token\n' > "$DDNS_TOKEN_FILE"
+    printf 'old-huawei\n' > "$DDNS_HUAWEI_KEY_FILE"
+    printf 'PROVIDER=huawei\n' > "$DDNS_ZONE_FILE"
+    printf '*/5 * * * * old-ddns\n' > "$CRONTAB_DATA"
+    ddns_ensure_cron() { return 0; }
+    ddns_start_cron_service() { return 0; }
+    ddns_fetch_public_ip() { echo 198.51.100.10; }
+    crontab() {
+        if [ "${1:-}" = -l ]; then cat "$CRONTAB_DATA"; elif [ "${1:-}" = - ]; then cat > "$CRONTAB_DATA"; else cp "$1" "$CRONTAB_DATA"; fi
+    }
+    curl() {
+        case "$*" in
+            *'/zones?name=example.com'*) printf '%s\n' '{"success":true,"result":[{"id":"zone-id"}]}' ;;
+            *'/dns_records?'*) printf '%s\n' '{"success":true,"result":[{"id":"record-id","type":"A","name":"home.example.com","content":"198.51.100.10"}]}' ;;
+            *) return 1 ;;
+        esac
+    }
+    bash() { [ "${1:-}" = -n ]; }
+    ! ddns_install_cloudflare <<'EOF' >/dev/null 2>&1 || { echo "Cloudflare failed test run returned success" >&2; exit 1; }
+example.com
+
+home
+
+token
+
+
+
+
+EOF
+    grep -qx old-script "$DDNS_SCRIPT" || { echo "Cloudflare failure did not restore the old script" >&2; exit 1; }
+    grep -qx old-token "$DDNS_TOKEN_FILE" || { echo "Cloudflare failure did not restore the old token" >&2; exit 1; }
+    grep -qx old-huawei "$DDNS_HUAWEI_KEY_FILE" || { echo "Cloudflare failure removed Huawei credentials too early" >&2; exit 1; }
+    grep -qx 'PROVIDER=huawei' "$DDNS_ZONE_FILE" || { echo "Cloudflare failure did not restore provider config" >&2; exit 1; }
+    grep -Fq old-ddns "$CRONTAB_DATA" || { echo "Cloudflare failure did not restore crontab" >&2; exit 1; }
+)
+(
+    DDNS_TEST="$TMP/ddns-huawei-rollback"
+    mkdir -p "$DDNS_TEST"
+    DDNS_SCRIPT="$DDNS_TEST/ddns.sh"
+    DDNS_TOKEN_FILE="$DDNS_TEST/cf-token"
+    DDNS_HUAWEI_KEY_FILE="$DDNS_TEST/huawei-keys"
+    DDNS_ZONE_FILE="$DDNS_TEST/zone"
+    # shellcheck disable=SC2034 # consumed by the sourced DDNS installer
+    DDNS_LOG="$DDNS_TEST/ddns.log"
+    CRONTAB_DATA="$DDNS_TEST/crontab"
+    printf 'old-script\n' > "$DDNS_SCRIPT"
+    printf 'old-token\n' > "$DDNS_TOKEN_FILE"
+    printf 'old-huawei\n' > "$DDNS_HUAWEI_KEY_FILE"
+    printf 'PROVIDER=cloudflare\n' > "$DDNS_ZONE_FILE"
+    printf '*/5 * * * * old-ddns\n' > "$CRONTAB_DATA"
+    ddns_ensure_cron() { return 0; }
+    ddns_start_cron_service() { return 0; }
+    crontab() {
+        if [ "${1:-}" = -l ]; then cat "$CRONTAB_DATA"; elif [ "${1:-}" = - ]; then cat > "$CRONTAB_DATA"; else cp "$1" "$CRONTAB_DATA"; fi
+    }
+    bash() { [ "${1:-}" = -n ]; }
+    ! ddns_install_huawei <<'EOF' >/dev/null 2>&1 || { echo "Huawei failed test run returned success" >&2; exit 1; }
+example.com
+
+
+home
+
+test-ak
+test-sk
+
+
+
+EOF
+    grep -qx old-script "$DDNS_SCRIPT" || { echo "Huawei failure did not restore the old script" >&2; exit 1; }
+    grep -qx old-token "$DDNS_TOKEN_FILE" || { echo "Huawei failure removed Cloudflare credentials too early" >&2; exit 1; }
+    grep -qx old-huawei "$DDNS_HUAWEI_KEY_FILE" || { echo "Huawei failure did not restore AK/SK" >&2; exit 1; }
+    grep -qx 'PROVIDER=cloudflare' "$DDNS_ZONE_FILE" || { echo "Huawei failure did not restore provider config" >&2; exit 1; }
+    grep -Fq old-ddns "$CRONTAB_DATA" || { echo "Huawei failure did not restore crontab" >&2; exit 1; }
+)
+
+# PID-lock fallback must recover stale locks and return 75 for a live owner.
+DDNS_LOCK_HELPER="$TMP/ddns-lock-helper.sh"
+awk 'p{print} /^acquire_lock\(\) \{/{p=1; print; next} p && /^}$/{exit}' "$ROOT/SSH-Hardening.sh" > "$DDNS_LOCK_HELPER"
+(
+    # shellcheck source=/dev/null
+    source "$DDNS_LOCK_HELPER"
+    LOCK_FILE="$TMP/ddns-stale.lockfile"
+    LOCK_DIR="$TMP/ddns-stale.lock"
+    command() {
+        if [ "${1:-}" = -v ] && [ "${2:-}" = flock ]; then return 1; fi
+        builtin command "$@"
+    }
+    mkdir -p "$LOCK_DIR"
+    printf '99999999\n' > "$LOCK_DIR/pid"
+    acquire_lock || { echo "DDNS did not recover a stale PID lock" >&2; exit 1; }
+    grep -qx "$$" "$LOCK_DIR/pid" || { echo "DDNS stale lock owner was not replaced" >&2; exit 1; }
+)
+(
+    # shellcheck source=/dev/null
+    source "$DDNS_LOCK_HELPER"
+    # shellcheck disable=SC2034 # consumed by the extracted acquire_lock helper
+    LOCK_FILE="$TMP/ddns-live.lockfile"
+    LOCK_DIR="$TMP/ddns-live.lock"
+    command() {
+        if [ "${1:-}" = -v ] && [ "${2:-}" = flock ]; then return 1; fi
+        builtin command "$@"
+    }
+    mkdir -p "$LOCK_DIR"
+    printf '%s\n' "$$" > "$LOCK_DIR/pid"
+    if acquire_lock; then
+        echo "DDNS accepted a live PID lock" >&2
+        exit 1
+    else
+        RC=$?
+    fi
+    [ "$RC" -eq 75 ] || { echo "DDNS live lock did not return 75" >&2; exit 1; }
+)
+(
+    DDNS_SCRIPT="$TMP/ddns-running-script"
+    : > "$DDNS_SCRIPT"
+    bash() { return 75; }
+    OUTPUT=$(ddns_run_now)
+    grep -Fq '已有一次 DDNS 更新正在运行' <<< "$OUTPUT" || { echo "DDNS manual run hid lock contention" >&2; exit 1; }
+)
+
+# Pause and uninstall must preserve DDNS when crontab removal fails.
+(
+    DDNS_SCRIPT="$TMP/ddns-preserve.sh"
+    DDNS_TOKEN_FILE="$TMP/ddns-preserve-token"
+    DDNS_HUAWEI_KEY_FILE="$TMP/ddns-preserve-huawei"
+    DDNS_ZONE_FILE="$TMP/ddns-preserve-zone"
+    : > "$DDNS_SCRIPT"
+    : > "$DDNS_TOKEN_FILE"
+    : > "$DDNS_HUAWEI_KEY_FILE"
+    : > "$DDNS_ZONE_FILE"
+    ddns_remove_cron_job() { return 1; }
+    ! ddns_pause >/dev/null 2>&1 || { echo "DDNS pause ignored crontab removal failure" >&2; exit 1; }
+    ! ddns_uninstall <<< y >/dev/null 2>&1 || { echo "DDNS uninstall ignored crontab removal failure" >&2; exit 1; }
+    [ -f "$DDNS_SCRIPT" ] && [ -f "$DDNS_TOKEN_FILE" ] && [ -f "$DDNS_HUAWEI_KEY_FILE" ] && [ -f "$DDNS_ZONE_FILE" ] \
+        || { echo "DDNS uninstall deleted files after crontab failure" >&2; exit 1; }
+)
 
 # Failed DDNS reconfiguration must restore the previous provider, script and credentials.
 (
@@ -993,5 +1197,24 @@ curl() {
 }
 self_update >/dev/null 2>&1
 grep -qx 'original' "$LOCAL_SCRIPT" || { echo "Updater replaced script after checksum mismatch" >&2; exit 1; }
+
+# Post-update tc reconciliation must execute the newly installed script, not a function from the old process.
+TC_STATE_FILE="$TMP/update-tc.state"
+LOCAL_SCRIPT="$TMP/newly-installed-vps-tools"
+UPDATE_TC_MARKER="$TMP/update-tc.marker"
+export UPDATE_TC_MARKER
+printf 'DEV=eth0\nRATE=2200\nBURST_KB=2200\nFORCE=0\n' > "$TC_STATE_FILE"
+cat > "$LOCAL_SCRIPT" <<'EOF'
+#!/bin/bash
+[ "${1:-}" = "--bbr-reconcile-tc" ] || exit 1
+[ "${VPS_TOOLS_TEST_MODE:-}" = 0 ] || exit 1
+[ "${BBR_TUNE_TEST_MODE:-}" = 0 ] || exit 1
+: > "$UPDATE_TC_MARKER"
+EOF
+chmod +x "$LOCAL_SCRIPT"
+self_reconcile_tc_after_update >/dev/null \
+    || { echo "Updater could not invoke the new tc reconciliation endpoint" >&2; exit 1; }
+[ -f "$UPDATE_TC_MARKER" ] \
+    || { echo "Updater reconciled tc through the old process" >&2; exit 1; }
 
 echo "Fault injection tests passed."

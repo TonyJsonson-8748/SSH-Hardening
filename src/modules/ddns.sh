@@ -35,57 +35,148 @@ ddns_sed_escape() {
     printf '%s' "$1" | sed 's/[&|\\]/\\&/g'
 }
 
-ddns_install_transaction_begin() {
-    # NOTE: never name a local var PATH — it shadows the shell's command
-    # search path for the rest of this function's scope (and anything it
-    # calls), so every external command (mktemp, cp, ...) starts failing
-    # with a bogus "No such file or directory" the moment it's assigned.
-    local DIR SPEC NAME DEST_PATH
-    DIR=$(mktemp -d "${TMPDIR:-/tmp}/vps-ddns-install.XXXXXX") || return 1
-    chmod 700 "$DIR" 2>/dev/null || true
-    for SPEC in \
-        "script|$DDNS_SCRIPT" \
-        "token|$DDNS_TOKEN_FILE" \
-        "huawei_key|$DDNS_HUAWEI_KEY_FILE" \
-        "zone|$DDNS_ZONE_FILE"; do
-        NAME=${SPEC%%|*}
-        DEST_PATH=${SPEC#*|}
-        if [ -e "$DEST_PATH" ] || [ -L "$DEST_PATH" ]; then
-            cp -a "$DEST_PATH" "$DIR/$NAME" || { rm -rf "$DIR"; return 1; }
-        else
-            : > "$DIR/$NAME.absent" || { rm -rf "$DIR"; return 1; }
-        fi
-    done
-    printf '%s\n' "$DIR"
+ddns_domain_normalize() {
+    local value="$1"
+    DDNS_DOMAIN_VALUE="$value" python3 <<'PY'
+import os
+import re
+
+value = os.environ.get("DDNS_DOMAIN_VALUE", "").strip().rstrip(".")
+try:
+    value = value.encode("idna").decode("ascii").lower()
+except (UnicodeError, UnicodeDecodeError):
+    raise SystemExit(1)
+if not value or len(value) > 253:
+    raise SystemExit(1)
+labels = value.split(".")
+if any(
+    not label
+    or len(label) > 63
+    or label.startswith("-")
+    or label.endswith("-")
+    or re.fullmatch(r"[a-z0-9-]+", label) is None
+    for label in labels
+):
+    raise SystemExit(1)
+print(value)
+PY
 }
 
-ddns_install_transaction_restore() {
-    local DIR="$1" SPEC NAME DEST_PATH
-    [ -d "$DIR" ] || return 1
-    for SPEC in \
-        "script|$DDNS_SCRIPT" \
-        "token|$DDNS_TOKEN_FILE" \
-        "huawei_key|$DDNS_HUAWEI_KEY_FILE" \
-        "zone|$DDNS_ZONE_FILE"; do
-        NAME=${SPEC%%|*}
-        DEST_PATH=${SPEC#*|}
-        if [ -f "$DIR/$NAME.absent" ]; then
-            rm -f "$DEST_PATH" || { rm -rf "$DIR"; return 1; }
-        elif [ -e "$DIR/$NAME" ] || [ -L "$DIR/$NAME" ]; then
-            mkdir -p "$(dirname "$DEST_PATH")" || { rm -rf "$DIR"; return 1; }
-            cp -a "$DIR/$NAME" "$DEST_PATH" || { rm -rf "$DIR"; return 1; }
-        else
-            rm -rf "$DIR"
-            return 1
-        fi
-    done
-    rm -rf "$DIR"
+ddns_domain_in_zone() {
+    local domain="${1%.}" zone="${2%.}"
+    [ "$domain" = "$zone" ] || [[ "$domain" = *."$zone" ]]
 }
 
-ddns_install_transaction_commit() {
-    local DIR="$1"
-    [ -n "$DIR" ] || return 0
-    rm -rf "$DIR"
+ddns_huawei_endpoint_normalize() {
+    local value="${1:-https://dns.myhuaweicloud.com}"
+    DDNS_ENDPOINT_VALUE="$value" python3 <<'PY'
+import os
+import re
+import urllib.parse
+
+value = os.environ.get("DDNS_ENDPOINT_VALUE", "").strip()
+if "://" not in value:
+    value = "https://" + value
+parts = urllib.parse.urlsplit(value)
+host = (parts.hostname or "").lower().rstrip(".")
+if (
+    parts.scheme != "https"
+    or parts.username is not None
+    or parts.password is not None
+    or parts.port is not None
+    or parts.path not in ("", "/")
+    or parts.query
+    or parts.fragment
+    or re.fullmatch(r"dns(?:\.[a-z0-9-]+)?\.myhuaweicloud\.com", host) is None
+):
+    raise SystemExit(1)
+print("https://" + host)
+PY
+}
+
+ddns_cf_ttl_normalize() {
+    local value="${1:-60}"
+    [[ "$value" =~ ^[0-9]+$ ]] || return 1
+    value=$(printf '%s' "$value" | sed 's/^0*//')
+    [ -n "$value" ] || value=0
+    [ "${#value}" -le 5 ] || return 1
+    if [ "$value" -eq 1 ] || { [ "$value" -ge 60 ] && [ "$value" -le 86400 ]; }; then
+        echo "$value"
+        return 0
+    fi
+    return 1
+}
+
+ddns_huawei_ttl_normalize() {
+    local value="${1:-300}"
+    [[ "$value" =~ ^[0-9]+$ ]] || return 1
+    value=$(printf '%s' "$value" | sed 's/^0*//')
+    [ -n "$value" ] || value=0
+    [ "${#value}" -le 10 ] || return 1
+    [ "$value" -ge 300 ] && [ "$value" -le 2147483647 ] || return 1
+    echo "$value"
+}
+
+ddns_install_tx_begin() {
+    local index=0 dest_path
+    DDNS_INSTALL_TX_DIR=$(mktemp -d "${TMPDIR:-/tmp}/vps-tools-ddns.XXXXXX") || return 1
+    chmod 700 "$DDNS_INSTALL_TX_DIR" 2>/dev/null || true
+    for dest_path in "$DDNS_SCRIPT" "$DDNS_TOKEN_FILE" "$DDNS_HUAWEI_KEY_FILE" "$DDNS_ZONE_FILE"; do
+        index=$((index + 1))
+        if [ -e "$dest_path" ] || [ -L "$dest_path" ]; then
+            cp -a -- "$dest_path" "$DDNS_INSTALL_TX_DIR/file.$index" || {
+                rm -rf -- "$DDNS_INSTALL_TX_DIR"
+                DDNS_INSTALL_TX_DIR=""
+                return 1
+            }
+            : > "$DDNS_INSTALL_TX_DIR/present.$index"
+        fi
+    done
+    if command -v crontab >/dev/null 2>&1; then
+        : > "$DDNS_INSTALL_TX_DIR/has-crontab-command"
+        if crontab -l > "$DDNS_INSTALL_TX_DIR/crontab" 2>/dev/null; then
+            : > "$DDNS_INSTALL_TX_DIR/crontab-present"
+        else
+            : > "$DDNS_INSTALL_TX_DIR/crontab-absent"
+        fi
+    fi
+}
+
+ddns_install_tx_restore() {
+    local dir="${DDNS_INSTALL_TX_DIR:-}" index=0 dest_path failed=0
+    [ -n "$dir" ] && [ -d "$dir" ] || return 0
+    for dest_path in "$DDNS_SCRIPT" "$DDNS_TOKEN_FILE" "$DDNS_HUAWEI_KEY_FILE" "$DDNS_ZONE_FILE"; do
+        index=$((index + 1))
+        if [ -f "$dir/present.$index" ]; then
+            if ! rm -f -- "$dest_path" \
+                || ! mkdir -p -- "$(dirname "$dest_path")" \
+                || ! cp -a -- "$dir/file.$index" "$dest_path"; then
+                failed=1
+            fi
+        else
+            rm -f -- "$dest_path" || failed=1
+        fi
+    done
+    if [ -f "$dir/crontab-present" ]; then
+        crontab "$dir/crontab" >/dev/null 2>&1 || failed=1
+    elif [ -f "$dir/crontab-absent" ]; then
+        if ! crontab -r >/dev/null 2>&1 \
+            && crontab -l >/dev/null 2>&1; then
+            failed=1
+        fi
+    fi
+    if [ "$failed" -eq 0 ]; then
+        rm -rf -- "$dir"
+        DDNS_INSTALL_TX_DIR=""
+        return 0
+    fi
+    warn "DDNS 回滚未完整完成，快照保留在 ${dir}"
+    return 1
+}
+
+ddns_install_tx_commit() {
+    [ -z "${DDNS_INSTALL_TX_DIR:-}" ] || rm -rf -- "$DDNS_INSTALL_TX_DIR"
+    DDNS_INSTALL_TX_DIR=""
 }
 
 ddns_domain_dot() {
@@ -492,7 +583,22 @@ ddns_install_cron_job() {
         error "写入 DDNS crontab 失败"
         return 1
     fi
-    ddns_start_cron_service >/dev/null 2>&1 || warn "cron 服务未能自动启动，请检查服务状态"
+    if ! ddns_start_cron_service >/dev/null 2>&1; then
+        if ddns_remove_cron_job >/dev/null 2>&1; then
+            error "cron 服务无法启动，已撤销 DDNS 定时任务"
+        else
+            error "cron 服务无法启动，且定时任务撤销失败，请手动检查 crontab -l"
+        fi
+        return 1
+    fi
+}
+
+ddns_remove_cron_job() {
+    command -v crontab >/dev/null 2>&1 || return 0
+    if ! (crontab -l 2>/dev/null | ddns_cron_without_managed) | crontab -; then
+        error "移除 DDNS crontab 失败"
+        return 1
+    fi
 }
 
 ddns_cf_record_ensure() {
@@ -743,7 +849,10 @@ ddns_print_record_summary() {
 }
 
 ddns_ensure_cron() {
-    command -v crontab &>/dev/null && return 0
+    if command -v crontab &>/dev/null; then
+        ddns_start_cron_service
+        return $?
+    fi
     info "未检测到 crontab，正在安装 cron..."
     if command -v apt-get &>/dev/null; then
         apt-get update -qq 2>/dev/null
@@ -761,11 +870,11 @@ ddns_ensure_cron() {
     # 安装后立即启动服务
     ddns_start_cron_service >/dev/null 2>&1 || true
     sleep 1
-    if command -v crontab &>/dev/null; then
+    if command -v crontab &>/dev/null && ddns_cron_service_running; then
         info "cron 安装并启动成功 ✓"
         return 0
     else
-        error "cron 安装后仍无法使用，请重新登录后重试"
+        error "cron 安装后仍无法使用或服务未运行"
         return 1
     fi
 }
@@ -774,13 +883,32 @@ ddns_start_cron_service() {
     for svc in cron crond dcron; do
         if systemd_available; then
             systemctl enable "$svc" --quiet 2>/dev/null || true
-            systemctl start "$svc" 2>/dev/null && return 0
+            systemctl start "$svc" 2>/dev/null || true
         fi
         if command -v rc-service &>/dev/null; then
-            rc-service "$svc" start 2>/dev/null && return 0
+            rc-service "$svc" start 2>/dev/null || true
+        fi
+        if command -v service &>/dev/null; then
+            service "$svc" start >/dev/null 2>&1 || true
         fi
     done
-    return 1
+    ddns_cron_service_running
+}
+
+ddns_cron_service_running() {
+    local svc
+    for svc in cron crond dcron; do
+        if systemd_available && systemctl is-active --quiet "$svc" 2>/dev/null; then
+            return 0
+        fi
+        if command -v rc-service &>/dev/null && rc-service "$svc" status >/dev/null 2>&1; then
+            return 0
+        fi
+        if command -v service &>/dev/null && service "$svc" status >/dev/null 2>&1; then
+            return 0
+        fi
+    done
+    pgrep -x cron >/dev/null 2>&1 || pgrep -x crond >/dev/null 2>&1 || pgrep -x dcron >/dev/null 2>&1
 }
 
 # ── 检测 DDNS 安装状态 ────────────────────────────────────
@@ -791,6 +919,8 @@ ddns_status() {
         echo "no_cron"
     elif ! crontab -l 2>/dev/null | grep -Fq -e "$DDNS_CRON_MARKER" -e "$DDNS_SCRIPT"; then
         echo "stopped"
+    elif ! ddns_cron_service_running; then
+        echo "cron_stopped"
     else
         echo "running"
     fi
@@ -805,18 +935,29 @@ ddns_install_cloudflare() {
     for cmd in curl python3; do
         if ! command -v "$cmd" &>/dev/null; then
             info "安装依赖 $cmd..."
-            pkg_install "$cmd" &>/dev/null
+            pkg_install "$cmd" &>/dev/null || true
+            if ! command -v "$cmd" &>/dev/null; then
+                error "依赖 ${cmd} 安装失败，请手动安装后重试"
+                return 1
+            fi
         fi
     done
     if ! ddns_ensure_cron; then
         error "无法安装或启用 crontab/cron，请先手动安装 cron 后重试"
         return
     fi
-    ddns_start_cron_service >/dev/null 2>&1 || warn "cron 服务未能自动启动，请稍后手动检查"
+    if ! ddns_start_cron_service >/dev/null 2>&1; then
+        error "cron 服务无法启动，请修复后重试"
+        return 1
+    fi
 
     menu_div
     read -rp "  根域名（如 example.com）: " DDNS_ZONE_NAME
     [ -z "$DDNS_ZONE_NAME" ] && { warn "已取消"; return; }
+    if ! DDNS_ZONE_NAME=$(ddns_domain_normalize "$DDNS_ZONE_NAME"); then
+        error "根域名格式无效"
+        return 1
+    fi
 
     local DDNS_ENABLE_A="true" DDNS_ENABLE_AAAA="false"
     local DDNS_SUB4="" DDNS_SUB6="" DDNS_DOMAIN4="" DDNS_DOMAIN6=""
@@ -868,6 +1009,18 @@ ddns_install_cloudflare() {
         error "至少需要启用 IPv4 A 或 IPv6 AAAA 其中一种记录"
         return
     fi
+    if [ "$DDNS_ENABLE_A" = "true" ]; then
+        if ! DDNS_DOMAIN4=$(ddns_domain_normalize "$DDNS_DOMAIN4") || ! ddns_domain_in_zone "$DDNS_DOMAIN4" "$DDNS_ZONE_NAME"; then
+            error "IPv4 域名格式无效或不属于根域名 ${DDNS_ZONE_NAME}"
+            return 1
+        fi
+    fi
+    if [ "$DDNS_ENABLE_AAAA" = "true" ]; then
+        if ! DDNS_DOMAIN6=$(ddns_domain_normalize "$DDNS_DOMAIN6") || ! ddns_domain_in_zone "$DDNS_DOMAIN6" "$DDNS_ZONE_NAME"; then
+            error "IPv6 域名格式无效或不属于根域名 ${DDNS_ZONE_NAME}"
+            return 1
+        fi
+    fi
 
     read -rp "  Cloudflare API Token（输入可见）: " DDNS_TOKEN
     [ -z "$DDNS_TOKEN" ] && { warn "已取消"; return; }
@@ -885,7 +1038,14 @@ ddns_install_cloudflare() {
 
     local DDNS_TTL="60"
     read -rp "  TTL 秒数（默认60）: " DDNS_TTL_IN
-    [ -n "$DDNS_TTL_IN" ] && echo "$DDNS_TTL_IN" | grep -qE '^[0-9]+$' && DDNS_TTL="$DDNS_TTL_IN"
+    if ! DDNS_TTL=$(ddns_cf_ttl_normalize "${DDNS_TTL_IN:-60}"); then
+        error "Cloudflare TTL 必须为 1（自动）或 60-86400 秒"
+        return 1
+    fi
+    if [ "$DDNS_PROXIED" = "true" ] && [ "$DDNS_TTL" != "1" ]; then
+        warn "Cloudflare 代理记录使用自动 TTL，已调整为 1"
+        DDNS_TTL=1
+    fi
     local DDNS_INTERVAL_MIN
     DDNS_INTERVAL_MIN=$(ddns_prompt_interval 5)
 
@@ -939,23 +1099,28 @@ ddns_install_cloudflare() {
         ddns_cf_cleanup_cross_record "$ZONE_ID" "$DDNS_TOKEN" A "$DDNS_DOMAIN6" "IPv6 域名上的额外 A 记录" || true
     fi
 
-    local DDNS_TX_DIR
-    DDNS_TX_DIR=$(ddns_install_transaction_begin) || {
-        error "无法创建 DDNS 配置事务快照"
-        return 1
-    }
-
-    # 保存配置
-    if ! printf '%s\n' "$DDNS_TOKEN" > "$DDNS_TOKEN_FILE" \
-        || ! chmod 600 "$DDNS_TOKEN_FILE"; then
-        ddns_install_transaction_restore "$DDNS_TX_DIR" || true
-        error "保存 Cloudflare Token 失败，已恢复原配置"
+    if ! ddns_install_tx_begin; then
+        error "无法创建 DDNS 配置回滚快照"
         return 1
     fi
-    touch "$DDNS_LOG" 2>/dev/null || { DDNS_LOG="$HOME/ddns.log"; touch "$DDNS_LOG"; }
+
+    # 保存配置
+    if ! printf '%s\n' "$DDNS_TOKEN" > "$DDNS_TOKEN_FILE" || ! chmod 600 "$DDNS_TOKEN_FILE"; then
+        error "无法保存 Cloudflare Token"
+        ddns_install_tx_restore || error "恢复原 DDNS 配置失败，请立即检查"
+        return 1
+    fi
+    if ! touch "$DDNS_LOG" 2>/dev/null; then
+        DDNS_LOG="$HOME/ddns.log"
+        if ! touch "$DDNS_LOG" 2>/dev/null; then
+            error "无法创建 DDNS 日志文件"
+            ddns_install_tx_restore || error "恢复原 DDNS 配置失败，请立即检查"
+            return 1
+        fi
+    fi
     chmod 644 "$DDNS_LOG" 2>/dev/null || true
     local DDNS_PRIMARY_DOMAIN="${DDNS_DOMAIN4:-$DDNS_DOMAIN6}"
-    if ! {
+    {
         echo "PROVIDER=cloudflare"
         echo "DOMAIN=${DDNS_PRIMARY_DOMAIN}"
         echo "DOMAIN4=${DDNS_DOMAIN4}"
@@ -968,14 +1133,14 @@ ddns_install_cloudflare() {
         echo "TTL=${DDNS_TTL}"
         echo "INTERVAL_MIN=${DDNS_INTERVAL_MIN}"
         echo "LOG=${DDNS_LOG}"
-    } > "$DDNS_ZONE_FILE"; then
-        ddns_install_transaction_restore "$DDNS_TX_DIR" || true
-        error "保存 Cloudflare DDNS 配置失败，已恢复原配置"
+    } > "$DDNS_ZONE_FILE" || {
+        error "无法保存 DDNS 配置"
+        ddns_install_tx_restore || error "恢复原 DDNS 配置失败，请立即检查"
         return 1
-    fi
+    }
 
     # 生成 DDNS 执行脚本
-    cat > "$DDNS_SCRIPT" << 'DDNS_INNER'
+    if ! cat > "$DDNS_SCRIPT" << 'DDNS_INNER'
 #!/bin/bash
 # 注入 PATH，确保 crontab 环境下能找到 curl / python3
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
@@ -990,12 +1155,32 @@ TTL="__TTL__"
 TOKEN_FILE="/root/.cf_token"
 LOG_FILE="__LOG__"
 STATE_DIR="${DDNS_STATE_DIR:-/root}"
+LOCK_FILE="/run/vps-tools-ddns.lockfile"
 LOCK_DIR="/run/vps-tools-ddns.lock"
 
-if ! mkdir "$LOCK_DIR" 2>/dev/null; then
-    exit 0
-fi
-trap 'rmdir "$LOCK_DIR" 2>/dev/null || true' EXIT
+acquire_lock() {
+    if command -v flock >/dev/null 2>&1; then
+        exec 9>"$LOCK_FILE" || return 1
+        flock -n 9 || return 75
+        return 0
+    fi
+    if mkdir "$LOCK_DIR" 2>/dev/null; then
+        printf '%s\n' "$$" > "$LOCK_DIR/pid"
+        trap 'rm -rf -- "$LOCK_DIR"' EXIT
+        return 0
+    fi
+    local LOCK_PID=""
+    [ -f "$LOCK_DIR/pid" ] && read -r LOCK_PID < "$LOCK_DIR/pid"
+    if [ -n "$LOCK_PID" ] && kill -0 "$LOCK_PID" 2>/dev/null; then
+        return 75
+    fi
+    rm -rf -- "$LOCK_DIR" 2>/dev/null || return 1
+    mkdir "$LOCK_DIR" 2>/dev/null || return 75
+    printf '%s\n' "$$" > "$LOCK_DIR/pid"
+    trap 'rm -rf -- "$LOCK_DIR"' EXIT
+}
+
+acquire_lock || exit $?
 
 API_TOKEN=$(cat "$TOKEN_FILE" 2>/dev/null)
 [ -z "$API_TOKEN" ] && exit 1
@@ -1013,6 +1198,10 @@ is_true() {
         1|true|TRUE|yes|YES|on|ON) return 0 ;;
         *) return 1 ;;
     esac
+}
+
+log_line() {
+    printf '[%s] %s: %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$1" "$2" >> "$LOG_FILE"
 }
 
 record_status_file() {
@@ -1087,11 +1276,22 @@ tg_notify() {
     local MSG="$1"
     local TG_FILE="/root/.cf_tg"
     [ -f "$TG_FILE" ] || return 0
-    local B_TOKEN C_ID
+    local B_TOKEN C_ID RESP DESCRIPTION
     B_TOKEN=$(grep "^BOT_TOKEN=" "$TG_FILE" | cut -d= -f2-)
     C_ID=$(grep "^CHAT_ID=" "$TG_FILE" | cut -d= -f2-)
     [ -z "$B_TOKEN" ] || [ -z "$C_ID" ] && return 0
-    curl -s --max-time 15         "https://api.telegram.org/bot${B_TOKEN}/sendMessage"         -d "chat_id=${C_ID}"         -d "text=${MSG}"         -d "parse_mode=HTML" > /dev/null 2>&1
+    if ! RESP=$(curl -fsS --max-time 15 \
+        "https://api.telegram.org/bot${B_TOKEN}/sendMessage" \
+        --data-urlencode "chat_id=${C_ID}" \
+        --data-urlencode "text=${MSG}" \
+        --data-urlencode "parse_mode=HTML" 2>/dev/null); then
+        log_line WARN "Telegram 通知发送失败：网络或 HTTP 错误"
+        return 0
+    fi
+    if ! printf '%s' "$RESP" | python3 -c 'import json,sys; raise SystemExit(0 if json.load(sys.stdin).get("ok") is True else 1)' 2>/dev/null; then
+        DESCRIPTION=$(printf '%s' "$RESP" | python3 -c 'import json,sys; print(str(json.load(sys.stdin).get("description") or "API 返回异常").replace("\n", " "))' 2>/dev/null || echo "API 返回异常")
+        log_line WARN "Telegram 通知发送失败：${DESCRIPTION}"
+    fi
 }
 
 fetch_ip4() {
@@ -1116,30 +1316,23 @@ fetch_ip6() {
 fetch_ip6_local() {
     command -v ip >/dev/null 2>&1 || return 0
     command -v python3 >/dev/null 2>&1 || return 0
-    ip -6 -o addr show scope global 2>/dev/null | python3 -c '
+    local ROUTE
+    ROUTE=$(ip -6 route get 2606:4700:4700::1111 2>/dev/null) || return 0
+    printf '%s\n' "$ROUTE" | python3 -c '
 import ipaddress
 import sys
-candidates = []
 for line in sys.stdin:
     parts = line.split()
-    if "inet6" not in parts:
+    if "src" not in parts:
         continue
     try:
-        addr = parts[parts.index("inet6") + 1].split("/")[0]
+        addr = parts[parts.index("src") + 1].split("/")[0]
         ip = ipaddress.ip_address(addr)
     except Exception:
         continue
-    if ip.version != 6 or ip.is_link_local or ip.is_loopback or ip.is_multicast or ip.is_unspecified:
-        continue
-    flags = set(parts)
-    score = 0
-    if "deprecated" in flags:
-        score += 100
-    if "temporary" in flags:
-        score += 10
-    candidates.append((score, str(ip)))
-if candidates:
-    print(sorted(candidates)[0][1])
+    if ip.version == 6 and ip.is_global:
+        print(ip.compressed)
+        break
 '
 }
 
@@ -1149,7 +1342,7 @@ valid_ipv4() {
 }
 
 valid_ipv6() {
-    python3 -c "import ipaddress,sys; ip=ipaddress.ip_address(sys.argv[1]); sys.exit(0 if ip.version == 6 else 1)" "$1" 2>/dev/null
+    python3 -c "import ipaddress,sys; ip=ipaddress.ip_address(sys.argv[1]); sys.exit(0 if ip.version == 6 and ip.is_global else 1)" "$1" 2>/dev/null
 }
 
 cf_record_info() {
@@ -1327,23 +1520,30 @@ fi
 
 exit "$EXIT_CODE"
 DDNS_INNER
+    then
+        error "无法生成 DDNS 执行脚本"
+        ddns_install_tx_restore || error "恢复原 DDNS 配置失败，请立即检查"
+        return 1
+    fi
 
     local DDNS_DOMAIN4_ESC DDNS_DOMAIN6_ESC DDNS_ZONE_ESC DDNS_LOG_ESC
     DDNS_DOMAIN4_ESC=$(ddns_sed_escape "$DDNS_DOMAIN4")
     DDNS_DOMAIN6_ESC=$(ddns_sed_escape "$DDNS_DOMAIN6")
     DDNS_ZONE_ESC=$(ddns_sed_escape "$DDNS_ZONE_NAME")
     DDNS_LOG_ESC=$(ddns_sed_escape "$DDNS_LOG")
-    if ! sed -i "s|__DOMAIN4__|${DDNS_DOMAIN4_ESC}|g" "$DDNS_SCRIPT" \
-        || ! sed -i "s|__DOMAIN6__|${DDNS_DOMAIN6_ESC}|g" "$DDNS_SCRIPT" \
-        || ! sed -i "s|__ZONE__|${DDNS_ZONE_ESC}|g" "$DDNS_SCRIPT" \
-        || ! sed -i "s|__ENABLE_A__|${DDNS_ENABLE_A}|g" "$DDNS_SCRIPT" \
-        || ! sed -i "s|__ENABLE_AAAA__|${DDNS_ENABLE_AAAA}|g" "$DDNS_SCRIPT" \
-        || ! sed -i "s|__PROXIED__|${DDNS_PROXIED}|g" "$DDNS_SCRIPT" \
-        || ! sed -i "s|__TTL__|${DDNS_TTL}|g" "$DDNS_SCRIPT" \
-        || ! sed -i "s|__LOG__|${DDNS_LOG_ESC}|g" "$DDNS_SCRIPT" \
-        || ! chmod 700 "$DDNS_SCRIPT"; then
-        ddns_install_transaction_restore "$DDNS_TX_DIR" || true
-        error "生成 Cloudflare DDNS 脚本失败，已恢复原配置"
+    if ! sed -i \
+        -e "s|__DOMAIN4__|${DDNS_DOMAIN4_ESC}|g" \
+        -e "s|__DOMAIN6__|${DDNS_DOMAIN6_ESC}|g" \
+        -e "s|__ZONE__|${DDNS_ZONE_ESC}|g" \
+        -e "s|__ENABLE_A__|${DDNS_ENABLE_A}|g" \
+        -e "s|__ENABLE_AAAA__|${DDNS_ENABLE_AAAA}|g" \
+        -e "s|__PROXIED__|${DDNS_PROXIED}|g" \
+        -e "s|__TTL__|${DDNS_TTL}|g" \
+        -e "s|__LOG__|${DDNS_LOG_ESC}|g" "$DDNS_SCRIPT" \
+        || ! chmod 700 "$DDNS_SCRIPT" \
+        || ! bash -n "$DDNS_SCRIPT"; then
+        error "生成的 DDNS 脚本校验失败"
+        ddns_install_tx_restore || error "恢复原 DDNS 配置失败，请立即检查"
         return 1
     fi
 
@@ -1353,17 +1553,16 @@ DDNS_INNER
         tail -1 "$DDNS_LOG" 2>/dev/null | while IFS= read -r l; do echo -e "  ${GREEN}$l${NC}"; done
     else
         error "执行失败，请查看日志"
-        ddns_install_transaction_restore "$DDNS_TX_DIR" || true
-        warn "Cloudflare DDNS 新配置未通过测试，已恢复原配置"
+        ddns_install_tx_restore || error "恢复原 DDNS 配置失败，请立即检查"
         return 1
     fi
     local CRON_JOB; CRON_JOB="$(ddns_cron_expr "$DDNS_INTERVAL_MIN") ${DDNS_SCRIPT} >> ${DDNS_LOG} 2>&1 ${DDNS_CRON_MARKER}"
     if ! ddns_install_cron_job "$CRON_JOB"; then
-        ddns_install_transaction_restore "$DDNS_TX_DIR" || true
-        error "写入 DDNS 定时任务失败，已恢复原配置"
+        ddns_install_tx_restore || error "恢复原 DDNS 配置失败，请立即检查"
         return 1
     fi
-    ddns_install_transaction_commit "$DDNS_TX_DIR"
+    ddns_install_tx_commit
+    rm -f "$DDNS_HUAWEI_KEY_FILE" || warn "旧华为云凭据文件无法删除，请手动检查 ${DDNS_HUAWEI_KEY_FILE}"
     info "crontab 已设置（每 ${DDNS_INTERVAL_MIN} 分钟自动更新）✓"
     echo ""
     info "DDNS 配置完成 ✓"
@@ -1380,28 +1579,36 @@ ddns_install_huawei() {
     for cmd in curl python3; do
         if ! command -v "$cmd" &>/dev/null; then
             info "安装依赖 $cmd..."
-            pkg_install "$cmd" &>/dev/null
+            pkg_install "$cmd" &>/dev/null || true
+            if ! command -v "$cmd" &>/dev/null; then
+                error "依赖 ${cmd} 安装失败，请手动安装后重试"
+                return 1
+            fi
         fi
     done
     if ! ddns_ensure_cron; then
         error "无法安装或启用 crontab/cron，请先手动安装 cron 后重试"
         return
     fi
-    ddns_start_cron_service >/dev/null 2>&1 || warn "cron 服务未能自动启动，请稍后手动检查"
+    if ! ddns_start_cron_service >/dev/null 2>&1; then
+        error "cron 服务无法启动，请修复后重试"
+        return 1
+    fi
 
     menu_div
     read -rp "  根域名（如 example.com，需已托管到华为云 DNS）: " DDNS_ZONE_NAME
     [ -z "$DDNS_ZONE_NAME" ] && { warn "已取消"; return; }
-    DDNS_ZONE_NAME=${DDNS_ZONE_NAME%.}
+    if ! DDNS_ZONE_NAME=$(ddns_domain_normalize "$DDNS_ZONE_NAME"); then
+        error "根域名格式无效"
+        return 1
+    fi
 
     local DDNS_ENDPOINT="https://dns.myhuaweicloud.com"
     read -rp "  API Endpoint（默认 ${DDNS_ENDPOINT}）: " DDNS_ENDPOINT_IN
-    [ -n "$DDNS_ENDPOINT_IN" ] && DDNS_ENDPOINT="$DDNS_ENDPOINT_IN"
-    DDNS_ENDPOINT=${DDNS_ENDPOINT%/}
-    case "$DDNS_ENDPOINT" in
-        http://*|https://*) : ;;
-        *) DDNS_ENDPOINT="https://${DDNS_ENDPOINT}" ;;
-    esac
+    if ! DDNS_ENDPOINT=$(ddns_huawei_endpoint_normalize "${DDNS_ENDPOINT_IN:-$DDNS_ENDPOINT}"); then
+        error "Endpoint 必须是华为云官方 HTTPS 地址，例如 dns.cn-north-4.myhuaweicloud.com"
+        return 1
+    fi
 
     local DDNS_ENABLE_A="true" DDNS_ENABLE_AAAA="false"
     local DDNS_SUB4="" DDNS_SUB6="" DDNS_DOMAIN4="" DDNS_DOMAIN6=""
@@ -1453,6 +1660,18 @@ ddns_install_huawei() {
         error "至少需要启用 IPv4 A 或 IPv6 AAAA 其中一种记录"
         return
     fi
+    if [ "$DDNS_ENABLE_A" = "true" ]; then
+        if ! DDNS_DOMAIN4=$(ddns_domain_normalize "$DDNS_DOMAIN4") || ! ddns_domain_in_zone "$DDNS_DOMAIN4" "$DDNS_ZONE_NAME"; then
+            error "IPv4 域名格式无效或不属于根域名 ${DDNS_ZONE_NAME}"
+            return 1
+        fi
+    fi
+    if [ "$DDNS_ENABLE_AAAA" = "true" ]; then
+        if ! DDNS_DOMAIN6=$(ddns_domain_normalize "$DDNS_DOMAIN6") || ! ddns_domain_in_zone "$DDNS_DOMAIN6" "$DDNS_ZONE_NAME"; then
+            error "IPv6 域名格式无效或不属于根域名 ${DDNS_ZONE_NAME}"
+            return 1
+        fi
+    fi
 
     read -rp "  华为云 Access Key ID（AK）: " DDNS_HW_AK
     [ -z "$DDNS_HW_AK" ] && { warn "已取消"; return; }
@@ -1462,7 +1681,10 @@ ddns_install_huawei() {
 
     local DDNS_TTL="300"
     read -rp "  TTL 秒数（默认300）: " DDNS_TTL_IN
-    [ -n "$DDNS_TTL_IN" ] && echo "$DDNS_TTL_IN" | grep -qE '^[0-9]+$' && DDNS_TTL="$DDNS_TTL_IN"
+    if ! DDNS_TTL=$(ddns_huawei_ttl_normalize "${DDNS_TTL_IN:-300}"); then
+        error "华为云 TTL 必须为 300-2147483647 秒"
+        return 1
+    fi
     local DDNS_INTERVAL_MIN
     DDNS_INTERVAL_MIN=$(ddns_prompt_interval 5)
 
@@ -1485,25 +1707,36 @@ ddns_install_huawei() {
     [ -z "$CONFIRM" ] && CONFIRM="y"
     if ! echo "$CONFIRM" | grep -qiE '^y(es)?$'; then warn "已取消"; return; fi
 
-    local DDNS_TX_DIR
-    DDNS_TX_DIR=$(ddns_install_transaction_begin) || {
-        error "无法创建 DDNS 配置事务快照"
-        return 1
-    }
-
-    if ! {
-        echo "AK=${DDNS_HW_AK}"
-        echo "SK=${DDNS_HW_SK}"
-    } > "$DDNS_HUAWEI_KEY_FILE" || ! chmod 600 "$DDNS_HUAWEI_KEY_FILE"; then
-        ddns_install_transaction_restore "$DDNS_TX_DIR" || true
-        error "保存华为云 AK/SK 失败，已恢复原配置"
+    if ! ddns_install_tx_begin; then
+        error "无法创建 DDNS 配置回滚快照"
         return 1
     fi
 
-    touch "$DDNS_LOG" 2>/dev/null || { DDNS_LOG="$HOME/ddns.log"; touch "$DDNS_LOG"; }
+    {
+        echo "AK=${DDNS_HW_AK}"
+        echo "SK=${DDNS_HW_SK}"
+    } > "$DDNS_HUAWEI_KEY_FILE" || {
+        error "无法保存华为云 AK/SK"
+        ddns_install_tx_restore || error "恢复原 DDNS 配置失败，请立即检查"
+        return 1
+    }
+    if ! chmod 600 "$DDNS_HUAWEI_KEY_FILE"; then
+        error "无法保护华为云 AK/SK 文件权限"
+        ddns_install_tx_restore || error "恢复原 DDNS 配置失败，请立即检查"
+        return 1
+    fi
+
+    if ! touch "$DDNS_LOG" 2>/dev/null; then
+        DDNS_LOG="$HOME/ddns.log"
+        if ! touch "$DDNS_LOG" 2>/dev/null; then
+            error "无法创建 DDNS 日志文件"
+            ddns_install_tx_restore || error "恢复原 DDNS 配置失败，请立即检查"
+            return 1
+        fi
+    fi
     chmod 644 "$DDNS_LOG" 2>/dev/null || true
     local DDNS_PRIMARY_DOMAIN="${DDNS_DOMAIN4:-$DDNS_DOMAIN6}"
-    if ! {
+    {
         echo "PROVIDER=huawei"
         echo "DOMAIN=${DDNS_PRIMARY_DOMAIN}"
         echo "DOMAIN4=${DDNS_DOMAIN4}"
@@ -1516,13 +1749,13 @@ ddns_install_huawei() {
         echo "TTL=${DDNS_TTL}"
         echo "INTERVAL_MIN=${DDNS_INTERVAL_MIN}"
         echo "LOG=${DDNS_LOG}"
-    } > "$DDNS_ZONE_FILE"; then
-        ddns_install_transaction_restore "$DDNS_TX_DIR" || true
-        error "保存华为云 DDNS 配置失败，已恢复原配置"
+    } > "$DDNS_ZONE_FILE" || {
+        error "无法保存 DDNS 配置"
+        ddns_install_tx_restore || error "恢复原 DDNS 配置失败，请立即检查"
         return 1
-    fi
+    }
 
-    cat > "$DDNS_SCRIPT" << 'DDNS_HUAWEI_INNER'
+    if ! cat > "$DDNS_SCRIPT" << 'DDNS_HUAWEI_INNER'
 #!/bin/bash
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
@@ -1536,12 +1769,32 @@ TTL="__TTL__"
 KEY_FILE="/root/.hw_dns_aksk"
 LOG_FILE="__LOG__"
 STATE_DIR="${DDNS_STATE_DIR:-/root}"
+LOCK_FILE="/run/vps-tools-ddns.lockfile"
 LOCK_DIR="/run/vps-tools-ddns.lock"
 
-if ! mkdir "$LOCK_DIR" 2>/dev/null; then
-    exit 0
-fi
-trap 'rmdir "$LOCK_DIR" 2>/dev/null || true' EXIT
+acquire_lock() {
+    if command -v flock >/dev/null 2>&1; then
+        exec 9>"$LOCK_FILE" || return 1
+        flock -n 9 || return 75
+        return 0
+    fi
+    if mkdir "$LOCK_DIR" 2>/dev/null; then
+        printf '%s\n' "$$" > "$LOCK_DIR/pid"
+        trap 'rm -rf -- "$LOCK_DIR"' EXIT
+        return 0
+    fi
+    local LOCK_PID=""
+    [ -f "$LOCK_DIR/pid" ] && read -r LOCK_PID < "$LOCK_DIR/pid"
+    if [ -n "$LOCK_PID" ] && kill -0 "$LOCK_PID" 2>/dev/null; then
+        return 75
+    fi
+    rm -rf -- "$LOCK_DIR" 2>/dev/null || return 1
+    mkdir "$LOCK_DIR" 2>/dev/null || return 75
+    printf '%s\n' "$$" > "$LOCK_DIR/pid"
+    trap 'rm -rf -- "$LOCK_DIR"' EXIT
+}
+
+acquire_lock || exit $?
 
 ENDPOINT=${ENDPOINT%/}
 ZONE_DOT="${ZONE%.}."
@@ -1648,15 +1901,22 @@ tg_notify() {
     local MSG="$1"
     local TG_FILE="/root/.cf_tg"
     [ -f "$TG_FILE" ] || return 0
-    local B_TOKEN C_ID
+    local B_TOKEN C_ID RESP DESCRIPTION
     B_TOKEN=$(grep "^BOT_TOKEN=" "$TG_FILE" | cut -d= -f2-)
     C_ID=$(grep "^CHAT_ID=" "$TG_FILE" | cut -d= -f2-)
     [ -z "$B_TOKEN" ] || [ -z "$C_ID" ] && return 0
-    curl -s --max-time 15 \
+    if ! RESP=$(curl -fsS --max-time 15 \
         "https://api.telegram.org/bot${B_TOKEN}/sendMessage" \
-        -d "chat_id=${C_ID}" \
-        -d "text=${MSG}" \
-        -d "parse_mode=HTML" > /dev/null 2>&1
+        --data-urlencode "chat_id=${C_ID}" \
+        --data-urlencode "text=${MSG}" \
+        --data-urlencode "parse_mode=HTML" 2>/dev/null); then
+        log_line WARN "Telegram 通知发送失败：网络或 HTTP 错误"
+        return 0
+    fi
+    if ! printf '%s' "$RESP" | python3 -c 'import json,sys; raise SystemExit(0 if json.load(sys.stdin).get("ok") is True else 1)' 2>/dev/null; then
+        DESCRIPTION=$(printf '%s' "$RESP" | python3 -c 'import json,sys; print(str(json.load(sys.stdin).get("description") or "API 返回异常").replace("\n", " "))' 2>/dev/null || echo "API 返回异常")
+        log_line WARN "Telegram 通知发送失败：${DESCRIPTION}"
+    fi
 }
 
 fetch_ip4() {
@@ -1681,30 +1941,23 @@ fetch_ip6() {
 fetch_ip6_local() {
     command -v ip >/dev/null 2>&1 || return 0
     command -v python3 >/dev/null 2>&1 || return 0
-    ip -6 -o addr show scope global 2>/dev/null | python3 -c '
+    local ROUTE
+    ROUTE=$(ip -6 route get 2606:4700:4700::1111 2>/dev/null) || return 0
+    printf '%s\n' "$ROUTE" | python3 -c '
 import ipaddress
 import sys
-candidates = []
 for line in sys.stdin:
     parts = line.split()
-    if "inet6" not in parts:
+    if "src" not in parts:
         continue
     try:
-        addr = parts[parts.index("inet6") + 1].split("/")[0]
+        addr = parts[parts.index("src") + 1].split("/")[0]
         ip = ipaddress.ip_address(addr)
     except Exception:
         continue
-    if ip.version != 6 or ip.is_link_local or ip.is_loopback or ip.is_multicast or ip.is_unspecified:
-        continue
-    flags = set(parts)
-    score = 0
-    if "deprecated" in flags:
-        score += 100
-    if "temporary" in flags:
-        score += 10
-    candidates.append((score, str(ip)))
-if candidates:
-    print(sorted(candidates)[0][1])
+    if ip.version == 6 and ip.is_global:
+        print(ip.compressed)
+        break
 '
 }
 
@@ -1714,7 +1967,7 @@ valid_ipv4() {
 }
 
 valid_ipv6() {
-    python3 -c "import ipaddress,sys; ip=ipaddress.ip_address(sys.argv[1]); sys.exit(0 if ip.version == 6 else 1)" "$1" 2>/dev/null
+    python3 -c "import ipaddress,sys; ip=ipaddress.ip_address(sys.argv[1]); sys.exit(0 if ip.version == 6 and ip.is_global else 1)" "$1" 2>/dev/null
 }
 
 huawei_api() {
@@ -2005,6 +2258,11 @@ fi
 
 exit "$EXIT_CODE"
 DDNS_HUAWEI_INNER
+    then
+        error "无法生成 DDNS 执行脚本"
+        ddns_install_tx_restore || error "恢复原 DDNS 配置失败，请立即检查"
+        return 1
+    fi
 
     local DDNS_DOMAIN4_ESC DDNS_DOMAIN6_ESC DDNS_ZONE_ESC DDNS_ENDPOINT_ESC DDNS_LOG_ESC
     DDNS_DOMAIN4_ESC=$(ddns_sed_escape "$DDNS_DOMAIN4")
@@ -2012,17 +2270,19 @@ DDNS_HUAWEI_INNER
     DDNS_ZONE_ESC=$(ddns_sed_escape "$DDNS_ZONE_NAME")
     DDNS_ENDPOINT_ESC=$(ddns_sed_escape "$DDNS_ENDPOINT")
     DDNS_LOG_ESC=$(ddns_sed_escape "$DDNS_LOG")
-    if ! sed -i "s|__DOMAIN4__|${DDNS_DOMAIN4_ESC}|g" "$DDNS_SCRIPT" \
-        || ! sed -i "s|__DOMAIN6__|${DDNS_DOMAIN6_ESC}|g" "$DDNS_SCRIPT" \
-        || ! sed -i "s|__ZONE__|${DDNS_ZONE_ESC}|g" "$DDNS_SCRIPT" \
-        || ! sed -i "s|__ENDPOINT__|${DDNS_ENDPOINT_ESC}|g" "$DDNS_SCRIPT" \
-        || ! sed -i "s|__ENABLE_A__|${DDNS_ENABLE_A}|g" "$DDNS_SCRIPT" \
-        || ! sed -i "s|__ENABLE_AAAA__|${DDNS_ENABLE_AAAA}|g" "$DDNS_SCRIPT" \
-        || ! sed -i "s|__TTL__|${DDNS_TTL}|g" "$DDNS_SCRIPT" \
-        || ! sed -i "s|__LOG__|${DDNS_LOG_ESC}|g" "$DDNS_SCRIPT" \
-        || ! chmod 700 "$DDNS_SCRIPT"; then
-        ddns_install_transaction_restore "$DDNS_TX_DIR" || true
-        error "生成华为云 DDNS 脚本失败，已恢复原配置"
+    if ! sed -i \
+        -e "s|__DOMAIN4__|${DDNS_DOMAIN4_ESC}|g" \
+        -e "s|__DOMAIN6__|${DDNS_DOMAIN6_ESC}|g" \
+        -e "s|__ZONE__|${DDNS_ZONE_ESC}|g" \
+        -e "s|__ENDPOINT__|${DDNS_ENDPOINT_ESC}|g" \
+        -e "s|__ENABLE_A__|${DDNS_ENABLE_A}|g" \
+        -e "s|__ENABLE_AAAA__|${DDNS_ENABLE_AAAA}|g" \
+        -e "s|__TTL__|${DDNS_TTL}|g" \
+        -e "s|__LOG__|${DDNS_LOG_ESC}|g" "$DDNS_SCRIPT" \
+        || ! chmod 700 "$DDNS_SCRIPT" \
+        || ! bash -n "$DDNS_SCRIPT"; then
+        error "生成的 DDNS 脚本校验失败"
+        ddns_install_tx_restore || error "恢复原 DDNS 配置失败，请立即检查"
         return 1
     fi
 
@@ -2032,17 +2292,16 @@ DDNS_HUAWEI_INNER
         tail -1 "$DDNS_LOG" 2>/dev/null | while IFS= read -r l; do echo -e "  ${GREEN}$l${NC}"; done
     else
         error "执行失败，请查看日志"
-        ddns_install_transaction_restore "$DDNS_TX_DIR" || true
-        warn "华为云 DDNS 新配置未通过测试，已恢复原配置"
+        ddns_install_tx_restore || error "恢复原 DDNS 配置失败，请立即检查"
         return 1
     fi
     local CRON_JOB; CRON_JOB="$(ddns_cron_expr "$DDNS_INTERVAL_MIN") ${DDNS_SCRIPT} >> ${DDNS_LOG} 2>&1 ${DDNS_CRON_MARKER}"
     if ! ddns_install_cron_job "$CRON_JOB"; then
-        ddns_install_transaction_restore "$DDNS_TX_DIR" || true
-        error "写入 DDNS 定时任务失败，已恢复原配置"
+        ddns_install_tx_restore || error "恢复原 DDNS 配置失败，请立即检查"
         return 1
     fi
-    ddns_install_transaction_commit "$DDNS_TX_DIR"
+    ddns_install_tx_commit
+    rm -f "$DDNS_TOKEN_FILE" || warn "旧 Cloudflare Token 文件无法删除，请手动检查 ${DDNS_TOKEN_FILE}"
     info "crontab 已设置（每 ${DDNS_INTERVAL_MIN} 分钟自动更新）✓"
     echo ""
     info "华为云 DDNS 配置完成 ✓"
@@ -2073,7 +2332,10 @@ ddns_install() {
 # ── 暂停/恢复 DDNS ────────────────────────────────────────
 ddns_pause() {
     [ ! -f "$DDNS_SCRIPT" ] && { error "DDNS 未安装"; return; }
-    ( crontab -l 2>/dev/null | ddns_cron_without_managed ) | crontab - 2>/dev/null
+    if ! ddns_remove_cron_job; then
+        error "暂停失败，原定时任务未可靠移除"
+        return 1
+    fi
     info "DDNS 自动更新已暂停 ✓"
 }
 
@@ -2163,17 +2425,25 @@ IPv4：$(ddns_cfg_domain4)"
                 TG_DOMAIN_TEXT="${TG_DOMAIN_TEXT}
 IPv6：$(ddns_cfg_domain6)"
             fi
-            RESP=$(curl -s --max-time 10 \
+            if ! RESP=$(curl -fsS --max-time 10 \
                 "https://api.telegram.org/bot${BOT}/sendMessage" \
                 --data-urlencode "chat_id=${CHAT}" \
                 --data-urlencode "text=🔔 DDNS 通知测试
 ${TG_DOMAIN_TEXT}
 时间：$(date '+%Y-%m-%d %H:%M:%S')
 ✅ 通知配置成功！" \
-                -d "parse_mode=HTML")
-            echo "$RESP" | python3 -c \
-                "import sys,json; d=json.load(sys.stdin); print('发送成功 ✓' if d.get('ok') else '发送失败：' + str(d.get('description','')))" 2>/dev/null \
-                | while IFS= read -r l; do info "$l"; done
+                --data-urlencode "parse_mode=HTML" 2>/dev/null); then
+                error "发送失败：网络或 HTTP 错误"
+                return 1
+            fi
+            if echo "$RESP" | python3 -c 'import json,sys; raise SystemExit(0 if json.load(sys.stdin).get("ok") is True else 1)' 2>/dev/null; then
+                info "发送成功 ✓"
+            else
+                local TG_DESC
+                TG_DESC=$(echo "$RESP" | python3 -c 'import json,sys; print(str(json.load(sys.stdin).get("description") or "API 返回异常").replace("\n", " "))' 2>/dev/null || echo "API 返回异常")
+                error "发送失败：${TG_DESC}"
+                return 1
+            fi
             ;;
         3)
             rm -f "$DDNS_TG_FILE" && info "Telegram 通知已关闭 ✓"
@@ -2190,7 +2460,10 @@ ddns_uninstall() {
     read -rp "  确认卸载？(Y/n，默认Y): " CONFIRM
     [ -z "$CONFIRM" ] && CONFIRM="y"
     if ! echo "$CONFIRM" | grep -qiE '^y(es)?$'; then warn "已取消"; return; fi
-    ( crontab -l 2>/dev/null | ddns_cron_without_managed ) | crontab - 2>/dev/null
+    if ! ddns_remove_cron_job; then
+        error "卸载已中止：定时任务移除失败，脚本和凭据均未删除"
+        return 1
+    fi
     info "crontab 定时任务已移除 ✓"
     rm -f "$DDNS_SCRIPT" && info "DDNS 脚本已删除 ✓"
     rm -f "$DDNS_TOKEN_FILE" && info "Token 文件已删除 ✓"
@@ -2251,9 +2524,17 @@ ddns_run_now() {
     print_header "手动更新 DDNS"
     [ ! -f "$DDNS_SCRIPT" ] && { error "DDNS 未安装"; return; }
     info "正在更新..."
+    local RC
     if bash "$DDNS_SCRIPT"; then
+        RC=0
+    else
+        RC=$?
+    fi
+    if [ "$RC" -eq 0 ]; then
         local LOG; LOG=$(ddns_log_path)
         tail -1 "$LOG" 2>/dev/null | while IFS= read -r l; do echo -e "  ${GREEN}$l${NC}"; done
+    elif [ "$RC" -eq 75 ]; then
+        warn "已有一次 DDNS 更新正在运行，请稍后再试"
     else
         error "更新失败，请查看日志"
     fi
@@ -2268,6 +2549,7 @@ ddns_menu() {
             running)       D_COLOR="$GREEN";  D_LABEL="运行中" ;;
             stopped)       D_COLOR="$RED";    D_LABEL="已停止（cron任务未设置）" ;;
             no_cron)       D_COLOR="$RED";    D_LABEL="已停止（cron未安装）" ;;
+            cron_stopped)  D_COLOR="$RED";    D_LABEL="已停止（cron服务未运行）" ;;
             not_installed) D_COLOR="$YELLOW"; D_LABEL="未安装" ;;
         esac
 

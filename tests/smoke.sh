@@ -994,9 +994,10 @@ BANNER_COMPACT=$(COLUMNS=60 NO_COLOR=1 volcano_art_banner)
 [[ "$BANNER_COMPACT" = *'██╗███╗'* && "$BANNER_COMPACT" = *'██████╗ ██████╗ ███████╗'* ]] || { echo "Compact IMPART OPS banner is missing" >&2; exit 1; }
 [[ "$(COLUMNS=40 NO_COLOR=1 volcano_art_banner)" = *'IMPART OPS'* ]] || { echo "Narrow IMPART OPS banner fallback is missing" >&2; exit 1; }
 
-for fn in bbr_preflight bbr_runtime_snapshot bbr_ensure_baseline bbr_restore_runtime_snapshot bbr_baseline_value bbr_config_has_key \
-    bbr_apply_sysctl bbr_generate_config bbr_bdp_mb bbr_buffer_target_mb bbr_recommend_profile \
-    bbr_tc_qdisc_safe_to_replace bbr_tc_current_rate bbr_tc_rate_display bbr_tc_topology_matches bbr_tc_managed_artifact bbr_tc_is_legacy_owned \
+for fn in bbr_preflight bbr_runtime_snapshot bbr_ensure_baseline bbr_restore_runtime_snapshot bbr_baseline_value bbr_config_has_key bbr_config_value \
+    bbr_apply_sysctl bbr_generate_config bbr_physical_memory_mb bbr_effective_memory_mb bbr_buffer_cap_bytes bbr_conntrack_max_for_memory bbr_bdp_mb bbr_buffer_target_mb bbr_recommend_profile \
+    bbr_tc_qdisc_safe_to_replace bbr_tc_current_rate bbr_tc_saved_values bbr_tc_saved_rate_display bbr_tc_rate_display \
+    bbr_tc_topology_matches bbr_tc_managed_artifact bbr_tc_is_legacy_owned bbr_tc_persistence_current bbr_tc_reconcile_saved \
     bbr_tc_snapshot_foreign bbr_tc_force_confirm bbr_tc_remove_confirm bbr_tc_apply_runtime bbr_default_route_info bbr_route_token \
     bbr_route_strip_cwnd bbr_apply_initcwnd_route volcano_tcp_profile; do
     declare -F "$fn" >/dev/null || { echo "Missing BBR function: $fn" >&2; exit 1; }
@@ -1047,17 +1048,49 @@ unset -f sysctl
     }
     # shellcheck disable=SC2329 # test stub used indirectly by bbr_apply_sysctl
     sysctl() {
-        case "${2:-}" in net.ipv4.tcp_congestion_control=bbr) return 1 ;; *) return 0 ;; esac
+        case "${1:-} ${2:-}" in
+            '-w net.core.default_qdisc=fq') return 1 ;;
+            '-n net.ipv4.tcp_congestion_control') echo bbr ;;
+            '-n net.core.default_qdisc') echo fq ;;
+            *) return 0 ;;
+        esac
     }
     CONFIG=$(printf '%s\n' 'net.core.default_qdisc = fq' 'net.ipv4.tcp_congestion_control = bbr')
     if bbr_apply_sysctl "$CONFIG" baseline >/dev/null 2>&1; then
-        echo "BBR core sysctl failure returned success" >&2
+        echo "BBR fq sysctl failure returned success" >&2
         exit 1
     fi
     grep -qx 'net.ipv4.tcp_congestion_control = cubic' "$SYSCTL_FILE" || {
         echo "BBR failed apply replaced the previous persistent config" >&2
         exit 1
     }
+)
+
+(
+    SYSCTL_FILE="$TMP/bbr-readback-sysctl.conf"
+    BBR_BASELINE_FILE="$TMP/bbr-readback-baseline.conf"
+    printf 'net.core.default_qdisc = fq_codel\nnet.ipv4.tcp_congestion_control = cubic\n' > "$SYSCTL_FILE"
+    ROLLBACK_LOG="$TMP/bbr-readback-rollback.log"
+    ensure_sysctl() { :; }
+    bbr_ensure_baseline() { :; }
+    bbr_runtime_snapshot() {
+        printf 'net.core.default_qdisc = fq_codel\nnet.ipv4.tcp_congestion_control = cubic\n' > "$1"
+    }
+    sysctl() {
+        case "${1:-} ${2:-}" in
+            '-n net.ipv4.tcp_congestion_control') echo bbr ;;
+            '-n net.core.default_qdisc') echo fq_codel ;;
+            '-w net.core.default_qdisc=fq_codel'|'-w net.ipv4.tcp_congestion_control=cubic') printf '%s\n' "$2" >> "$ROLLBACK_LOG" ;;
+            *) return 0 ;;
+        esac
+    }
+    CONFIG=$(printf '%s\n' 'net.core.default_qdisc = fq' 'net.ipv4.tcp_congestion_control = bbr')
+    if bbr_apply_sysctl "$CONFIG" baseline >/dev/null 2>&1; then
+        echo "BBR core readback mismatch returned success" >&2
+        exit 1
+    fi
+    grep -qx 'net.core.default_qdisc=fq_codel' "$ROLLBACK_LOG" \
+        || { echo "BBR readback mismatch did not roll back qdisc" >&2; exit 1; }
 )
 
 (
@@ -1078,8 +1111,77 @@ unset -f sysctl
 (
     # shellcheck disable=SC2329 # test stub used indirectly by bbr_generate_config
     bbr_default_ipv6_iface() { echo eth0; }
-    CONFIG=$(bbr_generate_config 12582912 12582912 '32768 49152 98304' 131072 2 32768 10 1048576 relay)
-    grep -qx 'net.ipv6.conf.eth0.accept_ra = 2' <<< "$CONFIG" || { echo "BBR forwarding profile missing IPv6 accept_ra=2" >&2; exit 1; }
+    bbr_physical_memory_mb() { echo 512; }
+    CONFIG=$(bbr_generate_config 12582912 12582912 131072 10 relay 0)
+    grep -qx 'net.ipv4.tcp_rmem = 4096 131072 12582912' <<< "$CONFIG" || { echo "BBR receive defaults are unsafe" >&2; exit 1; }
+    grep -qx 'net.ipv4.tcp_wmem = 4096 16384 12582912' <<< "$CONFIG" || { echo "BBR send defaults are unsafe" >&2; exit 1; }
+    grep -qx 'net.core.somaxconn = 8192' <<< "$CONFIG" || { echo "BBR proxy concurrency settings are missing" >&2; exit 1; }
+    ! grep -qE '^(vm\.min_free_kbytes|net\.ipv4\.(tcp_mem|tcp_adv_win_scale|tcp_tw_reuse|tcp_fin_timeout|tcp_keepalive_time|tcp_ecn|tcp_slow_start_after_idle|tcp_fastopen_blackhole_timeout_sec))[[:space:]]*=' <<< "$CONFIG" \
+        || { echo "BBR generated retired or risky TCP settings" >&2; exit 1; }
+    ! grep -qE '^net\.ipv4\.ip_forward[[:space:]]*=' <<< "$CONFIG" || { echo "BBR enabled forwarding without consent" >&2; exit 1; }
+    ! grep -qE '^net\.netfilter\.nf_conntrack_max[[:space:]]*=' <<< "$CONFIG" || { echo "BBR tuned conntrack while forwarding was disabled" >&2; exit 1; }
+
+    CONFIG=$(bbr_generate_config 12582912 12582912 131072 10 relay 1)
+    grep -qx 'net.ipv6.conf.default.accept_ra = 2' <<< "$CONFIG" || { echo "BBR forwarding profile missing default IPv6 accept_ra=2" >&2; exit 1; }
+    grep -qx 'net.ipv6.conf.eth0.accept_ra = 2' <<< "$CONFIG" || { echo "BBR forwarding profile missing interface IPv6 accept_ra=2" >&2; exit 1; }
+    grep -qx 'net.ipv4.ip_forward = 1' <<< "$CONFIG" || { echo "BBR forwarding profile missing IPv4 forwarding" >&2; exit 1; }
+    grep -qx 'net.netfilter.nf_conntrack_max = 131072' <<< "$CONFIG" || { echo "BBR conntrack limit was not scaled for 512MB" >&2; exit 1; }
+)
+
+[[ "$(bbr_effective_memory_mb 16384 512)" = 512 ]] || { echo "BBR memory selection was not clamped to physical RAM" >&2; exit 1; }
+[[ "$(bbr_buffer_cap_bytes 512)" = 134217728 ]] || { echo "BBR buffer cap is not 25 percent of RAM" >&2; exit 1; }
+! bbr_managed_keys | grep -qx 'vm.min_free_kbytes' || { echo "BBR retired settings could be captured as a new baseline" >&2; exit 1; }
+[[ "$(bbr_conntrack_max_for_memory 512)" = 131072 ]] || { echo "BBR 512MB conntrack tier is wrong" >&2; exit 1; }
+[[ "$(bbr_conntrack_max_for_memory 1024)" = 262144 ]] || { echo "BBR 1GB conntrack tier is wrong" >&2; exit 1; }
+[[ "$(bbr_conntrack_max_for_memory 2048)" = 524288 ]] || { echo "BBR 2GB conntrack tier is wrong" >&2; exit 1; }
+[[ "$(bbr_conntrack_max_for_memory 4096)" = 1048576 ]] || { echo "BBR 4GB conntrack tier is wrong" >&2; exit 1; }
+
+(
+    bbr_physical_memory_mb() { echo 512; }
+    bbr_confirm_apply() { printf '%s %s %s %s\n' "$1" "$2" "$3" "$4"; }
+    AUTO_RESULT=$(bbr_auto_calc 16384 250 10240 16GB+ 200ms以上 10Gbps)
+    AUTO_PARAMS=$(tail -n 1 <<< "$AUTO_RESULT")
+    [[ "$AUTO_PARAMS" = '134217728 134217728 2097152 10' ]] \
+        || { echo "BBR 512MB auto calculation trusted a 16GB selection: $AUTO_PARAMS" >&2; exit 1; }
+    for PROFILE in balanced latency throughput relay landing line_landing; do
+        PROFILE_PARAMS=$(volcano_tcp_profile "$PROFILE")
+        PROFILE_RMEM=${PROFILE_PARAMS%% *}
+        [ "$PROFILE_RMEM" -le 134217728 ] \
+            || { echo "BBR profile $PROFILE exceeded the physical-memory buffer cap" >&2; exit 1; }
+    done
+)
+
+(
+    SYSCTL_FILE="$TMP/bbr-retired-sysctl.conf"
+    BBR_BASELINE_FILE="$TMP/bbr-retired-baseline.conf"
+    RETIRED_LOG="$TMP/bbr-retired-restore.log"
+    cat > "$SYSCTL_FILE" <<'EOF'
+net.core.default_qdisc = fq
+net.ipv4.tcp_congestion_control = bbr
+vm.min_free_kbytes = 262144
+net.ipv4.tcp_tw_reuse = 1
+EOF
+    cat > "$BBR_BASELINE_FILE" <<'EOF'
+vm.min_free_kbytes = 32768
+net.ipv4.tcp_tw_reuse = 2
+EOF
+    ensure_sysctl() { :; }
+    bbr_ensure_baseline() { :; }
+    bbr_runtime_snapshot() { printf 'net.core.default_qdisc = fq\nnet.ipv4.tcp_congestion_control = bbr\n' > "$1"; }
+    sysctl() {
+        case "${1:-} ${2:-}" in
+            '-n net.ipv4.tcp_congestion_control') echo bbr ;;
+            '-n net.core.default_qdisc') echo fq ;;
+            '-w vm.min_free_kbytes=32768'|'-w net.ipv4.tcp_tw_reuse=2') printf '%s\n' "$2" >> "$RETIRED_LOG" ;;
+            *) return 0 ;;
+        esac
+    }
+    CONFIG=$(bbr_generate_config 12582912 12582912 131072 10 default 0)
+    bbr_apply_sysctl "$CONFIG" baseline >/dev/null
+    grep -qx 'vm.min_free_kbytes=32768' "$RETIRED_LOG" || { echo "BBR did not restore retired min_free_kbytes" >&2; exit 1; }
+    grep -qx 'net.ipv4.tcp_tw_reuse=2' "$RETIRED_LOG" || { echo "BBR did not restore retired tcp_tw_reuse" >&2; exit 1; }
+    ! grep -qE '^(vm\.min_free_kbytes|net\.ipv4\.tcp_tw_reuse)[[:space:]]*=' "$SYSCTL_FILE" \
+        || { echo "BBR persisted retired settings after upgrade" >&2; exit 1; }
 )
 
 bbr_tc_qdisc_safe_to_replace fq || { echo "BBR rejected a safe default qdisc" >&2; exit 1; }
@@ -1115,6 +1217,112 @@ EOF
         || { echo "BBR did not use qdisc replace for an mq root" >&2; exit 1; }
     ! grep -qx 'qdisc del dev eth0 root' "$TC_TEST_LOG" \
         || { echo "BBR tried to delete an undeletable mq root" >&2; exit 1; }
+)
+(
+    TC_STATE_FILE="$TMP/saved-tc.state"
+    TC_HELPER="$TMP/saved-tc-helper"
+    SERVICE_TC="$TMP/saved-tc.service"
+    SERVICE_TC_INIT="$TMP/saved-tc.init"
+    TC_MARKER="$TMP/saved-tc-active"
+    export TC_MARKER
+    printf 'DEV=eth0\nRATE=2200\nBURST_KB=2200\nFORCE=0\n' > "$TC_STATE_FILE"
+    TC_BIN_DIR="$TMP/saved-tc-bin"
+    mkdir -p "$TC_BIN_DIR"
+    cat > "$TC_BIN_DIR/tc" <<'EOF'
+#!/bin/sh
+if [ "$1 $2" = "qdisc show" ]; then
+    if [ -f "$TC_MARKER" ]; then
+        printf '%s\n' \
+            'qdisc htb 1: root refcnt 3 default 0x10' \
+            'qdisc fq 100: parent 1:10 limit 10000p maxrate 2200Mbit'
+    else
+        echo 'qdisc mq 0: root'
+    fi
+elif [ "$1 $2" = "class show" ] && [ -f "$TC_MARKER" ]; then
+    echo 'class htb 1:10 root rate 2200Mbit ceil 2200Mbit'
+fi
+EOF
+    chmod +x "$TC_BIN_DIR/tc"
+    cat > "$TC_HELPER" <<'EOF'
+#!/bin/sh
+# VPS_TOOLS_TC_HELPER_VERSION=2
+[ "${1:-}" = apply ] || exit 1
+: > "$TC_MARKER"
+EOF
+    chmod +x "$TC_HELPER"
+    PATH="$TC_BIN_DIR:$PATH"
+    default_iface() { echo eth0; }
+    [ "$(bbr_tc_rate_display eth0 "$TC_BIN_DIR/tc")" = "2200Mbit（已保存，未生效）" ] \
+        || { echo "BBR did not expose an inactive saved tc rate" >&2; exit 1; }
+    unset VPS_TOOLS_TEST_MODE BBR_TUNE_TEST_MODE
+    bbr_tc_reconcile_saved >/dev/null \
+        || { echo "BBR could not restore an inactive saved tc rate" >&2; exit 1; }
+    [ -f "$TC_MARKER" ] || { echo "BBR tc reconciliation did not invoke the saved helper" >&2; exit 1; }
+    [ "$(bbr_tc_rate_display eth0 "$TC_BIN_DIR/tc")" = "2200Mbit" ] \
+        || { echo "BBR tc rate remained inactive after reconciliation" >&2; exit 1; }
+)
+(
+    TC_STATE_FILE="$TMP/stale-helper.state"
+    TC_HELPER="$TMP/stale-helper"
+    SERVICE_TC="$TMP/stale-helper.service"
+    SERVICE_TC_INIT="$TMP/stale-helper.init"
+    TC_MARKER="$TMP/stale-helper-active"
+    PERSIST_MARKER="$TMP/stale-helper-refreshed"
+    export TC_MARKER
+    printf 'DEV=eth0\nRATE=780\nBURST_KB=780\nFORCE=0\n' > "$TC_STATE_FILE"
+    cat > "$TC_HELPER" <<'EOF'
+#!/bin/sh
+exit 1
+EOF
+    chmod +x "$TC_HELPER"
+    TC_BIN_DIR="$TMP/stale-helper-bin"
+    mkdir -p "$TC_BIN_DIR"
+    cat > "$TC_BIN_DIR/tc" <<'EOF'
+#!/bin/sh
+if [ "$1 $2" = "qdisc show" ]; then
+    if [ -f "$TC_MARKER" ]; then
+        printf '%s\n' 'qdisc htb 1: root default 0x10' 'qdisc fq 100: parent 1:10 maxrate 780Mbit'
+    else
+        echo 'qdisc mq 0: root'
+    fi
+elif [ "$1 $2" = "class show" ]; then
+    [ ! -f "$TC_MARKER" ] || echo 'class htb 1:10 root rate 780Mbit ceil 780Mbit'
+elif [ "$1 $2 $3" = "qdisc replace dev" ]; then
+    : > "$TC_MARKER"
+fi
+exit 0
+EOF
+    chmod +x "$TC_BIN_DIR/tc"
+    PATH="$TC_BIN_DIR:$PATH"
+    default_iface() { echo eth0; }
+    bbr_tc_write_persistence() {
+        printf '%s %s %s %s\n' "$1" "$2" "$3" "$4" > "$PERSIST_MARKER"
+    }
+    unset VPS_TOOLS_TEST_MODE BBR_TUNE_TEST_MODE
+    bbr_tc_reconcile_saved >/dev/null \
+        || { echo "BBR could not recover from a stale tc helper" >&2; exit 1; }
+    [ -f "$TC_MARKER" ] || { echo "BBR reused a stale tc helper" >&2; exit 1; }
+    grep -qx 'eth0 780 780 0' "$PERSIST_MARKER" \
+        || { echo "BBR did not refresh stale tc persistence" >&2; exit 1; }
+)
+(
+    TC_STATE_FILE="$TMP/saved-other-interface.state"
+    TC_HELPER="$TMP/saved-other-interface-helper"
+    TC_MARKER="$TMP/saved-other-interface-called"
+    export TC_MARKER
+    printf 'DEV=eth9\nRATE=500\nBURST_KB=500\nFORCE=0\n' > "$TC_STATE_FILE"
+    cat > "$TC_HELPER" <<'EOF'
+#!/bin/sh
+: > "$TC_MARKER"
+EOF
+    chmod +x "$TC_HELPER"
+    default_iface() { echo eth0; }
+    [ "$(bbr_tc_saved_rate_display eth0)" = "500Mbit（保存于 eth9，当前未生效）" ] \
+        || { echo "BBR did not identify a saved rate from another interface" >&2; exit 1; }
+    unset VPS_TOOLS_TEST_MODE BBR_TUNE_TEST_MODE
+    ! bbr_tc_reconcile_saved >/dev/null \
+        || { echo "BBR silently migrated tc state to another interface" >&2; exit 1; }
+    [ ! -e "$TC_MARKER" ] || { echo "BBR invoked tc helper for the wrong interface" >&2; exit 1; }
 )
 (
     TC_STATE_FILE="$TMP/legacy-tc-no-state"
@@ -1311,6 +1519,8 @@ awk 'p && /^TC_HELPER_EOF$/{exit} /<< '\''TC_HELPER_EOF'\''/{p=1; next} p{print}
 awk 'p && /^CWND_HELPER_EOF$/{exit} /<< '\''CWND_HELPER_EOF'\''/{p=1; next} p{print}' "$ROOT/src/modules/bbr.sh" > "$BBR_CWND_HELPER_TEST"
 sh -n "$BBR_TC_HELPER_TEST" || { echo "Generated tc helper has syntax errors" >&2; exit 1; }
 sh -n "$BBR_CWND_HELPER_TEST" || { echo "Generated initcwnd helper has syntax errors" >&2; exit 1; }
+grep -qxF '# VPS_TOOLS_TC_HELPER_VERSION=2' "$BBR_TC_HELPER_TEST" \
+    || { echo "Generated tc helper is missing its compatibility version" >&2; exit 1; }
 
 (
     HELPER_STATE="$TMP/tc-helper-mq.state"
@@ -1360,9 +1570,11 @@ for fn in docker_install docker_status docker_select_container docker_upgrade_co
     declare -F "$fn" >/dev/null || { echo "Missing Docker function: $fn" >&2; exit 1; }
 done
 
-for fn in self_install self_script_valid self_resolve_script_source self_fetch_script self_shortcut_owned self_install_shortcut self_remove_shortcut self_offline_bundle_create self_offline_bundle_install self_update self_manifest_value self_remote_main_sha monitor_alert_check monitor_alert_config_menu monitor_alert_home_menu monitor_alert_daily_report monitor_alert_host_label monitor_alert_host_label_html monitor_alert_html_escape monitor_alert_set_host_label monitor_time_normalize monitor_date_normalize monitor_int_normalize monitor_positive_number_valid monitor_positive_int_valid monitor_percent_valid monitor_renew_notice_days_valid monitor_renew_future_date monitor_traffic_interfaces monitor_traffic_reset_day_valid monitor_traffic_totals monitor_traffic_delta_bytes monitor_traffic_reconcile_counters monitor_traffic_usage_triplet monitor_traffic_usage_text monitor_traffic_set_cycle_usage_split_gb monitor_alert_service_state monitor_alert_any_service_state monitor_alert_ssh_state monitor_alert_test_snapshot monitor_alert_resource_snapshot monitor_alert_traffic_snapshot monitor_alert_renew_snapshot monitor_alert_renew_mark_paid monitor_alert_renew_auto_advance_toggle monitor_alert_renew_auto_advance monitor_alert_renew_reset_state monitor_alert_notify monitor_alert_telegram_send monitor_alert_history_add monitor_alert_history_view monitor_alert_cooldown_seconds monitor_alert_time_to_minutes monitor_alert_in_silence monitor_alert_metrics monitor_alert_metrics_sample monitor_alert_trend_line monitor_alert_trend_summary monitor_alert_level_label monitor_alert_level_icon monitor_alert_level_rank monitor_alert_worst_level monitor_alert_daily_cron_expr monitor_alert_cron_command monitor_alert_cron_without_managed monitor_alert_release_lock monitor_alert_acquire_lock monitor_alert_install_cron monitor_alert_remove_cron monitor_alert_cron_status monitor_alert_next_daily_time monitor_alert_configured_without_cron monitor_alert_service_menu monitor_alert_notify_menu monitor_alert_resource_menu monitor_alert_traffic_menu monitor_alert_daily_menu monitor_alert_renew_menu monitor_alert_advanced_menu monitor_alert_quick_setup_menu config_health_check diagnostic_bundle_create; do
+for fn in self_install self_script_valid self_resolve_script_source self_reconcile_tc_after_update self_fetch_script self_shortcut_owned self_install_shortcut self_remove_shortcut self_offline_bundle_create self_offline_bundle_install self_update self_manifest_value self_remote_main_sha monitor_alert_check monitor_alert_config_menu monitor_alert_home_menu monitor_alert_daily_report monitor_alert_host_label monitor_alert_host_label_html monitor_alert_html_escape monitor_alert_set_host_label monitor_time_normalize monitor_date_normalize monitor_int_normalize monitor_positive_number_valid monitor_positive_int_valid monitor_percent_valid monitor_renew_notice_days_valid monitor_renew_future_date monitor_traffic_interfaces monitor_traffic_reset_day_valid monitor_traffic_totals monitor_traffic_delta_bytes monitor_traffic_reconcile_counters monitor_traffic_usage_triplet monitor_traffic_usage_text monitor_traffic_set_cycle_usage_split_gb monitor_alert_service_state monitor_alert_any_service_state monitor_alert_ssh_state monitor_alert_test_snapshot monitor_alert_resource_snapshot monitor_alert_traffic_snapshot monitor_alert_renew_snapshot monitor_alert_renew_mark_paid monitor_alert_renew_auto_advance_toggle monitor_alert_renew_auto_advance monitor_alert_renew_reset_state monitor_alert_notify monitor_alert_telegram_send monitor_alert_history_add monitor_alert_history_view monitor_alert_cooldown_seconds monitor_alert_time_to_minutes monitor_alert_in_silence monitor_alert_metrics monitor_alert_metrics_sample monitor_alert_trend_line monitor_alert_trend_summary monitor_alert_level_label monitor_alert_level_icon monitor_alert_level_rank monitor_alert_worst_level monitor_alert_daily_cron_expr monitor_alert_cron_command monitor_alert_cron_without_managed monitor_alert_release_lock monitor_alert_acquire_lock monitor_alert_install_cron monitor_alert_remove_cron monitor_alert_cron_status monitor_alert_next_daily_time monitor_alert_configured_without_cron monitor_alert_service_menu monitor_alert_notify_menu monitor_alert_resource_menu monitor_alert_traffic_menu monitor_alert_daily_menu monitor_alert_renew_menu monitor_alert_advanced_menu monitor_alert_quick_setup_menu config_health_check diagnostic_bundle_create; do
     declare -F "$fn" >/dev/null || { echo "Missing new function: $fn" >&2; exit 1; }
 done
+grep -q -- '--bbr-reconcile-tc)' "$ROOT/src/modules/main.sh" \
+    || { echo "Missing internal tc reconciliation CLI dispatch" >&2; exit 1; }
 
 for fn in common_software_menu system_reinstall_menu software_reinstall_menu software_group_packages; do
     declare -F "$fn" >/dev/null || { echo "Missing function: $fn" >&2; exit 1; }
@@ -1456,6 +1668,23 @@ EOF
 [[ "$(ddns_build_domain @ example.com)" = "example.com" ]] || { echo "DDNS root domain build failed" >&2; exit 1; }
 [[ "$(ddns_build_domain v6.example.com example.com)" = "v6.example.com" ]] || { echo "DDNS full domain build failed" >&2; exit 1; }
 [[ "$(ddns_domain_dot example.com)" = "example.com." ]] || { echo "DDNS trailing-dot helper failed" >&2; exit 1; }
+[[ "$(ddns_domain_normalize 'Example.COM.')" = "example.com" ]] || { echo "DDNS domain normalization failed" >&2; exit 1; }
+! ddns_domain_normalize 'example.com";$(id)' >/dev/null 2>&1 || { echo "DDNS domain validation accepted shell metacharacters" >&2; exit 1; }
+ddns_domain_in_zone home.example.com example.com || { echo "DDNS in-zone validation rejected a child domain" >&2; exit 1; }
+! ddns_domain_in_zone home.example.net example.com || { echo "DDNS in-zone validation accepted another zone" >&2; exit 1; }
+[[ "$(ddns_huawei_endpoint_normalize dns.cn-north-4.myhuaweicloud.com)" = "https://dns.cn-north-4.myhuaweicloud.com" ]] \
+    || { echo "Huawei DDNS official endpoint normalization failed" >&2; exit 1; }
+! ddns_huawei_endpoint_normalize 'http://dns.myhuaweicloud.com' >/dev/null 2>&1 \
+    || { echo "Huawei DDNS endpoint accepted HTTP" >&2; exit 1; }
+! ddns_huawei_endpoint_normalize 'https://example.com/path' >/dev/null 2>&1 \
+    || { echo "Huawei DDNS endpoint accepted an arbitrary host/path" >&2; exit 1; }
+[[ "$(ddns_cf_ttl_normalize 1)" = 1 && "$(ddns_cf_ttl_normalize 60)" = 60 && "$(ddns_cf_ttl_normalize 86400)" = 86400 ]] \
+    || { echo "Cloudflare DDNS TTL boundaries failed" >&2; exit 1; }
+[[ "$(ddns_cf_ttl_normalize 060)" = 60 ]] || { echo "Cloudflare DDNS TTL leading-zero normalization failed" >&2; exit 1; }
+! ddns_cf_ttl_normalize 59 >/dev/null || { echo "Cloudflare DDNS accepted TTL 59" >&2; exit 1; }
+! ddns_cf_ttl_normalize 86401 >/dev/null || { echo "Cloudflare DDNS accepted an excessive TTL" >&2; exit 1; }
+[[ "$(ddns_huawei_ttl_normalize 300)" = 300 ]] || { echo "Huawei DDNS TTL lower boundary failed" >&2; exit 1; }
+! ddns_huawei_ttl_normalize 299 >/dev/null || { echo "Huawei DDNS accepted TTL below 300" >&2; exit 1; }
 [[ "$(ddns_ipv6_subdomain_default hktv4)" = "hktv6" ]] || { echo "DDNS IPv6 v4-to-v6 default failed" >&2; exit 1; }
 [[ "$(ddns_ipv6_subdomain_default home)" = "home-v6" ]] || { echo "DDNS IPv6 independent default failed" >&2; exit 1; }
 [[ "$(ddns_ipv6_subdomain_default @)" = "v6" ]] || { echo "DDNS IPv6 root-domain default failed" >&2; exit 1; }
@@ -1546,6 +1775,10 @@ CLOUDFLARE_DDNS_TEMPLATE="$TMP/cloudflare-ddns-template.sh"
 awk "BEGIN{p=0} /cat > \"\\\$DDNS_SCRIPT\" << 'DDNS_INNER'/{p=1; next} /^DDNS_INNER$/{if(p){exit}} p{print}" "$ROOT/src/modules/ddns.sh" > "$CLOUDFLARE_DDNS_TEMPLATE"
 bash -n "$CLOUDFLARE_DDNS_TEMPLATE" || { echo "Cloudflare DDNS generated template has syntax errors" >&2; exit 1; }
 grep -Fq 'LOCK_DIR="/run/vps-tools-ddns.lock"' "$CLOUDFLARE_DDNS_TEMPLATE" || { echo "Cloudflare DDNS concurrency lock missing" >&2; exit 1; }
+grep -Fq 'flock -n 9 || return 75' "$CLOUDFLARE_DDNS_TEMPLATE" || { echo "Cloudflare DDNS flock contention status missing" >&2; exit 1; }
+grep -Fq 'kill -0 "$LOCK_PID"' "$CLOUDFLARE_DDNS_TEMPLATE" || { echo "Cloudflare DDNS stale PID lock recovery missing" >&2; exit 1; }
+grep -Fq -- '--data-urlencode "text=${MSG}"' "$CLOUDFLARE_DDNS_TEMPLATE" || { echo "Cloudflare Telegram payload encoding missing" >&2; exit 1; }
+grep -Fq 'log_line WARN "Telegram 通知发送失败' "$CLOUDFLARE_DDNS_TEMPLATE" || { echo "Cloudflare Telegram failure logging missing" >&2; exit 1; }
 grep -Fq 'record_ip_file()' "$CLOUDFLARE_DDNS_TEMPLATE" || { echo "Cloudflare DDNS successful IP state missing" >&2; exit 1; }
 CF_RECORD_INFO_HELPER="$TMP/cloudflare-record-info.sh"
 awk 'p && /^ZONE_ID=/{exit} /^cf_record_info\(\)/{p=1} p{print}' "$CLOUDFLARE_DDNS_TEMPLATE" > "$CF_RECORD_INFO_HELPER"
@@ -1573,6 +1806,9 @@ bash -n "$HUAWEI_DDNS_TEMPLATE" || { echo "Huawei DDNS generated template has sy
 grep -Fq 'JSON_INPUT=$(cat)' "$HUAWEI_DDNS_TEMPLATE" || { echo "Huawei DDNS JSON parser must preserve piped API responses" >&2; exit 1; }
 grep -Fq 'fetch_ip6_local' "$HUAWEI_DDNS_TEMPLATE" || { echo "Huawei DDNS IPv6 local fallback missing" >&2; exit 1; }
 grep -Fq 'LOCK_DIR="/run/vps-tools-ddns.lock"' "$HUAWEI_DDNS_TEMPLATE" || { echo "Huawei DDNS concurrency lock missing" >&2; exit 1; }
+grep -Fq 'flock -n 9 || return 75' "$HUAWEI_DDNS_TEMPLATE" || { echo "Huawei DDNS flock contention status missing" >&2; exit 1; }
+grep -Fq 'kill -0 "$LOCK_PID"' "$HUAWEI_DDNS_TEMPLATE" || { echo "Huawei DDNS stale PID lock recovery missing" >&2; exit 1; }
+grep -Fq -- '--data-urlencode "text=${MSG}"' "$HUAWEI_DDNS_TEMPLATE" || { echo "Huawei Telegram payload encoding missing" >&2; exit 1; }
 grep -Fq 'record_ip_file()' "$HUAWEI_DDNS_TEMPLATE" || { echo "Huawei DDNS successful IP state missing" >&2; exit 1; }
 awk 'p && /^except Exception:/{exit} /^except urllib\.error\.HTTPError/{p=1} p{print}' "$HUAWEI_DDNS_TEMPLATE" | grep -Fq 'sys.exit(1)' || { echo "Huawei DDNS HTTP errors must fail API calls" >&2; exit 1; }
 FETCH_IP6_LOCAL="$TMP/fetch-ip6-local.sh"
@@ -1582,13 +1818,16 @@ source "$FETCH_IP6_LOCAL"
 mkdir -p "$TMP/bin"
 cat > "$TMP/bin/ip" <<'EOF'
 #!/bin/sh
-cat <<'IPADDR'
-2: eth0    inet6 2404:c804:2331:ad01:be24:11ff:fe45:5e90/64 scope global dynamic mngtmpaddr \       valid_lft 1041sec preferred_lft 1041sec
-2: eth0    inet6 2001:db8::100/64 scope global temporary dynamic \       valid_lft 1041sec preferred_lft 1041sec
-IPADDR
+case "${IP_TEST_MODE:-global}" in
+    global) echo '2606:4700:4700::1111 via fe80::1 dev eth0 src 2404:c804:2331:ad01:be24:11ff:fe45:5e90 metric 1024' ;;
+    ula) echo '2606:4700:4700::1111 via fe80::1 dev eth0 src fd00::10 metric 1024' ;;
+    none) exit 2 ;;
+esac
 EOF
 chmod +x "$TMP/bin/ip"
 [[ "$(PATH="$TMP/bin:$PATH" fetch_ip6_local)" = "2404:c804:2331:ad01:be24:11ff:fe45:5e90" ]] || { echo "DDNS IPv6 local fallback picked the wrong address" >&2; exit 1; }
+[[ -z "$(IP_TEST_MODE=ula PATH="$TMP/bin:$PATH" fetch_ip6_local)" ]] || { echo "DDNS IPv6 local fallback accepted a ULA" >&2; exit 1; }
+[[ -z "$(IP_TEST_MODE=none PATH="$TMP/bin:$PATH" fetch_ip6_local)" ]] || { echo "DDNS IPv6 local fallback ignored a missing route" >&2; exit 1; }
 DDNS_SAMPLE_LOG="$TMP/ddns.log"
 DDNS_STATE_DIR="$TMP/ddns-state"
 mkdir -p "$DDNS_STATE_DIR"

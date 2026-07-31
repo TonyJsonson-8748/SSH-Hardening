@@ -1,4 +1,4 @@
-# VPS 开荒脚本 V3.50.5
+# VPS 开荒脚本 V3.50.6
 
 > **银趴火山帮** 出品 · SSH · BBR · DDNS · Caddy · Firewall · NFT 转发
 
@@ -123,7 +123,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/TonyJsonson-8748/SSH-Hardeni
 ╚═╝╚═╝     ╚═╝╚═╝     ╚═╝  ╚═╝╚═╝  ╚═╝   ╚═╝        ╚═════╝ ╚═╝     ╚══════╝
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  VPS TOOLS  ·  V3.50.5
+  VPS TOOLS  ·  V3.50.6
   VPS 开荒脚本 · 银趴火山帮
 ────────────────────────────────────────────────────────────────
   SSH · BBR · DDNS · Caddy · Firewall · NFT · Monitor
@@ -288,22 +288,27 @@ X11Forwarding no
 **手动配置（两步式：选用途 → 选缓冲）：** 12 / 16 / 20 / **32** / 40 / 64 / 128 / 256 / 512 / 1024 MB 共 10 档（新增 32MB 为 1G 跨境甜点区）
 
 **安全保护：**
-- 缓冲区超过物理内存一半自动降级或警告
+- 自动配置与智能预设的缓冲上限为实际物理内存的 25%；手动配置超过该值时二次确认
+- 自动配置误选高内存档位时按实际物理内存计算，例如 512MB 机器选择 16GB 仍按 512MB 限制
+- TCP 每连接初始/默认缓冲保持内核保守值（接收 4KB/128KB、发送 4KB/16KB），仅提高自动扩展上限
+- `tcp_mem`、`min_free_kbytes`、`tcp_adv_win_scale` 及高风险全局连接参数交还内核管理；升级时恢复首次调优前基线
 - 无 sysctl 写入权限（无特权容器）自动检测并提示
 - 内核 BBR 支持检测（kernel ≥ 4.9）
 - 首次调优保存运行参数基线，每次应用保存运行快照；失败时自动回滚
 - 切换预设时检测上一场景遗留的转发/conntrack 参数，并恢复到首次调优前基线（`ip_forward` 单独警告）
-- 中转/落地场景开启 IPv6 forwarding 时，为公网出口设置 `accept_ra=2`，保留 SLAAC 路由通告
-- 逐行 `sysctl -w` 应用；非核心参数不支持时注释跳过，BBR 核心参数失败则拒绝持久化
+- 中转/落地场景默认不修改内核转发；仅在用户确认路由/NAT 用途后启用，并同时设置默认与当前出口 `accept_ra=2`
+- 逐行 `sysctl -w` 应用；非核心参数不支持时注释跳过，BBR 与 `fq` 写入失败或回读不一致都会回滚
 
 **其他功能：**
 - tc 限速（200M / 500M / 780M / 1G / 2G / 自定义）：`htb` 聚合整形 + `fq` 叶子保留 BBR pacing；兼容不可直接删除的默认 `mq`；默认拒绝外部 QoS，输入精确确认词后可接管或删除 `tbf` / CAKE / HTB 等 root qdisc，操作前诊断快照保存到 `/var/lib/vps-tools/tc-backups/`
+- tc 限速状态保存在 `/var/lib/vps-tools/tc-fq.state`；网卡重建导致运行规则丢失时，更新脚本、应用 BBR 配置或进入 BBR 菜单会自动恢复。若默认网卡名称变化，只显示保存状态并提示人工确认，不会静默迁移
 - initcwnd（10 / 50 / 100 / 自定义），支持 IPv4/IPv6、无网关默认路由和 systemd/OpenRC/SysV 持久化
 - 备份 / 还原 sysctl（按时间戳）
 
 **代理专项参数：**
 - 通用核心含 UDP 缓冲（`udp_rmem_min/wmem_min`），优化 QUIC / Hysteria2 / TUIC
 - 场景预设（中转/落地）额外含扩大出站端口范围、`tcp_max_tw_buckets`、`fs.file-max`，防高并发端口/fd 耗尽
+- 仅用户启用内核转发的中转预设写入 conntrack 参数，`nf_conntrack_max` 按 512MB / 1GB / 2GB / 4GB 内存分档
 - 应用场景预设后自动检测代理 service 的 `LimitNOFILE`，偏低时询问写入 drop-in
 
 **写入位置：** `/etc/sysctl.d/99-vps-bbr.conf`（不污染主配置）
@@ -359,7 +364,8 @@ X11Forwarding no
 - 支持仅 IPv4、仅 IPv6、IPv4+IPv6 双栈
 - Cloudflare 支持代理（橙云）开关
 - 华为云使用 AK/SK 签名调用 DNS API
-- 自定义 TTL（Cloudflare 默认 60 秒，华为云默认 300 秒）
+- 自定义 TTL（Cloudflare 支持自动 `1` 或 60-86400 秒；开启代理时强制自动，华为云支持 300-2147483647 秒）
+- 华为云 Endpoint 仅接受官方 `https://dns[.区域].myhuaweicloud.com` 地址
 - 自定义检测间隔（1-59 分钟，默认 5 分钟，常用 1/2/5）
 - 分享链接地址替换：保留协议、凭据、端口、参数和备注，按当前配置生成 IPv4 / IPv6 DDNS 链接
 - 支持 SIP002/旧式 Shadowsocks、VMess，以及 VLESS、Trojan、Hysteria2、TUIC 等标准 URI
@@ -368,7 +374,10 @@ X11Forwarding no
 - crontab 按配置间隔执行，默认每 5 分钟
 - IP 未变化时仅记录日志，不请求 API
 - IP 多源备用：`ipify.org → ifconfig.me → ip.sb`
-- IPv6 外部探测失败时，会回退读取本机 `scope global` IPv6 地址
+- IPv6 外部探测失败时，会从可用 IPv6 路由选择公网源地址，不发布 ULA、链路本地或无路由地址
+- 并发更新优先使用 `flock`；无 `flock` 时使用可恢复的 PID 锁，手动运行会提示已有任务
+- 修改服务商或配置时先快照脚本、凭据、配置和 root crontab，测试或安装失败自动恢复
+- cron 条目和服务状态分别检测；暂停、卸载或启动失败不会再静默报告成功
 - **IPv4 格式严格校验**：纯 IPv6 机器自动识别不会误发
 - **IPv6 独立运行**：仅启用 AAAA 时不会因为无 IPv4 而退出
 - **二次校验**：检测到 IP 变化时再查询一次，防止误推
@@ -406,6 +415,7 @@ IP 真实变化时推送通知，实时读取 `/root/.cf_tg`，兼容 crontab �
 - `运行中` — crontab 正常
 - `已停止（cron任务未设置）` — 有 ddns.sh 但 crontab 未写入
 - `已停止（cron未安装）` — 系统无 cron，自动安装入口
+- `已停止（cron服务未运行）` — 定时任务存在但 cron 守护进程未运行
 
 ---
 
@@ -741,6 +751,7 @@ tests/smoke.sh
 
 | 版本 | 主要变更 |
 |------|---------|
+| **V3.50.6** | 同步上游 V3.11.5-V3.11.7，并保留长期维护 Fork 的全部 SSH、防火墙、用户与回滚增强：BBR 自动/智能配置按实际物理内存收紧缓冲上限，停止持久化高风险全局参数，内核转发改为按需确认并校验 BBR/fq 写入；tc 在网卡规则丢失后可识别保存状态、恢复运行规则并升级旧持久化助手；DDNS 增加域名归属、Cloudflare/华为云 TTL 与官方 Endpoint 校验，配置及 root crontab 事务回滚，flock/可恢复 PID 锁、公网 IPv6 路由校验、cron 真实状态和 Telegram 失败日志。发布源、自更新源及离线构建说明继续指向长期维护仓库 |
 | **V3.50.5** | 修复两处独立的生产缺陷：① 公钥添加、删除、回滚恢复共用的并发修改检测会把祖先目录的 size/mtime/ctime 也纳入 BEFORE/AFTER 快照比对，而这三个操作自身在同目录创建原子写入用的临时文件必然改变父目录的这些字段——只要操作恰好跨越系统时钟整秒边界就会被自己的临时文件误判为"并发修改"而失败（容器内 30 次重复调用测得约 20% 概率触发）；现在祖先目录只比对身份与权限（dev/inode/uid/gid/mode/type），目标文件本身仍做完整比对。② DDNS 安装事务的 `ddns_install_transaction_begin`/`ddns_install_transaction_restore` 把局部变量命名为 `PATH`，遮蔽了 shell 用于查找外部命令的同名环境变量，导致 `mktemp`/`cp` 等命令在赋值前就已失效，使 Cloudflare 与华为云 DDNS 的安装配置在任何机器上都必现失败；现已改用不冲突的变量名。同时补齐并修复了 `tests/smoke.sh` 中此前从未被完整执行到（因更早的环境依赖提前中止）的公钥查看/删除、防断联回滚、用户主目录共享检测、iptables 端口清理等测试用例 |
 | **V3.50.4** | 修复需要输入密码的常规 sudo 管理员被误判为"没有完整 root 权限"：管理入口检测原先只用 `sudo -n` 做提权探测，而本脚本创建管理员时刻意不配置 `NOPASSWD`，导致这类账号必然探测失败。受影响的是严格模式（报"未找到可确认安全登录的非 root 密钥账号"而拒绝开启）、撤销 SSH 登录与删除公钥的剩余管理入口预检（误判为无管理员入口而拒绝执行）。现在提权探测失败后会改以 root 身份查询 `sudo -l -U` 的实际授权（该查询不需要目标用户密码），仅当 RunAs 可为 root/ALL 且命令列表含裸 `ALL`、且无 `!` 排除项时才认定为完整 root 权限；只有具体命令授权、非 root RunAs 或无授权的账号仍会被拒绝 |
 | **V3.50.3** | 修复 Ubuntu 22.10+/Debian 新版默认的 systemd socket 激活 sshd 场景下修改 SSH 端口不生效：只改 `sshd_config` 的 `Port` 并 `systemctl restart ssh` 不会让 `ssh.socket` 实际监听新端口（旧端口继续监听，新端口从未打开）；现在会运行时探测 `ssh.socket` 是否是当前的监听单元，是则额外写入 `/etc/systemd/system/ssh.socket.d/99-vps-tools-port.conf` 覆盖 `ListenStream`，并在重启时改为 `daemon-reload` + `restart ssh.socket`；该覆盖文件已并入端口修改的备份、180 秒自动回滚与立即回滚路径，任一失败都会精确恢复到变更前状态 |

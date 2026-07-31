@@ -40,6 +40,7 @@ VPS 开荒脚本 CLI
   --user-menu            用户管理（账号、密码与管理员权限）
   --fail2ban-menu        Fail2ban 管理
   --bbr-menu             BBR TCP 调优
+  --bbr-reconcile-tc     按已保存状态恢复 tc 限速（内部入口）
   --firewall-menu        防火墙管理
   --dns-menu             DNS 优化
   --ddns-menu            DDNS 菜单（Cloudflare / 华为云 DNS）
@@ -100,7 +101,11 @@ main_menu() {
             FW_STAT="${FW_TYPE} 已停止"; FW_STATE="inactive"
         fi
         local BBR_CC; BBR_CC=$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null || echo "未知")
-        local TC_RATE; TC_RATE=$(tc qdisc show dev "$(default_iface)" 2>/dev/null | grep -oE '(maxrate|rate) [^ ]+' | head -1 | awk '{print $2}'); [ -z "$TC_RATE" ] && TC_RATE="无限速"
+        local TC_RATE TC_DEV TC_BIN
+        TC_DEV=$(default_iface)
+        TC_BIN=$(command -v tc 2>/dev/null || echo /sbin/tc)
+        TC_RATE=$(bbr_tc_rate_display "$TC_DEV" "$TC_BIN")
+        [ "$TC_RATE" = "未设置" ] && TC_RATE="无限速"
         local CADDY_ST; CADDY_ST=$(caddy_status)
         local CADDY_LABEL
         case "$CADDY_ST" in
@@ -223,6 +228,10 @@ case "${1:-}" in
         ;;
     --bbr-menu)
         bbr_menu
+        exit $?
+        ;;
+    --bbr-reconcile-tc)
+        bbr_tc_reconcile_saved
         exit $?
         ;;
     --firewall-menu)

@@ -75,6 +75,14 @@ self_resolve_script_source() {
     printf '%s\n' "$RESOLVED"
 }
 
+self_reconcile_tc_after_update() {
+    local STATE_FILE="${TC_STATE_FILE:-/var/lib/vps-tools/tc-fq.state}"
+    [ -s "$STATE_FILE" ] || return 0
+    [ -f "$LOCAL_SCRIPT" ] || return 1
+    VPS_TOOLS_TEST_MODE=0 BBR_TUNE_TEST_MODE=0 \
+        bash "$LOCAL_SCRIPT" --bbr-reconcile-tc
+}
+
 self_fetch_script() {
     local DEST="$1" REMOTE_SHA FETCH_URL
     REMOTE_SHA=$(self_remote_main_sha || true)
@@ -557,6 +565,9 @@ self_update() {
     # 确保 v 命令还在
     self_install_shortcut v || warn "快捷键 v 修复失败"
     self_install_shortcut V || warn "快捷键 V 修复失败"
+
+    # 由刚安装的新脚本执行，首次升级到带恢复功能的版本也能立即生效。
+    self_reconcile_tc_after_update || warn "已保存的 tc 限速状态未能自动恢复，请进入 BBR 菜单检查"
 
     info "更新完成 ✓"
     audit_action "脚本更新 ${CUR_VER:-未知} 到 ${NEW_VER:-未知}" SUCCESS
