@@ -1,4 +1,4 @@
-# VPS 开荒脚本 V3.11.6
+# VPS 开荒脚本 V3.11.7
 
 > **银趴火山帮** 出品 · SSH · BBR · DDNS · Caddy · Firewall · NFT 转发
 
@@ -19,24 +19,24 @@ bash <(curl -fsSL https://raw.githubusercontent.com/chnnic/SSH-Hardening/refs/he
 适合不能访问 GitHub 的中国内地 VPS。先在一台可以访问 GitHub 的电脑或跳板机下载：
 
 ```bash
-curl -fLO https://github.com/chnnic/SSH-Hardening/releases/download/v3.11.6/vps-tools-offline-V3.11.6.tar.gz
-curl -fLO https://github.com/chnnic/SSH-Hardening/releases/download/v3.11.6/vps-tools-offline-V3.11.6.tar.gz.sha256
-sha256sum -c vps-tools-offline-V3.11.6.tar.gz.sha256
+curl -fLO https://github.com/chnnic/SSH-Hardening/releases/download/v3.11.7/vps-tools-offline-V3.11.7.tar.gz
+curl -fLO https://github.com/chnnic/SSH-Hardening/releases/download/v3.11.7/vps-tools-offline-V3.11.7.tar.gz.sha256
+sha256sum -c vps-tools-offline-V3.11.7.tar.gz.sha256
 ```
 
 再通过 `scp`、SFTP 或 WinSCP 将两个文件传到 VPS。Linux/macOS 示例：
 
 ```bash
-scp vps-tools-offline-V3.11.6.tar.gz* root@你的VPS地址:/root/
+scp vps-tools-offline-V3.11.7.tar.gz* root@你的VPS地址:/root/
 ```
 
 登录 VPS 后离线安装：
 
 ```bash
 cd /root
-sha256sum -c vps-tools-offline-V3.11.6.tar.gz.sha256
-tar -xzf vps-tools-offline-V3.11.6.tar.gz
-cd vps-tools-offline-V3.11.6
+sha256sum -c vps-tools-offline-V3.11.7.tar.gz.sha256
+tar -xzf vps-tools-offline-V3.11.7.tar.gz
+cd vps-tools-offline-V3.11.7
 bash install.sh
 v
 ```
@@ -109,7 +109,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/chnnic/SSH-Hardening/refs/he
 ╚═╝╚═╝     ╚═╝╚═╝     ╚═╝  ╚═╝╚═╝  ╚═╝   ╚═╝        ╚═════╝ ╚═╝     ╚══════╝
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  VPS TOOLS  ·  V3.11.6
+  VPS TOOLS  ·  V3.11.7
   VPS 开荒脚本 · 银趴火山帮
 ────────────────────────────────────────────────────────────────
   SSH · BBR · DDNS · Caddy · Firewall · NFT · Monitor
@@ -282,7 +282,8 @@ bash <(curl -fsSL https://raw.githubusercontent.com/chnnic/SSH-Hardening/refs/he
 - 支持仅 IPv4、仅 IPv6、IPv4+IPv6 双栈
 - Cloudflare 支持代理（橙云）开关
 - 华为云使用 AK/SK 签名调用 DNS API
-- 自定义 TTL（Cloudflare 默认 60 秒，华为云默认 300 秒）
+- 自定义 TTL（Cloudflare 支持自动 `1` 或 60-86400 秒；开启代理时强制自动，华为云支持 300-2147483647 秒）
+- 华为云 Endpoint 仅接受官方 `https://dns[.区域].myhuaweicloud.com` 地址
 - 自定义检测间隔（1-59 分钟，默认 5 分钟，常用 1/2/5）
 - 分享链接地址替换：保留协议、凭据、端口、参数和备注，按当前配置生成 IPv4 / IPv6 DDNS 链接
 - 支持 SIP002/旧式 Shadowsocks、VMess，以及 VLESS、Trojan、Hysteria2、TUIC 等标准 URI
@@ -291,7 +292,10 @@ bash <(curl -fsSL https://raw.githubusercontent.com/chnnic/SSH-Hardening/refs/he
 - crontab 按配置间隔执行，默认每 5 分钟
 - IP 未变化时仅记录日志，不请求 API
 - IP 多源备用：`ipify.org → ifconfig.me → ip.sb`
-- IPv6 外部探测失败时，会回退读取本机 `scope global` IPv6 地址
+- IPv6 外部探测失败时，会从可用 IPv6 路由选择公网源地址，不发布 ULA、链路本地或无路由地址
+- 并发更新优先使用 `flock`；无 `flock` 时使用可恢复的 PID 锁，手动运行会提示已有任务
+- 修改服务商或配置时先快照脚本、凭据、配置和 root crontab，测试或安装失败自动恢复
+- cron 条目和服务状态分别检测；暂停、卸载或启动失败不会再静默报告成功
 - **IPv4 格式严格校验**：纯 IPv6 机器自动识别不会误发
 - **IPv6 独立运行**：仅启用 AAAA 时不会因为无 IPv4 而退出
 - **二次校验**：检测到 IP 变化时再查询一次，防止误推
@@ -328,6 +332,7 @@ IP 真实变化时推送通知，实时读取 `/root/.cf_tg`，兼容 crontab �
 - `运行中` — crontab 正常
 - `已停止（cron任务未设置）` — 有 ddns.sh 但 crontab 未写入
 - `已停止（cron未安装）` — 系统无 cron，自动安装入口
+- `已停止（cron服务未运行）` — 定时任务存在但 cron 守护进程未运行
 
 ---
 
@@ -651,6 +656,7 @@ tests/smoke.sh
 
 | 版本 | 主要变更 |
 |------|---------|
+| **V3.11.7** | DDNS 加固：Cloudflare / 华为云修改配置改为事务式快照，脚本测试、语法校验或 cron 安装失败自动恢复原脚本、凭据、配置与 root crontab；并发改用 `flock` 或可恢复 PID 锁并区分运行中；严格校验域名归属、华为云官方 HTTPS Endpoint 和 TTL；IPv6 本地回退只发布有路由的公网源地址；cron 状态、暂停/卸载错误和 Telegram API 失败均准确报告 |
 | **V3.11.6** | 修复更新或网卡重建后 tc 运行规则丢失却显示“无限速”：区分活动规则与“已保存、未生效”状态，更新完成、应用 BBR 配置及进入 BBR 菜单时按状态文件自动恢复；更新器通过新安装脚本的内部入口执行，首次升级即可生效，并自动刷新旧版 tc 持久化助手；默认网卡变化时拒绝静默迁移 |
 | **V3.11.5** | BBR 自动/智能配置按实际物理内存计算并将缓冲上限收紧至 25%，TCP 每连接默认缓冲恢复保守值；停止覆盖内核计算的 `tcp_mem`、`min_free_kbytes` 及过时/高风险全局参数，升级时恢复原始基线；场景转发改为按需确认，补齐默认网卡 IPv6 RA，conntrack 按内存分档，并对 BBR 与 `fq` 执行写后回读及失败回滚 |
 | **V3.11.4** | 修复多队列网卡默认 `mq` 无法通过 `tc qdisc del` 删除而导致限速应用失败，改用 `replace` 原子安装 HTB，持久化辅助脚本同步修复；取消限速时会识别并标注外部 qdisc，输入 `DELETE <网卡>` 后可保存快照并明确删除 |

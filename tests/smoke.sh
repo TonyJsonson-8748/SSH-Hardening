@@ -797,6 +797,23 @@ EOF
 [[ "$(ddns_build_domain @ example.com)" = "example.com" ]] || { echo "DDNS root domain build failed" >&2; exit 1; }
 [[ "$(ddns_build_domain v6.example.com example.com)" = "v6.example.com" ]] || { echo "DDNS full domain build failed" >&2; exit 1; }
 [[ "$(ddns_domain_dot example.com)" = "example.com." ]] || { echo "DDNS trailing-dot helper failed" >&2; exit 1; }
+[[ "$(ddns_domain_normalize 'Example.COM.')" = "example.com" ]] || { echo "DDNS domain normalization failed" >&2; exit 1; }
+! ddns_domain_normalize 'example.com";$(id)' >/dev/null 2>&1 || { echo "DDNS domain validation accepted shell metacharacters" >&2; exit 1; }
+ddns_domain_in_zone home.example.com example.com || { echo "DDNS in-zone validation rejected a child domain" >&2; exit 1; }
+! ddns_domain_in_zone home.example.net example.com || { echo "DDNS in-zone validation accepted another zone" >&2; exit 1; }
+[[ "$(ddns_huawei_endpoint_normalize dns.cn-north-4.myhuaweicloud.com)" = "https://dns.cn-north-4.myhuaweicloud.com" ]] \
+    || { echo "Huawei DDNS official endpoint normalization failed" >&2; exit 1; }
+! ddns_huawei_endpoint_normalize 'http://dns.myhuaweicloud.com' >/dev/null 2>&1 \
+    || { echo "Huawei DDNS endpoint accepted HTTP" >&2; exit 1; }
+! ddns_huawei_endpoint_normalize 'https://example.com/path' >/dev/null 2>&1 \
+    || { echo "Huawei DDNS endpoint accepted an arbitrary host/path" >&2; exit 1; }
+[[ "$(ddns_cf_ttl_normalize 1)" = 1 && "$(ddns_cf_ttl_normalize 60)" = 60 && "$(ddns_cf_ttl_normalize 86400)" = 86400 ]] \
+    || { echo "Cloudflare DDNS TTL boundaries failed" >&2; exit 1; }
+[[ "$(ddns_cf_ttl_normalize 060)" = 60 ]] || { echo "Cloudflare DDNS TTL leading-zero normalization failed" >&2; exit 1; }
+! ddns_cf_ttl_normalize 59 >/dev/null || { echo "Cloudflare DDNS accepted TTL 59" >&2; exit 1; }
+! ddns_cf_ttl_normalize 86401 >/dev/null || { echo "Cloudflare DDNS accepted an excessive TTL" >&2; exit 1; }
+[[ "$(ddns_huawei_ttl_normalize 300)" = 300 ]] || { echo "Huawei DDNS TTL lower boundary failed" >&2; exit 1; }
+! ddns_huawei_ttl_normalize 299 >/dev/null || { echo "Huawei DDNS accepted TTL below 300" >&2; exit 1; }
 [[ "$(ddns_ipv6_subdomain_default hktv4)" = "hktv6" ]] || { echo "DDNS IPv6 v4-to-v6 default failed" >&2; exit 1; }
 [[ "$(ddns_ipv6_subdomain_default home)" = "home-v6" ]] || { echo "DDNS IPv6 independent default failed" >&2; exit 1; }
 [[ "$(ddns_ipv6_subdomain_default @)" = "v6" ]] || { echo "DDNS IPv6 root-domain default failed" >&2; exit 1; }
@@ -886,6 +903,10 @@ CLOUDFLARE_DDNS_TEMPLATE="$TMP/cloudflare-ddns-template.sh"
 awk "BEGIN{p=0} /cat > \"\\\$DDNS_SCRIPT\" << 'DDNS_INNER'/{p=1; next} /^DDNS_INNER$/{if(p){exit}} p{print}" "$ROOT/src/modules/ddns.sh" > "$CLOUDFLARE_DDNS_TEMPLATE"
 bash -n "$CLOUDFLARE_DDNS_TEMPLATE" || { echo "Cloudflare DDNS generated template has syntax errors" >&2; exit 1; }
 grep -Fq 'LOCK_DIR="/run/vps-tools-ddns.lock"' "$CLOUDFLARE_DDNS_TEMPLATE" || { echo "Cloudflare DDNS concurrency lock missing" >&2; exit 1; }
+grep -Fq 'flock -n 9 || return 75' "$CLOUDFLARE_DDNS_TEMPLATE" || { echo "Cloudflare DDNS flock contention status missing" >&2; exit 1; }
+grep -Fq 'kill -0 "$LOCK_PID"' "$CLOUDFLARE_DDNS_TEMPLATE" || { echo "Cloudflare DDNS stale PID lock recovery missing" >&2; exit 1; }
+grep -Fq -- '--data-urlencode "text=${MSG}"' "$CLOUDFLARE_DDNS_TEMPLATE" || { echo "Cloudflare Telegram payload encoding missing" >&2; exit 1; }
+grep -Fq 'log_line WARN "Telegram 通知发送失败' "$CLOUDFLARE_DDNS_TEMPLATE" || { echo "Cloudflare Telegram failure logging missing" >&2; exit 1; }
 grep -Fq 'record_ip_file()' "$CLOUDFLARE_DDNS_TEMPLATE" || { echo "Cloudflare DDNS successful IP state missing" >&2; exit 1; }
 CF_RECORD_INFO_HELPER="$TMP/cloudflare-record-info.sh"
 awk 'p && /^ZONE_ID=/{exit} /^cf_record_info\(\)/{p=1} p{print}' "$CLOUDFLARE_DDNS_TEMPLATE" > "$CF_RECORD_INFO_HELPER"
@@ -913,6 +934,9 @@ bash -n "$HUAWEI_DDNS_TEMPLATE" || { echo "Huawei DDNS generated template has sy
 grep -Fq 'JSON_INPUT=$(cat)' "$HUAWEI_DDNS_TEMPLATE" || { echo "Huawei DDNS JSON parser must preserve piped API responses" >&2; exit 1; }
 grep -Fq 'fetch_ip6_local' "$HUAWEI_DDNS_TEMPLATE" || { echo "Huawei DDNS IPv6 local fallback missing" >&2; exit 1; }
 grep -Fq 'LOCK_DIR="/run/vps-tools-ddns.lock"' "$HUAWEI_DDNS_TEMPLATE" || { echo "Huawei DDNS concurrency lock missing" >&2; exit 1; }
+grep -Fq 'flock -n 9 || return 75' "$HUAWEI_DDNS_TEMPLATE" || { echo "Huawei DDNS flock contention status missing" >&2; exit 1; }
+grep -Fq 'kill -0 "$LOCK_PID"' "$HUAWEI_DDNS_TEMPLATE" || { echo "Huawei DDNS stale PID lock recovery missing" >&2; exit 1; }
+grep -Fq -- '--data-urlencode "text=${MSG}"' "$HUAWEI_DDNS_TEMPLATE" || { echo "Huawei Telegram payload encoding missing" >&2; exit 1; }
 grep -Fq 'record_ip_file()' "$HUAWEI_DDNS_TEMPLATE" || { echo "Huawei DDNS successful IP state missing" >&2; exit 1; }
 awk 'p && /^except Exception:/{exit} /^except urllib\.error\.HTTPError/{p=1} p{print}' "$HUAWEI_DDNS_TEMPLATE" | grep -Fq 'sys.exit(1)' || { echo "Huawei DDNS HTTP errors must fail API calls" >&2; exit 1; }
 FETCH_IP6_LOCAL="$TMP/fetch-ip6-local.sh"
@@ -922,13 +946,16 @@ source "$FETCH_IP6_LOCAL"
 mkdir -p "$TMP/bin"
 cat > "$TMP/bin/ip" <<'EOF'
 #!/bin/sh
-cat <<'IPADDR'
-2: eth0    inet6 2404:c804:2331:ad01:be24:11ff:fe45:5e90/64 scope global dynamic mngtmpaddr \       valid_lft 1041sec preferred_lft 1041sec
-2: eth0    inet6 2001:db8::100/64 scope global temporary dynamic \       valid_lft 1041sec preferred_lft 1041sec
-IPADDR
+case "${IP_TEST_MODE:-global}" in
+    global) echo '2606:4700:4700::1111 via fe80::1 dev eth0 src 2404:c804:2331:ad01:be24:11ff:fe45:5e90 metric 1024' ;;
+    ula) echo '2606:4700:4700::1111 via fe80::1 dev eth0 src fd00::10 metric 1024' ;;
+    none) exit 2 ;;
+esac
 EOF
 chmod +x "$TMP/bin/ip"
 [[ "$(PATH="$TMP/bin:$PATH" fetch_ip6_local)" = "2404:c804:2331:ad01:be24:11ff:fe45:5e90" ]] || { echo "DDNS IPv6 local fallback picked the wrong address" >&2; exit 1; }
+[[ -z "$(IP_TEST_MODE=ula PATH="$TMP/bin:$PATH" fetch_ip6_local)" ]] || { echo "DDNS IPv6 local fallback accepted a ULA" >&2; exit 1; }
+[[ -z "$(IP_TEST_MODE=none PATH="$TMP/bin:$PATH" fetch_ip6_local)" ]] || { echo "DDNS IPv6 local fallback ignored a missing route" >&2; exit 1; }
 DDNS_SAMPLE_LOG="$TMP/ddns.log"
 DDNS_STATE_DIR="$TMP/ddns-state"
 mkdir -p "$DDNS_STATE_DIR"
