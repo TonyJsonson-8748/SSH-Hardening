@@ -898,6 +898,8 @@ EOF
 ddns_cfg_enable_a || { echo "Huawei DDNS IPv4 enable failed" >&2; exit 1; }
 ! ddns_cfg_enable_aaaa || { echo "Huawei DDNS IPv6 should be disabled" >&2; exit 1; }
 grep -Fq 'read -rp "  Cloudflare API Token（输入可见）: " DDNS_TOKEN' "$ROOT/src/modules/ddns.sh" || { echo "Cloudflare API Token input must remain visible" >&2; exit 1; }
+grep -Fq 'read -rp "  华为云 Secret Access Key（SK，输入可见）: " DDNS_HW_SK' "$ROOT/src/modules/ddns.sh" || { echo "Huawei Secret Access Key input must remain visible" >&2; exit 1; }
+grep -Fq 'read -rp "  Bot Token（输入可见）: " TG_BOT' "$ROOT/src/modules/ddns.sh" || { echo "Telegram Bot Token input must remain visible" >&2; exit 1; }
 grep -q "SDK-HMAC-SHA256" "$ROOT/src/modules/ddns.sh" || { echo "Huawei DDNS signer missing" >&2; exit 1; }
 ! grep -q "LC_TIME" "$ROOT/src/modules/ddns.sh" || { echo "DDNS menu must not use LC_TIME locale variable" >&2; exit 1; }
 CLOUDFLARE_DDNS_TEMPLATE="$TMP/cloudflare-ddns-template.sh"

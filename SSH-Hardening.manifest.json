@@ -1,9 +1,9 @@
 {
   "name": "SSH-Hardening",
-  "version": "V3.11.7",
+  "version": "V3.11.8",
   "file": "SSH-Hardening.sh",
-  "sha256": "aef89b3c7b6d32c2412627f97307b08b3ba73ab510ea78c369a778905f1a574f",
-  "generated_at": "2026-07-31T15:49:12Z",
+  "sha256": "6bc38af07f7ce25f206fe95b0f894283ba224e58d1960ea4b26faefcf016c6ce",
+  "generated_at": "2026-08-01T11:04:27Z",
   "urls": [
     "https://raw.githubusercontent.com/chnnic/SSH-Hardening/refs/heads/main/SSH-Hardening.sh",
     "https://github.com/chnnic/SSH-Hardening/raw/refs/heads/main/SSH-Hardening.sh",

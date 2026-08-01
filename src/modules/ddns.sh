@@ -1661,8 +1661,7 @@ ddns_install_huawei() {
 
     read -rp "  华为云 Access Key ID（AK）: " DDNS_HW_AK
     [ -z "$DDNS_HW_AK" ] && { warn "已取消"; return; }
-    read -rsp "  华为云 Secret Access Key（SK）: " DDNS_HW_SK
-    echo ""
+    read -rp "  华为云 Secret Access Key（SK，输入可见）: " DDNS_HW_SK
     [ -z "$DDNS_HW_SK" ] && { warn "已取消"; return; }
 
     local DDNS_TTL="300"
@@ -2379,8 +2378,7 @@ ddns_tg_config() {
     case "$CH" in
         1)
             echo ""
-            read -rsp "  Bot Token: " TG_BOT
-            echo ""
+            read -rp "  Bot Token（输入可见）: " TG_BOT
             [ -z "$TG_BOT" ] && { warn "已取消"; return; }
             read -rp "  Chat ID: " TG_CHAT
             [ -z "$TG_CHAT" ] && { warn "已取消"; return; }

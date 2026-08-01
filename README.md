@@ -1,4 +1,4 @@
-# VPS 开荒脚本 V3.11.7
+# VPS 开荒脚本 V3.11.8
 
 > **银趴火山帮** 出品 · SSH · BBR · DDNS · Caddy · Firewall · NFT 转发
 
@@ -19,24 +19,24 @@ bash <(curl -fsSL https://raw.githubusercontent.com/chnnic/SSH-Hardening/refs/he
 适合不能访问 GitHub 的中国内地 VPS。先在一台可以访问 GitHub 的电脑或跳板机下载：
 
 ```bash
-curl -fLO https://github.com/chnnic/SSH-Hardening/releases/download/v3.11.7/vps-tools-offline-V3.11.7.tar.gz
-curl -fLO https://github.com/chnnic/SSH-Hardening/releases/download/v3.11.7/vps-tools-offline-V3.11.7.tar.gz.sha256
-sha256sum -c vps-tools-offline-V3.11.7.tar.gz.sha256
+curl -fLO https://github.com/chnnic/SSH-Hardening/releases/download/v3.11.8/vps-tools-offline-V3.11.8.tar.gz
+curl -fLO https://github.com/chnnic/SSH-Hardening/releases/download/v3.11.8/vps-tools-offline-V3.11.8.tar.gz.sha256
+sha256sum -c vps-tools-offline-V3.11.8.tar.gz.sha256
 ```
 
 再通过 `scp`、SFTP 或 WinSCP 将两个文件传到 VPS。Linux/macOS 示例：
 
 ```bash
-scp vps-tools-offline-V3.11.7.tar.gz* root@你的VPS地址:/root/
+scp vps-tools-offline-V3.11.8.tar.gz* root@你的VPS地址:/root/
 ```
 
 登录 VPS 后离线安装：
 
 ```bash
 cd /root
-sha256sum -c vps-tools-offline-V3.11.7.tar.gz.sha256
-tar -xzf vps-tools-offline-V3.11.7.tar.gz
-cd vps-tools-offline-V3.11.7
+sha256sum -c vps-tools-offline-V3.11.8.tar.gz.sha256
+tar -xzf vps-tools-offline-V3.11.8.tar.gz
+cd vps-tools-offline-V3.11.8
 bash install.sh
 v
 ```
@@ -109,7 +109,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/chnnic/SSH-Hardening/refs/he
 ╚═╝╚═╝     ╚═╝╚═╝     ╚═╝  ╚═╝╚═╝  ╚═╝   ╚═╝        ╚═════╝ ╚═╝     ╚══════╝
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  VPS TOOLS  ·  V3.11.7
+  VPS TOOLS  ·  V3.11.8
   VPS 开荒脚本 · 银趴火山帮
 ────────────────────────────────────────────────────────────────
   SSH · BBR · DDNS · Caddy · Firewall · NFT · Monitor
@@ -656,6 +656,7 @@ tests/smoke.sh
 
 | 版本 | 主要变更 |
 |------|---------|
+| **V3.11.8** | DDNS 配置中的 Cloudflare API Token、华为云 Secret Access Key 和 Telegram Bot Token 输入统一明文显示，便于检查粘贴内容；确认页仍只显示凭据前缀，凭据文件继续使用 600 权限 |
 | **V3.11.7** | DDNS 加固：Cloudflare / 华为云修改配置改为事务式快照，脚本测试、语法校验或 cron 安装失败自动恢复原脚本、凭据、配置与 root crontab；并发改用 `flock` 或可恢复 PID 锁并区分运行中；严格校验域名归属、华为云官方 HTTPS Endpoint 和 TTL；IPv6 本地回退只发布有路由的公网源地址；cron 状态、暂停/卸载错误和 Telegram API 失败均准确报告 |
 | **V3.11.6** | 修复更新或网卡重建后 tc 运行规则丢失却显示“无限速”：区分活动规则与“已保存、未生效”状态，更新完成、应用 BBR 配置及进入 BBR 菜单时按状态文件自动恢复；更新器通过新安装脚本的内部入口执行，首次升级即可生效，并自动刷新旧版 tc 持久化助手；默认网卡变化时拒绝静默迁移 |
 | **V3.11.5** | BBR 自动/智能配置按实际物理内存计算并将缓冲上限收紧至 25%，TCP 每连接默认缓冲恢复保守值；停止覆盖内核计算的 `tcp_mem`、`min_free_kbytes` 及过时/高风险全局参数，升级时恢复原始基线；场景转发改为按需确认，补齐默认网卡 IPv6 RA，conntrack 按内存分档，并对 BBR 与 `fq` 执行写后回读及失败回滚 |
