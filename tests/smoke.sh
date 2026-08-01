@@ -13,7 +13,7 @@ for fn in systemd_available show_cli_help main_menu ssh_tools_menu ssh_key_count
     ts_https_interval_normalize ts_https_interval_current ts_https_cron_expr ts_https_cron_without_managed \
     ts_https_schedule_backend ts_https_schedule_last_result ts_https_schedule_summary ts_https_runner_valid ts_https_runner_path_valid ts_https_ensure_runner ts_https_scheduled_run ts_https_schedule_enable_systemd ts_https_schedule_enable_cron ts_https_cron_daemon_enable ts_https_schedule_remove_cron ts_https_schedule_enable ts_https_schedule_disable ts_https_schedule_menu \
     ip_config_menu caddy_menu caddy_site_records caddy_site_count nft_menu ddns_menu ddns_install ddns_install_cloudflare ddns_install_huawei ddns_run_now ddns_view_logs ddns_status ddns_share_link_tool \
-    ddns_provider ddns_provider_label ddns_sed_escape ddns_install_transaction_begin ddns_install_transaction_restore ddns_install_transaction_commit ddns_domain_dot ddns_ipv6_subdomain_default ddns_cf_exact_records ddns_cf_record_ensure ddns_cf_cleanup_cross_record \
+    ddns_provider ddns_provider_label ddns_sed_escape ddns_install_tx_begin ddns_install_tx_restore ddns_install_tx_commit ddns_domain_dot ddns_ipv6_subdomain_default ddns_cf_exact_records ddns_cf_record_ensure ddns_cf_cleanup_cross_record \
     ddns_interval_normalize ddns_interval_min ddns_cron_expr ddns_cron_without_managed ddns_prompt_interval \
     ddns_cfg_enable_a ddns_cfg_enable_aaaa ddns_cfg_domain4 ddns_cfg_domain6 ddns_primary_domain ddns_mode_label ddns_build_domain ddns_replace_link_host \
     ddns_latest_log_line ddns_latest_change_log_line ddns_line_time ddns_line_result_ip ddns_newer_line ddns_change_matches_status ddns_record_status_line ddns_record_change_line ddns_print_record_summary \
@@ -1769,6 +1769,8 @@ EOF
 ddns_cfg_enable_a || { echo "Huawei DDNS IPv4 enable failed" >&2; exit 1; }
 ! ddns_cfg_enable_aaaa || { echo "Huawei DDNS IPv6 should be disabled" >&2; exit 1; }
 grep -Fq 'read -rp "  Cloudflare API Token（输入可见）: " DDNS_TOKEN' "$ROOT/src/modules/ddns.sh" || { echo "Cloudflare API Token input must remain visible" >&2; exit 1; }
+grep -Fq 'read -rp "  华为云 Secret Access Key（SK，输入可见）: " DDNS_HW_SK' "$ROOT/src/modules/ddns.sh" || { echo "Huawei Secret Access Key input must remain visible" >&2; exit 1; }
+grep -Fq 'read -rp "  Bot Token（输入可见）: " TG_BOT' "$ROOT/src/modules/ddns.sh" || { echo "Telegram Bot Token input must remain visible" >&2; exit 1; }
 grep -q "SDK-HMAC-SHA256" "$ROOT/src/modules/ddns.sh" || { echo "Huawei DDNS signer missing" >&2; exit 1; }
 ! grep -q "LC_TIME" "$ROOT/src/modules/ddns.sh" || { echo "DDNS menu must not use LC_TIME locale variable" >&2; exit 1; }
 CLOUDFLARE_DDNS_TEMPLATE="$TMP/cloudflare-ddns-template.sh"
