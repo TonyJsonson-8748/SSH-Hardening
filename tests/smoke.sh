@@ -910,9 +910,10 @@ grep -Fq 'flock -n 9 || return 75' "$CLOUDFLARE_DDNS_TEMPLATE" || { echo "Cloudf
 grep -Fq 'kill -0 "$LOCK_PID"' "$CLOUDFLARE_DDNS_TEMPLATE" || { echo "Cloudflare DDNS stale PID lock recovery missing" >&2; exit 1; }
 grep -Fq -- '--data-urlencode "text=${MSG}"' "$CLOUDFLARE_DDNS_TEMPLATE" || { echo "Cloudflare Telegram payload encoding missing" >&2; exit 1; }
 grep -Fq 'log_line WARN "Telegram 通知发送失败' "$CLOUDFLARE_DDNS_TEMPLATE" || { echo "Cloudflare Telegram failure logging missing" >&2; exit 1; }
+grep -Fq '启用的 A / AAAA 记录缺少域名' "$CLOUDFLARE_DDNS_TEMPLATE" || { echo "Cloudflare DDNS missing-domain guard absent" >&2; exit 1; }
 grep -Fq 'record_ip_file()' "$CLOUDFLARE_DDNS_TEMPLATE" || { echo "Cloudflare DDNS successful IP state missing" >&2; exit 1; }
 CF_RECORD_INFO_HELPER="$TMP/cloudflare-record-info.sh"
-awk 'p && /^ZONE_ID=/{exit} /^cf_record_info\(\)/{p=1} p{print}' "$CLOUDFLARE_DDNS_TEMPLATE" > "$CF_RECORD_INFO_HELPER"
+awk 'p && (/^if \{ is_true/ || /^ZONE_ID=/){exit} /^cf_record_info\(\)/{p=1} p{print}' "$CLOUDFLARE_DDNS_TEMPLATE" > "$CF_RECORD_INFO_HELPER"
 # shellcheck source=/dev/null
 source "$CF_RECORD_INFO_HELPER"
 [[ "$(printf '%s' "$CF_MIXED_RECORDS" | cf_record_info AAAA dual.example.com)" = 'aaaa-id|2001:db8::10' ]] || { echo "Generated Cloudflare updater selected the wrong record type" >&2; exit 1; }
@@ -940,6 +941,7 @@ grep -Fq 'LOCK_DIR="/run/vps-tools-ddns.lock"' "$HUAWEI_DDNS_TEMPLATE" || { echo
 grep -Fq 'flock -n 9 || return 75' "$HUAWEI_DDNS_TEMPLATE" || { echo "Huawei DDNS flock contention status missing" >&2; exit 1; }
 grep -Fq 'kill -0 "$LOCK_PID"' "$HUAWEI_DDNS_TEMPLATE" || { echo "Huawei DDNS stale PID lock recovery missing" >&2; exit 1; }
 grep -Fq -- '--data-urlencode "text=${MSG}"' "$HUAWEI_DDNS_TEMPLATE" || { echo "Huawei Telegram payload encoding missing" >&2; exit 1; }
+grep -Fq '启用的 A / AAAA 记录缺少域名' "$HUAWEI_DDNS_TEMPLATE" || { echo "Huawei DDNS missing-domain guard absent" >&2; exit 1; }
 grep -Fq 'record_ip_file()' "$HUAWEI_DDNS_TEMPLATE" || { echo "Huawei DDNS successful IP state missing" >&2; exit 1; }
 awk 'p && /^except Exception:/{exit} /^except urllib\.error\.HTTPError/{p=1} p{print}' "$HUAWEI_DDNS_TEMPLATE" | grep -Fq 'sys.exit(1)' || { echo "Huawei DDNS HTTP errors must fail API calls" >&2; exit 1; }
 FETCH_IP6_LOCAL="$TMP/fetch-ip6-local.sh"

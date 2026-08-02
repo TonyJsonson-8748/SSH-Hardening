@@ -1,4 +1,4 @@
-# VPS 开荒脚本 V3.11.8
+# VPS 开荒脚本 V3.11.9
 
 > **银趴火山帮** 出品 · SSH · BBR · DDNS · Caddy · Firewall · NFT 转发
 
@@ -19,24 +19,24 @@ bash <(curl -fsSL https://raw.githubusercontent.com/chnnic/SSH-Hardening/refs/he
 适合不能访问 GitHub 的中国内地 VPS。先在一台可以访问 GitHub 的电脑或跳板机下载：
 
 ```bash
-curl -fLO https://github.com/chnnic/SSH-Hardening/releases/download/v3.11.8/vps-tools-offline-V3.11.8.tar.gz
-curl -fLO https://github.com/chnnic/SSH-Hardening/releases/download/v3.11.8/vps-tools-offline-V3.11.8.tar.gz.sha256
-sha256sum -c vps-tools-offline-V3.11.8.tar.gz.sha256
+curl -fLO https://github.com/chnnic/SSH-Hardening/releases/download/v3.11.9/vps-tools-offline-V3.11.9.tar.gz
+curl -fLO https://github.com/chnnic/SSH-Hardening/releases/download/v3.11.9/vps-tools-offline-V3.11.9.tar.gz.sha256
+sha256sum -c vps-tools-offline-V3.11.9.tar.gz.sha256
 ```
 
 再通过 `scp`、SFTP 或 WinSCP 将两个文件传到 VPS。Linux/macOS 示例：
 
 ```bash
-scp vps-tools-offline-V3.11.8.tar.gz* root@你的VPS地址:/root/
+scp vps-tools-offline-V3.11.9.tar.gz* root@你的VPS地址:/root/
 ```
 
 登录 VPS 后离线安装：
 
 ```bash
 cd /root
-sha256sum -c vps-tools-offline-V3.11.8.tar.gz.sha256
-tar -xzf vps-tools-offline-V3.11.8.tar.gz
-cd vps-tools-offline-V3.11.8
+sha256sum -c vps-tools-offline-V3.11.9.tar.gz.sha256
+tar -xzf vps-tools-offline-V3.11.9.tar.gz
+cd vps-tools-offline-V3.11.9
 bash install.sh
 v
 ```
@@ -109,7 +109,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/chnnic/SSH-Hardening/refs/he
 ╚═╝╚═╝     ╚═╝╚═╝     ╚═╝  ╚═╝╚═╝  ╚═╝   ╚═╝        ╚═════╝ ╚═╝     ╚══════╝
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  VPS TOOLS  ·  V3.11.8
+  VPS TOOLS  ·  V3.11.9
   VPS 开荒脚本 · 银趴火山帮
 ────────────────────────────────────────────────────────────────
   SSH · BBR · DDNS · Caddy · Firewall · NFT · Monitor
@@ -296,6 +296,8 @@ bash <(curl -fsSL https://raw.githubusercontent.com/chnnic/SSH-Hardening/refs/he
 - 并发更新优先使用 `flock`；无 `flock` 时使用可恢复的 PID 锁，手动运行会提示已有任务
 - 修改服务商或配置时先快照脚本、凭据、配置和 root crontab，测试或安装失败自动恢复
 - cron 条目和服务状态分别检测；暂停、卸载或启动失败不会再静默报告成功
+- 手动更新分别展示本次 IPv4 A 与 IPv6 AAAA 结果，不再只显示最后执行的 IPv6 日志
+- 手动更新前核对运行脚本与当前配置，A/AAAA 开关或域名漂移时停止并提示重新生成
 - **IPv4 格式严格校验**：纯 IPv6 机器自动识别不会误发
 - **IPv6 独立运行**：仅启用 AAAA 时不会因为无 IPv4 而退出
 - **二次校验**：检测到 IP 变化时再查询一次，防止误推
@@ -656,6 +658,7 @@ tests/smoke.sh
 
 | 版本 | 主要变更 |
 |------|---------|
+| **V3.11.9** | 修复双栈 DDNS 手动更新只显示最后一条 IPv6 日志、容易误判 IPv4 未执行的问题：现在分别展示本次 IPv4 A 与 IPv6 AAAA 结果；执行前校验 `/root/ddns.sh` 与当前配置的开关和域名，旧版或损坏脚本缺少 IPv4 域名时停止并提示重新生成，定时脚本也拒绝静默跳过启用的记录 |
 | **V3.11.8** | DDNS 配置中的 Cloudflare API Token、华为云 Secret Access Key 和 Telegram Bot Token 输入统一明文显示，便于检查粘贴内容；确认页仍只显示凭据前缀，凭据文件继续使用 600 权限 |
 | **V3.11.7** | DDNS 加固：Cloudflare / 华为云修改配置改为事务式快照，脚本测试、语法校验或 cron 安装失败自动恢复原脚本、凭据、配置与 root crontab；并发改用 `flock` 或可恢复 PID 锁并区分运行中；严格校验域名归属、华为云官方 HTTPS Endpoint 和 TTL；IPv6 本地回退只发布有路由的公网源地址；cron 状态、暂停/卸载错误和 Telegram API 失败均准确报告 |
 | **V3.11.6** | 修复更新或网卡重建后 tc 运行规则丢失却显示“无限速”：区分活动规则与“已保存、未生效”状态，更新完成、应用 BBR 配置及进入 BBR 菜单时按状态文件自动恢复；更新器通过新安装脚本的内部入口执行，首次升级即可生效，并自动刷新旧版 tc 持久化助手；默认网卡变化时拒绝静默迁移 |

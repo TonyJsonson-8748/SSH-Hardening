@@ -351,10 +351,71 @@ awk 'p{print} /^acquire_lock\(\) \{/{p=1; print; next} p && /^}$/{exit}' "$ROOT/
 )
 (
     DDNS_SCRIPT="$TMP/ddns-running-script"
-    : > "$DDNS_SCRIPT"
+    DDNS_ZONE_FILE="$TMP/ddns-running-zone"
+    cat > "$DDNS_SCRIPT" <<'EOF'
+DOMAIN4="v4.example.com"
+DOMAIN6=""
+ENABLE_A="true"
+ENABLE_AAAA="false"
+EOF
+    cat > "$DDNS_ZONE_FILE" <<'EOF'
+DOMAIN=v4.example.com
+DOMAIN4=v4.example.com
+DOMAIN6=
+ENABLE_A=true
+ENABLE_AAAA=false
+EOF
     bash() { return 75; }
     OUTPUT=$(ddns_run_now)
     grep -Fq '已有一次 DDNS 更新正在运行' <<< "$OUTPUT" || { echo "DDNS manual run hid lock contention" >&2; exit 1; }
+)
+(
+    DDNS_SCRIPT="$TMP/ddns-dual-run-script"
+    DDNS_ZONE_FILE="$TMP/ddns-dual-run-zone"
+    DDNS_STATE_DIR="$TMP/ddns-dual-run-state"
+    mkdir -p "$DDNS_STATE_DIR"
+    cat > "$DDNS_SCRIPT" <<'EOF'
+DOMAIN4="v4.example.com"
+DOMAIN6="v6.example.com"
+ENABLE_A="true"
+ENABLE_AAAA="true"
+EOF
+    cat > "$DDNS_ZONE_FILE" <<'EOF'
+DOMAIN=v4.example.com
+DOMAIN4=v4.example.com
+DOMAIN6=v6.example.com
+ENABLE_A=true
+ENABLE_AAAA=true
+EOF
+    bash() {
+        touch -d '1 second ago' "$RUN_MARK"
+        printf '2026-08-02 12:00:00|A|v4.example.com|unchanged|198.51.100.10|198.51.100.10\n' > "$DDNS_STATE_DIR/.cf_last_status_A"
+        printf '2026-08-02 12:00:01|AAAA|v6.example.com|updated|2001:4860::1|2001:4860::2\n' > "$DDNS_STATE_DIR/.cf_last_status_AAAA"
+    }
+    OUTPUT=$(ddns_run_now)
+    grep -Fq '本次 IPv4:' <<< "$OUTPUT" || { echo "DDNS manual dual-stack run hid IPv4 status" >&2; exit 1; }
+    grep -Fq 'A v4.example.com 未变化 198.51.100.10' <<< "$OUTPUT" || { echo "DDNS manual dual-stack IPv4 result is wrong" >&2; exit 1; }
+    grep -Fq '本次 IPv6:' <<< "$OUTPUT" || { echo "DDNS manual dual-stack run hid IPv6 status" >&2; exit 1; }
+    grep -Fq 'AAAA v6.example.com 更新成功 2001:4860::1 → 2001:4860::2' <<< "$OUTPUT" || { echo "DDNS manual dual-stack IPv6 result is wrong" >&2; exit 1; }
+)
+(
+    DDNS_SCRIPT="$TMP/ddns-mismatch-script"
+    DDNS_ZONE_FILE="$TMP/ddns-mismatch-zone"
+    cat > "$DDNS_SCRIPT" <<'EOF'
+DOMAIN4=""
+DOMAIN6="v6.example.com"
+ENABLE_A="false"
+ENABLE_AAAA="true"
+EOF
+    cat > "$DDNS_ZONE_FILE" <<'EOF'
+DOMAIN=v4.example.com
+DOMAIN4=v4.example.com
+DOMAIN6=v6.example.com
+ENABLE_A=true
+ENABLE_AAAA=true
+EOF
+    bash() { echo "runtime should not execute" >&2; return 1; }
+    ! ddns_run_now >/dev/null 2>&1 || { echo "DDNS manual run accepted stale runtime config" >&2; exit 1; }
 )
 
 # Pause and uninstall must preserve DDNS when crontab removal fails.
