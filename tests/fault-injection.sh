@@ -483,6 +483,43 @@ EOF
     ! ts_enable_ntp >/dev/null 2>&1 || { echo "NTP enablement hid timedatectl failure" >&2; exit 1; }
 )
 
+# Multi-IP source switching must arm an exact route rollback and restore on verification failure.
+(
+    VPS_DATA_DIR="$TMP/ip-source-safety"
+    mkdir -p "$VPS_DATA_DIR"
+    audit_action() { :; }
+    warn() { :; }
+    nohup() { return 0; }
+    ip_source_safety_arm 4 'default via 192.0.2.1 dev eth0 proto dhcp src 198.51.100.10 metric 100' >/dev/null
+    grep -Fq 'ip -4 route replace default via 192.0.2.1 dev eth0 proto dhcp src 198.51.100.10 metric 100' "$SAFETY_SCRIPT" \
+        || { echo "Multi-IP safety timer did not preserve the original route" >&2; exit 1; }
+    cancel_safety_timer
+)
+(
+    APPLIED=0
+    RESTORED=0
+    print_header() { :; }
+    menu_div() { :; }
+    menu_item() { :; }
+    ui_prompt() { printf '%s' "$1"; }
+    error() { :; }
+    warn() { :; }
+    confirm_change_preview() { return 0; }
+    ip_source_default_iface() { echo eth0; }
+    ip_source_default_route() { echo 'default via 192.0.2.1 dev eth0 proto dhcp src 198.51.100.10 metric 100'; }
+    ip_source_addresses() { printf '%s\n' 198.51.100.10 198.51.100.11; }
+    ip_source_current() { echo 198.51.100.10; }
+    ip_source_safety_arm() { return 0; }
+    ip_source_route_replace() { APPLIED=1; }
+    ip_source_verify() { return 1; }
+    ip_source_route_restore() { RESTORED=1; }
+    cancel_safety_timer() { :; }
+    ! ip_source_switch_family 4 <<< 2 >/dev/null 2>&1 \
+        || { echo "Multi-IP switch accepted a failed HTTPS verification" >&2; exit 1; }
+    [ "$APPLIED" -eq 1 ] || { echo "Multi-IP switch did not apply the selected route" >&2; exit 1; }
+    [ "$RESTORED" -eq 1 ] || { echo "Multi-IP switch did not restore the route after verification failure" >&2; exit 1; }
+)
+
 # HTTPS synchronization must not set the clock without enough trusted responses.
 (
     print_header() { :; }
