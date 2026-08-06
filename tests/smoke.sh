@@ -12,10 +12,11 @@ for fn in systemd_available show_cli_help main_menu ssh_tools_menu ssh_key_count
     ts_https_date_epoch ts_epoch_utc ts_https_fetch_epoch ts_https_consensus ts_sync_https \
     ts_https_interval_normalize ts_https_interval_current ts_https_cron_expr ts_https_cron_without_managed \
     ts_https_schedule_backend ts_https_schedule_last_result ts_https_schedule_summary ts_https_runner_valid ts_https_runner_path_valid ts_https_ensure_runner ts_https_scheduled_run ts_https_schedule_enable_systemd ts_https_schedule_enable_cron ts_https_cron_daemon_enable ts_https_schedule_remove_cron ts_https_schedule_enable ts_https_schedule_disable ts_https_schedule_menu \
-    ip_config_menu caddy_menu caddy_site_records caddy_site_count nft_menu ddns_menu ddns_install ddns_install_cloudflare ddns_install_huawei ddns_run_now ddns_view_logs ddns_status ddns_share_link_tool \
+    ip_config_menu ip_source_switch_menu ip_source_switch_family ip_source_probe ip_source_default_iface ip_source_current ip_source_addresses ip_source_default_route ip_source_route_replace ip_source_route_restore ip_source_safety_arm ip_source_verify caddy_menu caddy_site_records caddy_site_count nft_menu ddns_menu ddns_install ddns_install_cloudflare ddns_install_huawei ddns_run_now ddns_view_logs ddns_status ddns_share_link_tool \
     ddns_provider ddns_provider_label ddns_sed_escape ddns_install_tx_begin ddns_install_tx_restore ddns_install_tx_commit ddns_domain_dot ddns_ipv6_subdomain_default ddns_cf_exact_records ddns_cf_record_ensure ddns_cf_cleanup_cross_record \
     ddns_interval_normalize ddns_interval_min ddns_cron_expr ddns_cron_without_managed ddns_prompt_interval \
     ddns_cfg_enable_a ddns_cfg_enable_aaaa ddns_cfg_domain4 ddns_cfg_domain6 ddns_primary_domain ddns_mode_label ddns_build_domain ddns_replace_link_host \
+    ddns_runtime_cfg_get ddns_runtime_config_matches ddns_print_run_result ddns_print_run_results \
     ddns_latest_log_line ddns_latest_change_log_line ddns_line_time ddns_line_result_ip ddns_newer_line ddns_change_matches_status ddns_record_status_line ddns_record_change_line ddns_print_record_summary \
     system_toolbox_menu security_password_auth_effective security_password_methods_disabled security_root_password_restricted \
     resource_health_check system_update_manager system_hostname_apply config_backup_create safety_load_pending safety_lock_acquire safety_lock_release self_update docker_menu change_port \
@@ -890,6 +891,42 @@ user_home_safe_to_remove "$REMOVABLE_HOME" || { echo "Normal existing user home 
     user_grant_admin alice >/dev/null
     grep -qx -- '-aG wheel alice' "$USERMOD_LOG" || { echo "Admin user was not added to the native wheel group" >&2; exit 1; }
     grep -qx 'alice ALL=(ALL) ALL' "$USER_SUDOERS_DIR/vps-tools-alice" || { echo "Validated sudoers rule was not created" >&2; exit 1; }
+)
+
+[[ "$(ip_source_probe 4)" = "1.1.1.1" ]] || { echo "IPv4 source-switch probe is wrong" >&2; exit 1; }
+[[ "$(ip_source_probe 6)" = "2606:4700:4700::1111" ]] || { echo "IPv6 source-switch probe is wrong" >&2; exit 1; }
+(
+    IP_ROUTE_LOG="$TMP/ip-source-route.log"
+    ip() { printf '%s\n' "$*" > "$IP_ROUTE_LOG"; }
+    ip_source_route_replace 4 'default via 192.0.2.1 dev eth0 proto dhcp src 198.51.100.10 metric 100' 198.51.100.11
+    grep -qx -- '-4 route replace default via 192.0.2.1 dev eth0 proto dhcp metric 100 src 198.51.100.11' "$IP_ROUTE_LOG" \
+        || { echo "IPv4 source-switch route replacement is wrong" >&2; exit 1; }
+    ip_source_route_replace 6 'default via fe80::1 dev eth0 proto ra src 2001:4860::10 metric 1024 expires 1200sec pref high' 2001:4860::11
+    grep -qx -- '-6 route replace default via fe80::1 dev eth0 proto ra metric 1024 pref high src 2001:4860::11' "$IP_ROUTE_LOG" \
+        || { echo "IPv6 source-switch route replacement kept stale route attributes" >&2; exit 1; }
+    ip_source_route_restore 4 'default via 192.0.2.1 dev eth0 proto dhcp src 198.51.100.10 metric 100'
+    grep -qx -- '-4 route replace default via 192.0.2.1 dev eth0 proto dhcp src 198.51.100.10 metric 100' "$IP_ROUTE_LOG" \
+        || { echo "Source-switch route restoration is wrong" >&2; exit 1; }
+    ip_source_route_restore 6 'default via fe80::1 dev eth0 proto ra src 2001:4860::10 metric 1024 expires 1200sec pref high'
+    grep -qx -- '-6 route replace default via fe80::1 dev eth0 proto ra src 2001:4860::10 metric 1024 pref high' "$IP_ROUTE_LOG" \
+        || { echo "IPv6 source-switch rollback kept a non-replayable expiry" >&2; exit 1; }
+)
+(
+    ip() {
+        case "$*" in
+            '-4 route get 1.1.1.1') echo '1.1.1.1 via 192.0.2.1 dev eth0 src 198.51.100.11 uid 0' ;;
+            '-4 -o addr show dev eth0 scope global')
+                printf '%s\n' \
+                    '2: eth0 inet 198.51.100.10/24 brd 198.51.100.255 scope global eth0' \
+                    '2: eth0 inet 198.51.100.11/24 brd 198.51.100.255 scope global secondary eth0' \
+                    '2: eth0 inet 198.51.100.12/24 brd 198.51.100.255 scope global temporary eth0'
+                ;;
+        esac
+    }
+    [[ "$(ip_source_default_iface 4)" = eth0 ]] || { echo "Source-switch default interface parsing failed" >&2; exit 1; }
+    [[ "$(ip_source_current 4)" = 198.51.100.11 ]] || { echo "Source-switch current address parsing failed" >&2; exit 1; }
+    [[ "$(ip_source_addresses 4 eth0)" = $'198.51.100.10\n198.51.100.11' ]] \
+        || { echo "Source-switch candidate filtering failed" >&2; exit 1; }
 )
 
 (
@@ -1781,9 +1818,10 @@ grep -Fq 'flock -n 9 || return 75' "$CLOUDFLARE_DDNS_TEMPLATE" || { echo "Cloudf
 grep -Fq 'kill -0 "$LOCK_PID"' "$CLOUDFLARE_DDNS_TEMPLATE" || { echo "Cloudflare DDNS stale PID lock recovery missing" >&2; exit 1; }
 grep -Fq -- '--data-urlencode "text=${MSG}"' "$CLOUDFLARE_DDNS_TEMPLATE" || { echo "Cloudflare Telegram payload encoding missing" >&2; exit 1; }
 grep -Fq 'log_line WARN "Telegram 通知发送失败' "$CLOUDFLARE_DDNS_TEMPLATE" || { echo "Cloudflare Telegram failure logging missing" >&2; exit 1; }
+grep -Fq '启用的 A / AAAA 记录缺少域名' "$CLOUDFLARE_DDNS_TEMPLATE" || { echo "Cloudflare DDNS missing-domain guard absent" >&2; exit 1; }
 grep -Fq 'record_ip_file()' "$CLOUDFLARE_DDNS_TEMPLATE" || { echo "Cloudflare DDNS successful IP state missing" >&2; exit 1; }
 CF_RECORD_INFO_HELPER="$TMP/cloudflare-record-info.sh"
-awk 'p && /^ZONE_ID=/{exit} /^cf_record_info\(\)/{p=1} p{print}' "$CLOUDFLARE_DDNS_TEMPLATE" > "$CF_RECORD_INFO_HELPER"
+awk 'p && (/^if \{ is_true/ || /^ZONE_ID=/){exit} /^cf_record_info\(\)/{p=1} p{print}' "$CLOUDFLARE_DDNS_TEMPLATE" > "$CF_RECORD_INFO_HELPER"
 # shellcheck source=/dev/null
 source "$CF_RECORD_INFO_HELPER"
 [[ "$(printf '%s' "$CF_MIXED_RECORDS" | cf_record_info AAAA dual.example.com)" = 'aaaa-id|2001:db8::10' ]] || { echo "Generated Cloudflare updater selected the wrong record type" >&2; exit 1; }
@@ -1811,6 +1849,7 @@ grep -Fq 'LOCK_DIR="/run/vps-tools-ddns.lock"' "$HUAWEI_DDNS_TEMPLATE" || { echo
 grep -Fq 'flock -n 9 || return 75' "$HUAWEI_DDNS_TEMPLATE" || { echo "Huawei DDNS flock contention status missing" >&2; exit 1; }
 grep -Fq 'kill -0 "$LOCK_PID"' "$HUAWEI_DDNS_TEMPLATE" || { echo "Huawei DDNS stale PID lock recovery missing" >&2; exit 1; }
 grep -Fq -- '--data-urlencode "text=${MSG}"' "$HUAWEI_DDNS_TEMPLATE" || { echo "Huawei Telegram payload encoding missing" >&2; exit 1; }
+grep -Fq '启用的 A / AAAA 记录缺少域名' "$HUAWEI_DDNS_TEMPLATE" || { echo "Huawei DDNS missing-domain guard absent" >&2; exit 1; }
 grep -Fq 'record_ip_file()' "$HUAWEI_DDNS_TEMPLATE" || { echo "Huawei DDNS successful IP state missing" >&2; exit 1; }
 awk 'p && /^except Exception:/{exit} /^except urllib\.error\.HTTPError/{p=1} p{print}' "$HUAWEI_DDNS_TEMPLATE" | grep -Fq 'sys.exit(1)' || { echo "Huawei DDNS HTTP errors must fail API calls" >&2; exit 1; }
 FETCH_IP6_LOCAL="$TMP/fetch-ip6-local.sh"

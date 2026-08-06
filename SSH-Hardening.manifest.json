@@ -1,9 +1,9 @@
 {
   "name": "SSH-Hardening",
-  "version": "V3.50.7",
+  "version": "V3.50.8",
   "file": "SSH-Hardening.sh",
-  "sha256": "3de75d7fa3db71ee44768b61d55f41744a48ba67730e1d94e3dde33135af0ec5",
-  "generated_at": "2026-08-01T16:04:42Z",
+  "sha256": "bd209e103aff1c5eda24f9bca08258a58b76d3f51219c98b63d46ba86a11bd77",
+  "generated_at": "2026-08-06T07:45:07Z",
   "urls": [
     "https://raw.githubusercontent.com/TonyJsonson-8748/SSH-Hardening/refs/heads/main/SSH-Hardening.sh",
     "https://github.com/TonyJsonson-8748/SSH-Hardening/raw/refs/heads/main/SSH-Hardening.sh",

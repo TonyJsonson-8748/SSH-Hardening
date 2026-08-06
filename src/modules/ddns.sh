@@ -1373,6 +1373,11 @@ elif matches:
 PY
 }
 
+if { is_true "$ENABLE_A" && [ -z "$DOMAIN4" ]; } || { is_true "$ENABLE_AAAA" && [ -z "$DOMAIN6" ]; }; then
+    log_line ERROR "启用的 A / AAAA 记录缺少域名，请重新生成 DDNS 配置"
+    exit 1
+fi
+
 ZONE_ID=$(curl -s --max-time 8 "https://api.cloudflare.com/client/v4/zones?name=${ZONE}"     -H "Authorization: Bearer ${API_TOKEN}" |     python3 -c "import sys,json; print(json.load(sys.stdin)['result'][0]['id'])" 2>/dev/null)
 [ -z "$ZONE_ID" ] && {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] ERROR: 获取 Zone ID 失败" >> "$LOG_FILE"
@@ -2128,6 +2133,11 @@ print(json.dumps(body, separators=(",", ":")))
 PY
 }
 
+if { is_true "$ENABLE_A" && [ -z "$DOMAIN4" ]; } || { is_true "$ENABLE_AAAA" && [ -z "$DOMAIN6" ]; }; then
+    log_line ERROR "启用的 A / AAAA 记录缺少域名，请重新生成 DDNS 配置"
+    exit 1
+fi
+
 if ! ZONE_RESP=$(huawei_api GET "/v2/zones" "type=public&limit=500" ""); then
     log_line ERROR "查询华为云 Zone 失败，请检查网络、AK/SK 和 Endpoint"
     exit 1
@@ -2517,10 +2527,81 @@ ddns_view_logs() {
     done
 }
 
+ddns_runtime_cfg_get() {
+    local key="$1"
+    [ -f "$DDNS_SCRIPT" ] || return 1
+    sed -n "s/^${key}=\"\(.*\)\"$/\1/p" "$DDNS_SCRIPT" 2>/dev/null | head -1
+}
+
+ddns_runtime_config_matches() {
+    local expected_a="false" expected_aaaa="false"
+    local runtime_a runtime_aaaa expected_domain runtime_domain
+    ddns_cfg_enable_a && expected_a="true"
+    ddns_cfg_enable_aaaa && expected_aaaa="true"
+    runtime_a=$(ddns_runtime_cfg_get ENABLE_A 2>/dev/null || true)
+    runtime_aaaa=$(ddns_runtime_cfg_get ENABLE_AAAA 2>/dev/null || true)
+    ddns_truthy "$runtime_a" && runtime_a="true" || runtime_a="false"
+    ddns_truthy "$runtime_aaaa" && runtime_aaaa="true" || runtime_aaaa="false"
+    [ "$runtime_a" = "$expected_a" ] && [ "$runtime_aaaa" = "$expected_aaaa" ] || return 1
+    if [ "$expected_a" = "true" ]; then
+        expected_domain=$(ddns_cfg_domain4)
+        runtime_domain=$(ddns_runtime_cfg_get DOMAIN4 2>/dev/null || true)
+        [ -n "$expected_domain" ] && [ "$runtime_domain" = "$expected_domain" ] || return 1
+    fi
+    if [ "$expected_aaaa" = "true" ]; then
+        expected_domain=$(ddns_cfg_domain6)
+        runtime_domain=$(ddns_runtime_cfg_get DOMAIN6 2>/dev/null || true)
+        [ -n "$expected_domain" ] && [ "$runtime_domain" = "$expected_domain" ] || return 1
+    fi
+}
+
+ddns_print_run_result() {
+    local marker="$1" label="$2" type="$3" domain="$4"
+    local state_file line
+    state_file=$(ddns_type_status_file "$type")
+    if [ ! -f "$state_file" ] || [ ! "$state_file" -nt "$marker" ]; then
+        echo -e "  ${YELLOW}本次 ${label}: 未执行或状态写入失败${NC}"
+        return 1
+    fi
+    line=$(ddns_line_from_state_file "$type" "$domain" 2>/dev/null || true)
+    if [ -z "$line" ]; then
+        echo -e "  ${YELLOW}本次 ${label}: 状态与当前域名不匹配${NC}"
+        return 1
+    fi
+    case "$line" in
+        *" ERROR: "*) echo -e "  ${RED}本次 ${label}: ${line}${NC}" ;;
+        *" WARN: "*)  echo -e "  ${YELLOW}本次 ${label}: ${line}${NC}" ;;
+        *)             echo -e "  ${GREEN}本次 ${label}: ${line}${NC}" ;;
+    esac
+}
+
+ddns_print_run_results() {
+    local marker="$1" failed=0 domain
+    if ddns_cfg_enable_a; then
+        domain=$(ddns_cfg_domain4)
+        ddns_print_run_result "$marker" "IPv4" A "$domain" || failed=1
+    fi
+    if ddns_cfg_enable_aaaa; then
+        domain=$(ddns_cfg_domain6)
+        ddns_print_run_result "$marker" "IPv6" AAAA "$domain" || failed=1
+    fi
+    return "$failed"
+}
+
 # ── 手动立即更新 ──────────────────────────────────────────
 ddns_run_now() {
     print_header "手动更新 DDNS"
     [ ! -f "$DDNS_SCRIPT" ] && { error "DDNS 未安装"; return; }
+    if ! ddns_runtime_config_matches; then
+        error "DDNS 运行脚本与当前配置不一致，已停止更新"
+        echo -e "  ${DIM}请进入修改配置，重新确认并生成 A / AAAA 更新脚本${NC}"
+        return 1
+    fi
+    local RUN_MARK
+    RUN_MARK=$(mktemp /tmp/vps-tools-ddns-run.XXXXXX) || {
+        error "无法创建 DDNS 运行状态标记"
+        return 1
+    }
     info "正在更新..."
     local RC
     if bash "$DDNS_SCRIPT"; then
@@ -2529,13 +2610,18 @@ ddns_run_now() {
         RC=$?
     fi
     if [ "$RC" -eq 0 ]; then
-        local LOG; LOG=$(ddns_log_path)
-        tail -1 "$LOG" 2>/dev/null | while IFS= read -r l; do echo -e "  ${GREEN}$l${NC}"; done
+        if ! ddns_print_run_results "$RUN_MARK"; then
+            error "未检测到全部启用记录的本次状态，请重新生成 DDNS 配置"
+            rm -f "$RUN_MARK"
+            return 1
+        fi
     elif [ "$RC" -eq 75 ]; then
         warn "已有一次 DDNS 更新正在运行，请稍后再试"
     else
+        ddns_print_run_results "$RUN_MARK" || true
         error "更新失败，请查看日志"
     fi
+    rm -f "$RUN_MARK"
 }
 
 # ── DDNS 主菜单 ───────────────────────────────────────────
