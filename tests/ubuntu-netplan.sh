@@ -1,6 +1,18 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+ubuntu_netplan_error() {
+    local exit_code=$? line="$1" command="$2" os_label="Ubuntu"
+    [ ! -r /etc/os-release ] || os_label=$(bash -c '. /etc/os-release; printf "%s %s" "$NAME" "$VERSION_ID"')
+    command=${command//'%'/'%25'}
+    command=${command//$'\r'/'%0D'}
+    command=${command//$'\n'/'%0A'}
+    printf '::error title=%s Netplan simulation::line %s failed: %s (exit %s)\n' \
+        "$os_label" "$line" "$command" "$exit_code"
+    exit "$exit_code"
+}
+trap 'ubuntu_netplan_error "$LINENO" "$BASH_COMMAND"' ERR
+
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 # shellcheck source=/dev/null
 source "$ROOT/src/modules/network.sh"
