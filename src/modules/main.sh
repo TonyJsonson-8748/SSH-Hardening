@@ -57,6 +57,7 @@ VPS 开荒脚本 CLI
   --https-time-sync      立即执行 HTTPS 时间同步
   --swap-menu            Swap 管理
   --system-toolbox-menu  安全与诊断
+  --network-menu         网卡管理（IP / 网关 / 掩码 / DNS）
   --stun-test            STUN / UDP / NAT 检测
   --hostname-menu        修改系统 hostname
   --docker-menu          Docker 管理
@@ -168,12 +169,13 @@ main_menu() {
         menu_pair "t" "时间与时区" "s" "Swap 管理"
         menu_pair "h" "安全与诊断" "a" "软件与重装"
         menu_pair "d" "Docker 管理" "u" "用户管理"
+        menu_item "w" "网卡管理" "$CYAN"
         menu_pair "m" "脚本管理" "g" "监控告警中心"
         echo ""
         menu_item "0" "退出脚本" "$RED"
         box_bot
         echo ""
-        read -rp "$(ui_prompt '选择功能 [0-9 / n / t / s / h / a / d / u / m / g]: ')" CHOICE
+        read -rp "$(ui_prompt '选择功能 [0-9 / n / t / s / h / a / d / u / w / m / g]: ')" CHOICE
         audit_action "主菜单选择 $CHOICE" INFO
 
         case "$CHOICE" in
@@ -193,6 +195,7 @@ main_menu() {
             a|A) software_reinstall_menu ;;
             d|D) docker_menu ;;
             u|U) user_management_menu ;;
+            w|W) network_interface_menu ;;
             m|M) self_manage_menu ;;
             g|G) monitor_alert_home_menu ;;
             0) safe_clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;
@@ -308,6 +311,10 @@ case "${1:-}" in
         ;;
     --system-toolbox-menu)
         system_toolbox_menu
+        exit $?
+        ;;
+    --network-menu)
+        network_interface_menu
         exit $?
         ;;
     --stun-test)

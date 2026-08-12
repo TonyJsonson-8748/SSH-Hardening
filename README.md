@@ -1,4 +1,4 @@
-# VPS 开荒脚本 V3.50.9
+# VPS 开荒脚本 V3.51.0
 
 > **银趴火山帮** 出品 · SSH · BBR · DDNS · Caddy · Firewall · NFT 转发
 
@@ -91,6 +91,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/TonyJsonson-8748/SSH-Hardeni
 | `--https-time-sync` | 立即执行 HTTPS 时间同步 |
 | `--swap-menu` | Swap 管理 |
 | `--system-toolbox-menu` | 安全与诊断 |
+| `--network-menu` | 网卡管理（IP、网关、掩码和 DNS） |
 | `--stun-test` | STUN、多端口 UDP 与 NAT 类型检测 |
 | `--hostname-menu` | 修改系统 hostname |
 | `--docker-menu` | Docker 管理 |
@@ -123,7 +124,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/TonyJsonson-8748/SSH-Hardeni
 ╚═╝╚═╝     ╚═╝╚═╝     ╚═╝  ╚═╝╚═╝  ╚═╝   ╚═╝        ╚═════╝ ╚═╝     ╚══════╝
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  VPS TOOLS  ·  V3.50.9
+  VPS TOOLS  ·  V3.51.0
   VPS 开荒脚本 · 银趴火山帮
 ────────────────────────────────────────────────────────────────
   SSH · BBR · DDNS · Caddy · Firewall · NFT · Monitor
@@ -146,6 +147,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/TonyJsonson-8748/SSH-Hardeni
     t  时间与时区              s  Swap 管理
     h  安全与诊断              a  软件与重装
     d  Docker 管理             u  用户管理
+    w  网卡管理
     m  脚本管理                g  监控告警中心
     0  退出脚本
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -448,6 +450,20 @@ IP 真实变化时推送通知，实时读取 `/root/.cf_tg`，兼容 crontab �
 
 ---
 
+### w. 网卡管理
+
+在“系统与服务 → 网卡管理”中查看网卡状态，并为指定网卡新增或修改静态 IPv4、子网掩码、默认网关、主 DNS 和备用 DNS，也可切回 DHCP。
+
+| 系统 / 后端 | 配置方式 |
+|-------------|----------|
+| Ubuntu 22.04 / 24.04 | Netplan（兼容 networkd / NetworkManager renderer） |
+| Debian | NetworkManager、systemd-networkd 或 ifupdown，按实际运行环境识别 |
+| CentOS 7 / RHEL 系 | NetworkManager，旧环境回退 `ifcfg-*` |
+
+配置会写入对应系统的持久化网络文件并立即应用。应用前保存 Netplan、NetworkManager、networkd、ifupdown、ifcfg 和 DNS 配置快照；180 秒内没有从新终端确认连接正常时自动恢复原配置并重新应用原网络后端。远程修改 IP 仍有断联风险，应保留云厂商控制台/VNC 作为最后恢复通道。
+
+---
+
 ### 10. Caddy 管理
 
 自动 HTTPS 的现代 Web 服务器。
@@ -661,6 +677,7 @@ DNS 设置会自动识别 `systemd-resolved`、NetworkManager、resolvconf 或�
 | 内核支持检测 | BBR 应用前检测内核版本和模块 |
 | 容器权限检测 | 自动识别无特权容器，sysctl 操作受限时友好提示 |
 | 防断联保护 | 高风险网络修改 180 秒未确认自动回滚；同一时间只允许一个任务，状态跨脚本进程保存 |
+| 网卡配置保护 | 按实际网络后端校验并应用；静态 IP / DHCP 变更未确认时恢复原配置并重新加载网络 |
 | 更新完整性 | 下载脚本必须匹配仓库中的 SHA256 校验文件；临时文件使用 `mktemp`，不信任共享 `/tmp` 缓存 |
 | DDNS 配置事务 | 重配置失败自动恢复旧凭据、服务商配置和执行脚本 |
 
@@ -673,6 +690,7 @@ DNS 设置会自动识别 `systemd-resolved`、NetworkManager、resolvconf 或�
 | 发行版 | Debian / Ubuntu / CentOS / Alpine / OpenWrt |
 | 架构 | x86_64 / aarch64 / armv7 |
 | 服务管理 | systemd / OpenRC / SysV init |
+| 网卡配置 | Netplan / NetworkManager / systemd-networkd / ifupdown / RHEL-CentOS ifcfg |
 | 容器 | KVM / LXC / OpenVZ / 无特权容器 |
 | 终端 | 36-76 列响应式布局；标准 / dumb / tmux / OpenWrt；支持 `NO_COLOR=1` |
 | Shell | **bash 必需**（Alpine: `apk add bash`，OpenWrt: `opkg install bash`；非 bash 环境自动切换 / fail-fast 提示） |
@@ -693,6 +711,10 @@ DNS 设置会自动识别 `systemd-resolved`、NetworkManager、resolvconf 或�
 | `/etc/sudoers.d/vps-tools-<用户名>` | 本脚本创建的管理员 sudo 规则（440，经过 visudo 校验） |
 | `SSH-Hardening.sh.sha256` | 自更新完整性校验值 |
 | `/etc/sysctl.d/99-vps-bbr.conf` | BBR TCP 配置 |
+| `/etc/netplan/99-vps-tools-<网卡>.yaml` | Netplan `set` 生成的网卡覆盖配置（适用时） |
+| `/etc/systemd/network/00-vps-tools-<网卡>.network` | systemd-networkd 网卡配置（适用时） |
+| `/etc/network/interfaces.d/90-vps-tools-<网卡>.cfg` | ifupdown 网卡配置（适用时） |
+| `/etc/sysconfig/network-scripts/ifcfg-<网卡>` | CentOS/RHEL ifcfg 网卡配置（适用时） |
 | `/var/lib/vps-tools/bbr-sysctl-baseline.conf` | BBR 首次调优前运行参数基线（600） |
 | `/etc/nftables.conf` | nftables 主配置（保留用户规则） |
 | `/etc/nftables.d/vps-tools-nftpf.nft` | VPS Tools 托管的 NFT 转发规则 |
@@ -756,6 +778,7 @@ tests/smoke.sh
 
 | 版本 | 主要变更 |
 |------|---------|
+| **V3.51.0** | “系统与服务”新增网卡管理：查看网卡、IPv4、网关和 DNS；为指定网卡新增或修改静态 IPv4、CIDR/子网掩码、默认网关、主 DNS 与备用 DNS，并可切回 DHCP。按实际运行环境适配 Ubuntu 22.04/24.04 的 Netplan、Debian 常见的 NetworkManager/systemd-networkd/ifupdown，以及 CentOS 7/RHEL 的 NetworkManager/ifcfg；配置写入前统一快照，校验并应用后保留 180 秒防断联自动回滚。 |
 | **V3.50.9** | 修复严格模式等 SSH 高风险变更在未完成新会话确认时可能不自动回滚：带 ACL/xattr 的 GNU tar 快照会记录易因普通读取或归档读取而变化的 `atime`/`ctime`，此前字节级并发校验可能因此把未被修改的 `sshd_config` 误判为外部变更，任务随后进入 `failed` 并要求在统一回滚中心人工处理。现在快照比较只规范化这两个非持久时间字段，内容、权限、所有者、ACL、xattr 等真实变化仍会阻止覆盖；同时修复严格模式失败后切换到“密码+密钥”或“仅密码”仍残留 `AuthenticationMethods publickey`、导致界面显示已启用密码但实际继续拒绝密码认证的问题，并补充相应回归测试。 |
 | **V3.50.8** | 同步上游 V3.11.9-V3.12.0：双栈 DDNS 手动更新分别展示 IPv4 A 与 IPv6 AAAA 的本次结果，执行前校验运行脚本与当前配置，缺少已启用记录的域名时停止并提示重新生成；IPv4/IPv6 模块新增同网卡多 IP 出口源地址切换，验证内核选源和绑定地址 HTTPS 出口，失败立即恢复，成功后保留 180 秒防断联回滚，并拒绝多默认路由和 ECMP。发布源、自更新源及离线构建说明继续指向长期维护仓库 |
 | **V3.50.7** | 同步上游 V3.11.8：华为云 Secret Access Key 与 Telegram Bot Token 改为带“输入可见”提示的明文输入，与 Cloudflare API Token 保持一致，便于检查长凭据粘贴内容；确认页继续只显示凭据前缀，凭据文件继续使用 600 权限。同时修正 V3.50.6 合并后 smoke 测试仍检查旧 DDNS 事务函数名的问题；发布源、自更新源及离线构建说明仍指向长期维护仓库 |

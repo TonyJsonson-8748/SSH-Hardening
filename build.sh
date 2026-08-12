@@ -18,6 +18,7 @@ PARTS=(
     src/modules/dns.sh
     src/modules/mirrors.sh
     src/modules/ip.sh
+    src/modules/network.sh
     src/modules/caddy.sh
     src/modules/time.sh
     src/modules/swap.sh

@@ -11,6 +11,8 @@ config_backup_allowed_roots() {
         etc/sysctl.conf etc/sysctl.d/99-vps-bbr.conf etc/sysctl.d/99-ipv6-disable.conf \
         etc/gai.conf etc/resolv.conf etc/systemd/resolved.conf etc/systemd/resolved.conf.d \
         etc/NetworkManager/conf.d etc/NetworkManager/system-connections etc/resolvconf/resolv.conf.d \
+        etc/netplan etc/network/interfaces etc/network/interfaces.d etc/sysconfig/network-scripts \
+        etc/systemd/network \
         etc/caddy root/ddns.sh root/.cf_token root/.hw_dns_aksk root/.cf_zone root/.cf_tg root/.cf_last_change \
         root/.cf_last_change_A root/.cf_last_change_AAAA root/.cf_last_status_A root/.cf_last_status_AAAA \
         root/.vps-monitor root/.vps-monitor.state root/.vps-monitor.history root/.vps-monitor.metrics \
@@ -25,7 +27,8 @@ config_backup_root_is_directory() {
         etc/fail2ban|etc/ufw|etc/firewalld|\
         etc/systemd/resolved.conf.d|\
         etc/NetworkManager/conf.d|etc/NetworkManager/system-connections|\
-        etc/resolvconf/resolv.conf.d|etc/caddy|etc/nft-port-forward)
+        etc/resolvconf/resolv.conf.d|etc/netplan|etc/network/interfaces.d|\
+        etc/sysconfig/network-scripts|etc/systemd/network|etc/caddy|etc/nft-port-forward)
             return 0
             ;;
         *)
@@ -625,6 +628,15 @@ safety_roots_for_label() {
             ;;
         disable_v6|enable_v6)
             printf '%s\n' etc/sysctl.d/99-ipv6-disable.conf
+            ;;
+        network_interface)
+            printf '%s\n' \
+                etc/netplan \
+                etc/NetworkManager/system-connections \
+                etc/systemd/network \
+                etc/network/interfaces \
+                etc/network/interfaces.d \
+                etc/sysconfig/network-scripts
             ;;
         ufw|firewall_install_ufw)
             printf '%s\n' etc/ufw
@@ -4385,6 +4397,7 @@ safety_arm() {
     local RC_UPDATE_STATE=""
     local PROFILE_FIREWALL=no PROFILE_RESTART_SSH=no
     local PROFILE_RESTART_FAIL2BAN=no PROFILE_RESTART_DNS=no
+    local PROFILE_RESTART_NETWORK=no NETWORK_BACKEND="" NETWORK_IFACE="" NETWORK_NM_UUID=""
     local TAR_ACLS=no TAR_XATTRS=no TAR_SELINUX=no TAR_PAX_VOLATILE=no TAR_OPTION
     local STATE_TMP="" READY=no
     local STATE_FILE="${SAFETY_STATE_FILE:-${VPS_DATA_DIR}/rollback.active}"
@@ -4424,6 +4437,26 @@ safety_arm() {
             ;;
         dns|dns_manual)
             PROFILE_RESTART_DNS=yes
+            ;;
+        network_interface)
+            PROFILE_RESTART_NETWORK=yes
+            NETWORK_BACKEND="${NETWORK_ROLLBACK_BACKEND:-}"
+            NETWORK_IFACE="${NETWORK_ROLLBACK_IFACE:-}"
+            NETWORK_NM_UUID="${NETWORK_ROLLBACK_NM_UUID:-}"
+            case "$NETWORK_BACKEND" in
+                netplan|networkmanager|networkd|ifupdown|ifcfg) ;;
+                *) safety_lock_release; error "无法记录网卡回滚后端"; return 1 ;;
+            esac
+            network_iface_valid "$NETWORK_IFACE" \
+                || { safety_lock_release; error "无法记录网卡回滚目标"; return 1; }
+            case "$NETWORK_NM_UUID" in
+                "") ;;
+                *[!A-Fa-f0-9-]*)
+                    safety_lock_release
+                    error "无法记录 NetworkManager 回滚连接"
+                    return 1
+                    ;;
+            esac
             ;;
         ufw|firewalld|firewall_install_ufw|firewall_install_firewalld)
             PROFILE_FIREWALL=yes
@@ -4612,6 +4645,10 @@ PROFILE_FIREWALL='$PROFILE_FIREWALL'
 PROFILE_RESTART_SSH='$PROFILE_RESTART_SSH'
 PROFILE_RESTART_FAIL2BAN='$PROFILE_RESTART_FAIL2BAN'
 PROFILE_RESTART_DNS='$PROFILE_RESTART_DNS'
+PROFILE_RESTART_NETWORK='$PROFILE_RESTART_NETWORK'
+NETWORK_BACKEND='$NETWORK_BACKEND'
+NETWORK_IFACE='$NETWORK_IFACE'
+NETWORK_NM_UUID='$NETWORK_NM_UUID'
 TAR_ACLS='$TAR_ACLS'
 TAR_XATTRS='$TAR_XATTRS'
 TAR_SELINUX='$TAR_SELINUX'
@@ -5167,6 +5204,62 @@ fi
 if [ "\$PROFILE_RESTART_DNS" = yes ]; then
     rollback_service_restart_if_present systemd-resolved || FAILED=yes
     rollback_service_restart_if_present NetworkManager || FAILED=yes
+fi
+if [ "\$PROFILE_RESTART_NETWORK" = yes ]; then
+    case "\$NETWORK_BACKEND" in
+        netplan)
+            command -v netplan >/dev/null 2>&1 \
+                && netplan generate >/dev/null 2>&1 \
+                && netplan apply >/dev/null 2>&1 || FAILED=yes
+            ;;
+        networkmanager)
+            if command -v nmcli >/dev/null 2>&1 \
+                && nmcli connection reload >/dev/null 2>&1; then
+                if [ -n "\$NETWORK_NM_UUID" ]; then
+                    nmcli connection up uuid "\$NETWORK_NM_UUID" \
+                        ifname "\$NETWORK_IFACE" >/dev/null 2>&1 || FAILED=yes
+                else
+                    nmcli device disconnect "\$NETWORK_IFACE" >/dev/null 2>&1 || true
+                    nmcli device connect "\$NETWORK_IFACE" >/dev/null 2>&1 || FAILED=yes
+                fi
+            else
+                FAILED=yes
+            fi
+            ;;
+        networkd)
+            if command -v networkctl >/dev/null 2>&1; then
+                networkctl reload >/dev/null 2>&1 \
+                    && { networkctl reconfigure "\$NETWORK_IFACE" >/dev/null 2>&1 \
+                        || rollback_service_restart systemd-networkd; } \
+                    || FAILED=yes
+            else
+                rollback_service_restart systemd-networkd || FAILED=yes
+            fi
+            ;;
+        ifupdown)
+            if command -v ifdown >/dev/null 2>&1 && command -v ifup >/dev/null 2>&1; then
+                ifdown --force "\$NETWORK_IFACE" >/dev/null 2>&1 || true
+                ifup "\$NETWORK_IFACE" >/dev/null 2>&1 || FAILED=yes
+            else
+                FAILED=yes
+            fi
+            ;;
+        ifcfg)
+            if command -v nmcli >/dev/null 2>&1; then
+                nmcli connection reload >/dev/null 2>&1 \
+                    && { nmcli connection up "\$NETWORK_IFACE" \
+                            ifname "\$NETWORK_IFACE" >/dev/null 2>&1 \
+                        || nmcli device connect "\$NETWORK_IFACE" >/dev/null 2>&1; } \
+                    || FAILED=yes
+            elif command -v ifup >/dev/null 2>&1; then
+                ifdown "\$NETWORK_IFACE" >/dev/null 2>&1 || true
+                ifup "\$NETWORK_IFACE" >/dev/null 2>&1 || FAILED=yes
+            else
+                rollback_service_restart network || FAILED=yes
+            fi
+            ;;
+        *) FAILED=yes ;;
+    esac
 fi
 if [ "\$PROFILE_FIREWALL" = yes ]; then
 if command -v ufw >/dev/null 2>&1 && [ "\$UFW_ORIGINAL_STATE" = inactive ]; then
