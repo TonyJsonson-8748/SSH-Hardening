@@ -55,7 +55,7 @@ assert any(
     and route.get("via") == "192.0.2.1"
     and route.get("on-link") is True
     for route in routes
-)
+), f"off-subnet route missing on-link=true: {routes!r}"
 PY
 
 # Switching back to DHCP must remove the managed static address, route and DNS.
