@@ -1,4 +1,4 @@
-# VPS 开荒脚本 V3.51.0
+# VPS 开荒脚本 V3.51.1
 
 > **银趴火山帮** 出品 · SSH · BBR · DDNS · Caddy · Firewall · NFT 转发
 
@@ -124,7 +124,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/TonyJsonson-8748/SSH-Hardeni
 ╚═╝╚═╝     ╚═╝╚═╝     ╚═╝  ╚═╝╚═╝  ╚═╝   ╚═╝        ╚═════╝ ╚═╝     ╚══════╝
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  VPS TOOLS  ·  V3.51.0
+  VPS TOOLS  ·  V3.51.1
   VPS 开荒脚本 · 银趴火山帮
 ────────────────────────────────────────────────────────────────
   SSH · BBR · DDNS · Caddy · Firewall · NFT · Monitor
@@ -778,6 +778,7 @@ tests/smoke.sh
 
 | 版本 | 主要变更 |
 |------|---------|
+| **V3.51.1** | 修复 Ubuntu 22.04/24.04 上反复修改同一网卡时，`netplan set --origin-hint` 合并本工具旧路由列表，导致从普通网段切换到 `/32` 异网段网关后仍保留 `on-link: false` 的问题；现在每次更新前只替换本工具管理的网卡配置文件，再由 Netplan 重新校验生成。新增两套 Ubuntu 容器模拟，覆盖静态 IPv4、双 DNS、`/32` 异网段网关以及切回 DHCP。 |
 | **V3.51.0** | “系统与服务”新增网卡管理：查看网卡、IPv4、网关和 DNS；为指定网卡新增或修改静态 IPv4、CIDR/子网掩码、默认网关、主 DNS 与备用 DNS，并可切回 DHCP。按实际运行环境适配 Ubuntu 22.04/24.04 的 Netplan、Debian 常见的 NetworkManager/systemd-networkd/ifupdown，以及 CentOS 7/RHEL 的 NetworkManager/ifcfg；配置写入前统一快照，校验并应用后保留 180 秒防断联自动回滚。 |
 | **V3.50.9** | 修复严格模式等 SSH 高风险变更在未完成新会话确认时可能不自动回滚：带 ACL/xattr 的 GNU tar 快照会记录易因普通读取或归档读取而变化的 `atime`/`ctime`，此前字节级并发校验可能因此把未被修改的 `sshd_config` 误判为外部变更，任务随后进入 `failed` 并要求在统一回滚中心人工处理。现在快照比较只规范化这两个非持久时间字段，内容、权限、所有者、ACL、xattr 等真实变化仍会阻止覆盖；同时修复严格模式失败后切换到“密码+密钥”或“仅密码”仍残留 `AuthenticationMethods publickey`、导致界面显示已启用密码但实际继续拒绝密码认证的问题，并补充相应回归测试。 |
 | **V3.50.8** | 同步上游 V3.11.9-V3.12.0：双栈 DDNS 手动更新分别展示 IPv4 A 与 IPv6 AAAA 的本次结果，执行前校验运行脚本与当前配置，缺少已启用记录的域名时停止并提示重新生成；IPv4/IPv6 模块新增同网卡多 IP 出口源地址切换，验证内核选源和绑定地址 HTTPS 出口，失败立即恢复，成功后保留 180 秒防断联回滚，并拒绝多默认路由和 ECMP。发布源、自更新源及离线构建说明继续指向长期维护仓库 |

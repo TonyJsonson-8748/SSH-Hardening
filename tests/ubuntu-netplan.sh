@@ -20,7 +20,7 @@ source "$ROOT/src/modules/network.sh"
 IFACE=eth0
 ORIGIN="/etc/netplan/99-vps-tools-${IFACE}.yaml"
 
-rm -f "$ORIGIN"
+rm -f -- "$ORIGIN"
 
 # Common Ubuntu VPS layout: one static IPv4, an on-subnet gateway and two DNS
 # servers.  Validate the merged hierarchy with the image's own Netplan parser.

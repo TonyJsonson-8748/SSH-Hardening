@@ -241,6 +241,9 @@ network_netplan_write_static() {
     local origin="99-vps-tools-${iface}" dns_list onlink=false
     [ -z "$dns2" ] && dns_list="\"$dns1\"" || dns_list="\"$dns1\", \"$dns2\""
     network_gateway_is_onlink "$ip_addr" "$gateway" "$prefix" || onlink=true
+    # Replacing our origin file avoids Netplan merging the previous route list
+    # when the same interface is edited again (for example /24 -> /32).
+    rm -f -- "/etc/netplan/${origin}.yaml"
     # netplan set writes an origin-aware override. This matters because plain
     # later YAML files concatenate address/route sequences instead of replacing
     # the earlier cloud-init or installer values.
@@ -251,6 +254,7 @@ network_netplan_write_static() {
 
 network_netplan_write_dhcp() {
     local iface="$1" origin="99-vps-tools-${iface}"
+    rm -f -- "/etc/netplan/${origin}.yaml"
     netplan set --origin-hint="$origin" \
         "ethernets.${iface}={dhcp4: true, addresses: null, gateway4: null, routes: null, nameservers: null, dhcp4-overrides: {use-dns: true, use-routes: true}}" \
         >/dev/null 2>&1
