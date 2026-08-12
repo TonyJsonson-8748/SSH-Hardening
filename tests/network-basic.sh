@@ -26,4 +26,10 @@ network_gateway_is_onlink 192.0.2.10 192.0.2.1 24
 ! network_gateway_is_onlink 192.0.2.10 198.51.100.1 24
 ! network_gateway_is_onlink 192.0.2.10 192.0.2.1 32
 
+# Keep Netplan writers safe for the main script's set -u mode without touching
+# the test host's /etc/netplan hierarchy.
+rm() { :; }
+netplan() { :; }
+network_netplan_write_dhcp eth0
+
 echo "Network basic checks passed."

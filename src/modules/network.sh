@@ -253,7 +253,8 @@ network_netplan_write_static() {
 }
 
 network_netplan_write_dhcp() {
-    local iface="$1" origin="99-vps-tools-${iface}"
+    local iface="$1" origin
+    origin="99-vps-tools-${iface}"
     rm -f -- "/etc/netplan/${origin}.yaml"
     netplan set --origin-hint="$origin" \
         "ethernets.${iface}={dhcp4: true, addresses: null, gateway4: null, routes: null, nameservers: null, dhcp4-overrides: {use-dns: true, use-routes: true}}" \
