@@ -6,6 +6,24 @@ on:
   pull_request:
 
 jobs:
+  ubuntu-netplan:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        image: [ubuntu:22.04, ubuntu:24.04]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Simulate Netplan on ${{ matrix.image }}
+        env:
+          IMAGE: ${{ matrix.image }}
+        run: |
+          docker run --rm \
+            -v "$PWD:/repo" -w /repo "$IMAGE" \
+            sh -c 'apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y bash netplan.io iproute2 && bash tests/ubuntu-netplan.sh'
+
   distro-smoke:
     runs-on: ubuntu-latest
     strategy:
