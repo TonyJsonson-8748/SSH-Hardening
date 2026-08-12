@@ -731,6 +731,19 @@ safety_tar_metadata_options() {
     printf '%s\n' "$HELP" | grep -q -- '--acls' && printf '%s\n' --acls
     printf '%s\n' "$HELP" | grep -q -- '--xattrs' && printf '%s\n' --xattrs
     printf '%s\n' "$HELP" | grep -q -- '--selinux' && printf '%s\n' --selinux
+    # GNU tar records atime/ctime in extended PAX headers when metadata
+    # options are enabled. Merely reading a protected file updates atime, and
+    # the archival read itself can subsequently update ctime on some filesystems
+    # (observed with Git for Windows and possible network/overlay mounts).
+    # That makes otherwise identical archives differ and can falsely turn a timed SSH
+    # rollback into a failed "concurrent modification". These timestamps are
+    # volatile, cannot be restored meaningfully, and are not part of the
+    # configuration state being protected. Keep all durable metadata while
+    # normalizing only those volatile PAX fields. The same content/owner/mode/
+    # ACL/xattr guard remains in place for durable configuration changes.
+    printf '%s\n' "$HELP" | grep -q -- '--pax-option' \
+        && printf '%s\n' '--pax-option=delete=atime,delete=ctime'
+    return 0
 }
 
 safety_snapshot_create() {
@@ -4372,7 +4385,7 @@ safety_arm() {
     local RC_UPDATE_STATE=""
     local PROFILE_FIREWALL=no PROFILE_RESTART_SSH=no
     local PROFILE_RESTART_FAIL2BAN=no PROFILE_RESTART_DNS=no
-    local TAR_ACLS=no TAR_XATTRS=no TAR_SELINUX=no TAR_OPTION
+    local TAR_ACLS=no TAR_XATTRS=no TAR_SELINUX=no TAR_PAX_VOLATILE=no TAR_OPTION
     local STATE_TMP="" READY=no
     local STATE_FILE="${SAFETY_STATE_FILE:-${VPS_DATA_DIR}/rollback.active}"
     local RESTORE_ROOT="${SAFETY_RESTORE_ROOT:-/}"
@@ -4427,6 +4440,7 @@ safety_arm() {
             --acls) TAR_ACLS=yes ;;
             --xattrs) TAR_XATTRS=yes ;;
             --selinux) TAR_SELINUX=yes ;;
+            --pax-option=delete=atime,delete=ctime) TAR_PAX_VOLATILE=yes ;;
         esac
     done < <(safety_tar_metadata_options)
     if ! safety_snapshot_restore_paths "$ROOTS_FILE" "$LABEL" \
@@ -4601,6 +4615,7 @@ PROFILE_RESTART_DNS='$PROFILE_RESTART_DNS'
 TAR_ACLS='$TAR_ACLS'
 TAR_XATTRS='$TAR_XATTRS'
 TAR_SELINUX='$TAR_SELINUX'
+TAR_PAX_VOLATILE='$TAR_PAX_VOLATILE'
 APPLIED_SNAPSHOT="\${SCRIPT%.sh}.applied.tar"
 APPLIED_ROOTS="\${SCRIPT%.sh}.applied.roots"
 FAILED=no
@@ -4622,6 +4637,8 @@ TAR_EXTRA=()
 [ "\$TAR_ACLS" = yes ] && TAR_EXTRA+=(--acls)
 [ "\$TAR_XATTRS" = yes ] && TAR_EXTRA+=(--xattrs)
 [ "\$TAR_SELINUX" = yes ] && TAR_EXTRA+=(--selinux)
+[ "\$TAR_PAX_VOLATILE" = yes ] \
+    && TAR_EXTRA+=(--pax-option=delete=atime,delete=ctime)
 rollback_systemd_available() {
     command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]
 }

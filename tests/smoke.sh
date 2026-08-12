@@ -52,6 +52,46 @@ ssh_strict_auth_methods_allow_pubkey 'publickey publickey,password' \
 ! ssh_strict_auth_methods_allow_pubkey 'publickey,password' >/dev/null 2>&1 \
     || { echo "Password-dependent AuthenticationMethods was accepted" >&2; exit 1; }
 
+# Leaving strict mode must explicitly reset every authentication gate that
+# otherwise keeps password login disabled despite the selected menu label.
+(
+    SSHD_CONFIG="$TMP/login-mode-reset-sshd-config"
+    cat > "$SSHD_CONFIG" <<'EOF'
+# BEGIN VPS-TOOLS SSH SETTINGS
+PasswordAuthentication no
+PubkeyAuthentication yes
+AuthenticationMethods publickey
+PermitRootLogin no
+KbdInteractiveAuthentication no
+# END VPS-TOOLS SSH SETTINGS
+EOF
+    sshd() {
+        [ "${1:-}" = -t ] && [ "${2:-}" = -f ] && [ -f "${3:-}" ]
+    }
+    confirm_file_diff() { return 0; }
+    backup_config() { return 0; }
+    safety_arm() { return 0; }
+    ssh_install_candidate_config() { cp -f -- "$1" "$SSHD_CONFIG"; }
+    apply_and_restart() { return 0; }
+    ssh_safety_confirm_checked() { return 0; }
+    info() { :; }
+    warn() { :; }
+    error() { printf '%s\n' "$*" >&2; }
+    audit_action() { :; }
+    ssh_apply_login_mode_change test success audit \
+        PasswordAuthentication yes \
+        PubkeyAuthentication yes \
+        PermitRootLogin yes \
+        KbdInteractiveAuthentication no \
+        AuthenticationMethods any
+    grep -qx 'PasswordAuthentication yes' "$SSHD_CONFIG" \
+        && grep -qx 'PubkeyAuthentication yes' "$SSHD_CONFIG" \
+        && grep -qx 'PermitRootLogin yes' "$SSHD_CONFIG" \
+        && grep -qx 'KbdInteractiveAuthentication no' "$SSHD_CONFIG" \
+        && grep -qx 'AuthenticationMethods any' "$SSHD_CONFIG" \
+        || { echo "Leaving strict mode retained a publickey-only authentication gate" >&2; exit 1; }
+)
+
 STRICT_POLICY_DUMP=$(cat <<'EOF'
 passwordauthentication no
 pubkeyauthentication yes

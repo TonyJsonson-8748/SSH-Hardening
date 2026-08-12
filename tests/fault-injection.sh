@@ -621,6 +621,64 @@ EOF
         || { echo "Successful safety rollback left a stale lock" >&2; exit 1; }
 )
 
+# Strict-mode confirmation records an applied-state snapshot before waiting.
+# Reading sshd_config (or an atime update by another diagnostic) must not be
+# mistaken for a concurrent content change that blocks the timed rollback.
+(
+    VPS_DATA_DIR="$TMP/applied-ssh-safety"
+    VPS_BACKUP_DIR="$VPS_DATA_DIR/backups"
+    SAFETY_STATE_FILE="$VPS_DATA_DIR/rollback.active"
+    SAFETY_ROLLBACK_DELAY=2
+    SAFETY_RESTORE_ROOT="$TMP/applied-ssh-root"
+    SAFETY_SNAPSHOT_ROOT="$SAFETY_RESTORE_ROOT"
+    APPLIED_SSH_CONFIG="$SAFETY_RESTORE_ROOT/etc/ssh/sshd_config"
+    mkdir -p "$(dirname "$APPLIED_SSH_CONFIG")"
+    printf 'before\n' > "$APPLIED_SSH_CONFIG"
+    safety_arm ssh_strict_login >/dev/null \
+        || { echo "Could not arm applied SSH safety rollback" >&2; exit 1; }
+    printf 'strict\n' > "$APPLIED_SSH_CONFIG"
+    touch -a -t 200001010000 "$APPLIED_SSH_CONFIG"
+    safety_mark_applied >/dev/null \
+        || { echo "Could not mark SSH safety rollback as applied" >&2; exit 1; }
+    cat "$APPLIED_SSH_CONFIG" >/dev/null
+    for _ in 1 2 3 4 5 6 7 8 9 10; do
+        [ ! -e "$SAFETY_STATE_FILE" ] && break
+        sleep 1
+    done
+    grep -qx before "$APPLIED_SSH_CONFIG" \
+        || { echo "Atime/ctime-only drift blocked the applied SSH rollback" >&2; exit 1; }
+    [ ! -e "$SAFETY_STATE_FILE" ] \
+        || { echo "Atime/ctime-only drift left the SSH rollback marked failed" >&2; exit 1; }
+)
+
+# Durable changes after the applied snapshot must still stop an automatic
+# restore, preserving the independently modified file for manual recovery.
+(
+    VPS_DATA_DIR="$TMP/conflicted-ssh-safety"
+    VPS_BACKUP_DIR="$VPS_DATA_DIR/backups"
+    SAFETY_STATE_FILE="$VPS_DATA_DIR/rollback.active"
+    SAFETY_ROLLBACK_DELAY=2
+    SAFETY_RESTORE_ROOT="$TMP/conflicted-ssh-root"
+    SAFETY_SNAPSHOT_ROOT="$SAFETY_RESTORE_ROOT"
+    CONFLICTED_SSH_CONFIG="$SAFETY_RESTORE_ROOT/etc/ssh/sshd_config"
+    mkdir -p "$(dirname "$CONFLICTED_SSH_CONFIG")"
+    printf 'before\n' > "$CONFLICTED_SSH_CONFIG"
+    safety_arm ssh_strict_login >/dev/null \
+        || { echo "Could not arm conflicted SSH safety rollback" >&2; exit 1; }
+    printf 'strict\n' > "$CONFLICTED_SSH_CONFIG"
+    safety_mark_applied >/dev/null \
+        || { echo "Could not mark conflicted SSH rollback as applied" >&2; exit 1; }
+    printf 'independent-change\n' > "$CONFLICTED_SSH_CONFIG"
+    for _ in 1 2 3 4 5 6 7 8 9 10; do
+        grep -q '|failed$' "$SAFETY_STATE_FILE" 2>/dev/null && break
+        sleep 1
+    done
+    grep -qx independent-change "$CONFLICTED_SSH_CONFIG" \
+        || { echo "SSH rollback overwrote a real concurrent change" >&2; exit 1; }
+    grep -q '|failed$' "$SAFETY_STATE_FILE" 2>/dev/null \
+        || { echo "Real SSH config drift did not retain a failed recovery state" >&2; exit 1; }
+)
+
 grep -Fq 'restart fail2ban' "$ROOT/src/modules/toolbox.sh" \
     || { echo "Safety rollback does not reload restored Fail2ban configuration" >&2; exit 1; }
 grep -Fq 'sysctl -w "\$KEY=\$VALUE"' "$ROOT/src/modules/toolbox.sh" \

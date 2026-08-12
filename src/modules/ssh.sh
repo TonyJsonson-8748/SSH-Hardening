@@ -2671,7 +2671,9 @@ set_login_mode() {
                 "SSH 仅密钥登录" "已切换：仅密钥登录 ✓" "SSH切换为仅密钥登录" \
                 "PasswordAuthentication" "no" \
                 "PubkeyAuthentication" "yes" \
-                "PermitRootLogin" "prohibit-password"
+                "PermitRootLogin" "prohibit-password" \
+                "KbdInteractiveAuthentication" "no" \
+                "AuthenticationMethods" "publickey"
             ;;
         2)
             ssh_apply_login_mode_change \
@@ -2679,7 +2681,9 @@ set_login_mode() {
                 "SSH启用密码和密钥登录" \
                 "PasswordAuthentication" "yes" \
                 "PubkeyAuthentication" "yes" \
-                "PermitRootLogin" "yes"
+                "PermitRootLogin" "yes" \
+                "KbdInteractiveAuthentication" "no" \
+                "AuthenticationMethods" "any"
             ;;
         3)
             warn "仅密码登录安全性较低，建议配合强密码使用！"
@@ -2690,7 +2694,9 @@ set_login_mode() {
                 "SSH 仅密码登录" "已切换：仅密码登录 ✓" "SSH切换为仅密码登录" \
                 "PasswordAuthentication" "yes" \
                 "PubkeyAuthentication" "no" \
-                "PermitRootLogin" "yes"
+                "PermitRootLogin" "yes" \
+                "KbdInteractiveAuthentication" "no" \
+                "AuthenticationMethods" "any"
             ;;
         4)
             local STRICT_CANDIDATE STRICT_CANDIDATES STRICT_USER STRICT_LINE STRICT_KEY_FILE
