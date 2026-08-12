@@ -42,7 +42,21 @@ grep -q '203.0.113.10/32' <<< "$HOST_ROUTE_CFG"
 # Backend output differs between Netplan/systemd releases.  Assert the durable
 # Netplan route flag instead; the preceding generate call proves that the image's
 # parser and selected backend accept the complete configuration.
-grep -Eq 'on-link:[[:space:]]*(true|yes)' "$ORIGIN"
+python3 - "$ORIGIN" "$IFACE" <<'PY'
+import sys
+
+import yaml
+
+with open(sys.argv[1], encoding="utf-8") as stream:
+    config = yaml.safe_load(stream)
+routes = config["network"]["ethernets"][sys.argv[2]]["routes"]
+assert any(
+    route.get("to") in ("default", "0.0.0.0/0")
+    and route.get("via") == "192.0.2.1"
+    and route.get("on-link") is True
+    for route in routes
+)
+PY
 
 # Switching back to DHCP must remove the managed static address, route and DNS.
 network_netplan_write_dhcp "$IFACE"
