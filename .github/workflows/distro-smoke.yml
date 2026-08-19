@@ -6,6 +6,36 @@ on:
   pull_request:
 
 jobs:
+  debian-network:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        image: [debian:11, debian:12, debian:13]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Simulate Debian network backends on ${{ matrix.image }}
+        env:
+          IMAGE: ${{ matrix.image }}
+        run: |
+          docker run --rm --privileged \
+            -v "$PWD:/repo" -w /repo "$IMAGE" \
+            sh -c 'apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y bash ifupdown iproute2 network-manager dbus && bash tests/debian-network.sh'
+
+  centos7-network:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Simulate CentOS 7 NetworkManager and ifcfg
+        run: |
+          docker run --rm --privileged \
+            -v "$PWD:/repo" -w /repo centos:7 \
+            bash -c 'sed -i -e "s|^mirrorlist=|#mirrorlist=|" -e "s|^#baseurl=http://mirror.centos.org/centos/\$releasever|baseurl=https://archive.kernel.org/centos-vault/7.9.2009|" /etc/yum.repos.d/CentOS-Base.repo && yum -y install NetworkManager initscripts iproute dbus && bash tests/centos7-network.sh'
+
   ubuntu-netplan:
     runs-on: ubuntu-latest
     strategy:

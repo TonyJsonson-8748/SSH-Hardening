@@ -457,8 +457,8 @@ IP 真实变化时推送通知，实时读取 `/root/.cf_tg`，兼容 crontab �
 | 系统 / 后端 | 配置方式 |
 |-------------|----------|
 | Ubuntu 22.04 / 24.04 | Netplan（兼容 networkd / NetworkManager renderer） |
-| Debian | NetworkManager、systemd-networkd 或 ifupdown，按实际运行环境识别 |
-| CentOS 7 / RHEL 系 | NetworkManager，旧环境回退 `ifcfg-*` |
+| Debian 11 / 12 / 13 | NetworkManager、systemd-networkd 或 ifupdown，按实际运行环境识别；无 resolved/resolvconf 时回退静态 `/etc/resolv.conf` |
+| CentOS 7 / RHEL 系 | NetworkManager（含 CentOS 7 的 1.18 版本），旧环境回退 `ifcfg-*` |
 
 配置会写入对应系统的持久化网络文件并立即应用。应用前保存 Netplan、NetworkManager、networkd、ifupdown、ifcfg 和 DNS 配置快照；180 秒内没有从新终端确认连接正常时自动恢复原配置并重新应用原网络后端。远程修改 IP 仍有断联风险，应保留云厂商控制台/VNC 作为最后恢复通道。
 
@@ -778,6 +778,7 @@ tests/smoke.sh
 
 | 版本 | 主要变更 |
 |------|---------|
+| **V3.51.2** | 修复 Debian 11/12/13 最小化安装使用 ifupdown 或 systemd-networkd 且没有 systemd-resolved/resolvconf 时，静态网卡 DNS 只写入后端配置却不生效的问题；现在会保留 search/options 后回退写入 `/etc/resolv.conf`，并纳入防断联快照。修复 CentOS 7 NetworkManager 1.18 不支持 `onlink=true` 路由属性导致 `/32` 异网段网关配置失败的问题，改用兼容新旧版本的网关直连主机路由；同时修复 ifupdown/networkd 切回 DHCP 与 ifcfg 路由写入在 nounset 模式下中断。新增 Debian 11/12/13 与 CentOS 7 容器测试。 |
 | **V3.51.1** | 修复 Ubuntu 22.04/24.04 上反复修改同一网卡时，`netplan set --origin-hint` 合并本工具旧路由列表，导致从普通网段切换到 `/32` 异网段网关后仍保留 `on-link: false` 的问题；现在每次更新前只替换本工具管理的网卡配置文件，再由 Netplan 重新校验生成。新增两套 Ubuntu 容器模拟，覆盖静态 IPv4、双 DNS、`/32` 异网段网关以及切回 DHCP。 |
 | **V3.51.0** | “系统与服务”新增网卡管理：查看网卡、IPv4、网关和 DNS；为指定网卡新增或修改静态 IPv4、CIDR/子网掩码、默认网关、主 DNS 与备用 DNS，并可切回 DHCP。按实际运行环境适配 Ubuntu 22.04/24.04 的 Netplan、Debian 常见的 NetworkManager/systemd-networkd/ifupdown，以及 CentOS 7/RHEL 的 NetworkManager/ifcfg；配置写入前统一快照，校验并应用后保留 180 秒防断联自动回滚。 |
 | **V3.50.9** | 修复严格模式等 SSH 高风险变更在未完成新会话确认时可能不自动回滚：带 ACL/xattr 的 GNU tar 快照会记录易因普通读取或归档读取而变化的 `atime`/`ctime`，此前字节级并发校验可能因此把未被修改的 `sshd_config` 误判为外部变更，任务随后进入 `failed` 并要求在统一回滚中心人工处理。现在快照比较只规范化这两个非持久时间字段，内容、权限、所有者、ACL、xattr 等真实变化仍会阻止覆盖；同时修复严格模式失败后切换到“密码+密钥”或“仅密码”仍残留 `AuthenticationMethods publickey`、导致界面显示已启用密码但实际继续拒绝密码认证的问题，并补充相应回归测试。 |

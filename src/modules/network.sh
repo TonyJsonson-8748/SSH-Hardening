@@ -53,7 +53,7 @@ network_mask_to_prefix() {
 }
 
 network_prefix_to_mask() {
-    local prefix="${1:-}" bits value output="" index
+    local prefix="${1:-}" bits value mask_text="" index
     [[ "$prefix" =~ ^[0-9]+$ ]] && [ "$prefix" -ge 1 ] \
         && [ "$prefix" -le 32 ] || return 1
     prefix=$((10#$prefix))
@@ -68,9 +68,9 @@ network_prefix_to_mask() {
         else
             value=0
         fi
-        output+="${output:+.}${value}"
+        mask_text+="${mask_text:+.}${value}"
     done
-    printf '%s\n' "$output"
+    printf '%s\n' "$mask_text"
 }
 
 network_ipv4_to_int() {
@@ -236,6 +236,56 @@ network_write_atomic() {
     fi
 }
 
+network_dns_has_managed_resolver() {
+    local resolv="${NETWORK_RESOLV_CONF:-/etc/resolv.conf}"
+    if command -v resolvectl >/dev/null 2>&1 \
+        && { svc_is_active systemd-resolved \
+            || { [ -L "$resolv" ] \
+                && readlink "$resolv" 2>/dev/null | grep -q 'systemd/resolve'; }; }; then
+        return 0
+    fi
+    command -v resolvconf >/dev/null 2>&1
+}
+
+network_resolv_conf_write() {
+    local dns1="$1" dns2="${2:-}" target="${NETWORK_RESOLV_CONF:-/etc/resolv.conf}" tmp
+    network_ipv4_valid "$dns1" || return 1
+    [ -z "$dns2" ] || network_ipv4_valid "$dns2" || return 1
+    mkdir -p "$(dirname "$target")" || return 1
+    tmp=$(mktemp "${target}.tmp.XXXXXX") || return 1
+    if [ -r "$target" ]; then
+        awk '$1 != "nameserver" {print}' "$target" > "$tmp" \
+            || { rm -f -- "$tmp"; return 1; }
+    fi
+    printf 'nameserver %s\n' "$dns1" >> "$tmp" \
+        || { rm -f -- "$tmp"; return 1; }
+    [ -z "$dns2" ] || printf 'nameserver %s\n' "$dns2" >> "$tmp" \
+        || { rm -f -- "$tmp"; return 1; }
+    chmod --reference="$target" "$tmp" 2>/dev/null || chmod 644 "$tmp" \
+        || { rm -f -- "$tmp"; return 1; }
+    chattr -i "$target" 2>/dev/null || true
+    if [ -L "$target" ]; then
+        cat "$tmp" > "$target" || { rm -f -- "$tmp"; return 1; }
+        rm -f -- "$tmp"
+    else
+        mv -f -- "$tmp" "$target"
+    fi
+}
+
+network_dns_finalize_static() {
+    local backend="$1" dns1="$3" dns2="${4:-}"
+    case "$backend" in
+        ifupdown|networkd) ;;
+        *) return 0 ;;
+    esac
+    # Both backends persist DNS in their native link configuration.  On a
+    # minimal Debian server without systemd-resolved/resolvconf, however,
+    # nothing consumes those settings.  In that case /etc/resolv.conf is the
+    # active resolver configuration and must be updated explicitly.
+    network_dns_has_managed_resolver && return 0
+    network_resolv_conf_write "$dns1" "$dns2"
+}
+
 network_netplan_write_static() {
     local iface="$1" ip_addr="$2" prefix="$3" gateway="$4" dns1="$5" dns2="$6"
     local origin="99-vps-tools-${iface}" dns_list onlink=false
@@ -276,7 +326,8 @@ network_networkd_write_static() {
 }
 
 network_networkd_write_dhcp() {
-    local iface="$1" target="/etc/systemd/network/00-vps-tools-${iface}.network"
+    local iface="$1" target
+    target="/etc/systemd/network/00-vps-tools-${iface}.network"
     {
         printf '%s\n' '# Managed by VPS Tools. Use the network interface menu to edit.'
         printf '%s\n' '[Match]' "Name=$iface" '' '[Network]' 'DHCP=yes' 'IPv6AcceptRA=yes'
@@ -341,7 +392,8 @@ network_ifupdown_write_static() {
 }
 
 network_ifupdown_write_dhcp() {
-    local iface="$1" target="/etc/network/interfaces.d/90-vps-tools-${iface}.cfg"
+    local iface="$1" target
+    target="/etc/network/interfaces.d/90-vps-tools-${iface}.cfg"
     network_ifupdown_strip_ipv4 "$iface" && network_ifupdown_ensure_source || return 1
     {
         printf '%s\n' '# Managed by VPS Tools. Use the network interface menu to edit.'
@@ -379,7 +431,8 @@ network_ifcfg_write() {
 }
 
 network_ifcfg_route_managed() {
-    local iface="$1" route_line="$2" target="/etc/sysconfig/network-scripts/route-${iface}" tmp
+    local iface="$1" route_line="$2" target tmp
+    target="/etc/sysconfig/network-scripts/route-${iface}"
     tmp=$(mktemp "${target}.tmp.XXXXXX") || return 1
     if [ -f "$target" ]; then
         awk '
@@ -426,11 +479,15 @@ network_nm_write_static() {
             ipv4.gateway "$gateway" ipv4.routes '' ipv4.dns "$dns" \
             ipv4.ignore-auto-dns yes ipv4.never-default no >/dev/null 2>&1
     else
-        route="${gateway}/32,0.0.0.0/0 ${gateway} onlink=true"
+        # NetworkManager 1.18 on CentOS 7 supports neither per-route
+        # attributes such as onlink=true nor a /0 entry in ipv4.routes.  Keep
+        # the default route in ipv4.gateway and make that gateway reachable
+        # with a direct host route; newer NM versions accept the same profile.
+        route="${gateway}/32"
         nmcli connection modify uuid "$NETWORK_ACTIVE_NM_UUID" \
             connection.interface-name "$iface" connection.autoconnect yes \
             ipv4.method manual ipv4.addresses "${ip_addr}/${prefix}" \
-            ipv4.gateway '' ipv4.routes "$route" ipv4.dns "$dns" \
+            ipv4.gateway "$gateway" ipv4.routes "$route" ipv4.dns "$dns" \
             ipv4.ignore-auto-dns yes ipv4.never-default no >/dev/null 2>&1
     fi
 }
@@ -566,6 +623,8 @@ network_static_configure() {
         || { error "网卡配置校验失败；自动回滚仍在计时"; return 1; }
     network_backend_apply "$backend" "$iface" \
         || { error "应用网卡配置失败；请保持旧会话，自动回滚仍在计时"; return 1; }
+    network_dns_finalize_static "$backend" "$iface" "$dns1" "$dns2" \
+        || { error "DNS 配置应用失败；自动回滚仍在计时"; return 1; }
     sleep 1
     ip -4 -o addr show dev "$iface" scope global 2>/dev/null \
         | awk '{print $4}' | grep -qxF "${ip_addr}/${prefix}" \

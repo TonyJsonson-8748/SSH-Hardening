@@ -631,6 +631,7 @@ safety_roots_for_label() {
             ;;
         network_interface)
             printf '%s\n' \
+                etc/resolv.conf \
                 etc/netplan \
                 etc/NetworkManager/system-connections \
                 etc/systemd/network \

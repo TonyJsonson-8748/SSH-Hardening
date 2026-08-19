@@ -19,7 +19,7 @@ jobs:
         run: ./build.sh --check
 
       - name: Run ShellCheck
-        run: shellcheck --severity=warning -x SSH-Hardening.sh build-offline-package.sh tests/offline-package.sh tests/user-swap-regression.sh tests/scheduler-regression.sh
+        run: shellcheck --severity=warning -x SSH-Hardening.sh build-offline-package.sh tests/offline-package.sh tests/user-swap-regression.sh tests/scheduler-regression.sh tests/debian-network.sh tests/centos7-network.sh
 
       - name: Verify release checksum
         run: sha256sum -c SSH-Hardening.sh.sha256
