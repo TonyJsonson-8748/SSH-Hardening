@@ -1,4 +1,4 @@
-# VPS 开荒脚本 V3.51.1
+# VPS 开荒脚本 V3.52.0
 
 > **银趴火山帮** 出品 · SSH · BBR · DDNS · Caddy · Firewall · NFT 转发
 
@@ -124,7 +124,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/TonyJsonson-8748/SSH-Hardeni
 ╚═╝╚═╝     ╚═╝╚═╝     ╚═╝  ╚═╝╚═╝  ╚═╝   ╚═╝        ╚═════╝ ╚═╝     ╚══════╝
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  VPS TOOLS  ·  V3.51.1
+  VPS TOOLS  ·  V3.52.0
   VPS 开荒脚本 · 银趴火山帮
 ────────────────────────────────────────────────────────────────
   SSH · BBR · DDNS · Caddy · Firewall · NFT · Monitor
@@ -266,21 +266,17 @@ X11Forwarding no
 
 ### 4. BBR TCP 调优
 
-**智能向导（推荐）** — 自动检测内存推荐预设：
+**跨境单线程自适应向导（推荐）** — 面向美国 VPS 等高 RTT 场景，输入套餐带宽和 VPS 到目标用户的 RTT 后连续推导：
 
-| 内存 | 推荐 |
-|------|------|
-| < 768 MB | `latency` 低延迟 |
-| < 4 GB | `balanced` 均衡 |
-| ≥ 4 GB | `throughput` 高吞吐 |
+- BDP = 带宽 × RTT；单 socket 上限 = `2 × BDP + 2MiB`
+- socket 上限同时受物理内存 `1/32` 和 `256MiB` 绝对上限保护，下限为 `4MiB`
+- 单流 TCP 起始缓冲按 BDP 推导，限制在 `1-8MiB`；仅提高少量大流的起步和扩展能力
+- 套餐带宽高于 100Mbps 时可选持久化 `initcwnd/initrwnd=32`
+- 用户提供附近、更快的 `iperf3` 对端后，可选执行单流 policer 拐点扫描；留空则只应用基础调优
 
-**三种预设：**
+拐点扫描会先在 40% 套餐带宽检查路径底噪，再进行不限速单流探测。只有重传率相对底噪稳定跳变，且三次中至少两次确认，才推荐 `HTB + fq` 整形值。单流低于套餐带宽 70% 时会补测两次并取最佳完整样本，避免公共对端偶发繁忙导致误限速。扫描默认上限为 2500Mbps，超过时不自动整形。
 
-| 预设 | 缓冲区 | 适用 |
-|------|--------|------|
-| `latency` | 32 MB | SSH / 游戏 / 远程桌面 |
-| `balanced` | 16-64 MB（按内存动态） | 网页 / 代理 / 日常 |
-| `throughput` | 64-512 MB（按内存动态） | 万兆 / 跨洋 |
+原有固定档位仍保留在“自动配置”和“手动配置”中，用于大并发中转、落地机或需要兼容旧配置的场景。
 
 **自动配置（BDP 三维计算）：**
 - 内存：512MB / 1G / 2G / 4G / 8G / 16G+
@@ -290,9 +286,9 @@ X11Forwarding no
 **手动配置（两步式：选用途 → 选缓冲）：** 12 / 16 / 20 / **32** / 40 / 64 / 128 / 256 / 512 / 1024 MB 共 10 档（新增 32MB 为 1G 跨境甜点区）
 
 **安全保护：**
-- 自动配置与智能预设的缓冲上限为实际物理内存的 25%；手动配置超过该值时二次确认
+- 单线程自适应的单 socket 上限为实际物理内存的约 1/32；旧自动档位上限仍为 25%，手动超过时二次确认
 - 自动配置误选高内存档位时按实际物理内存计算，例如 512MB 机器选择 16GB 仍按 512MB 限制
-- TCP 每连接初始/默认缓冲保持内核保守值（接收 4KB/128KB、发送 4KB/16KB），仅提高自动扩展上限
+- 单线程向导会调整 TCP/core 起始缓冲；切回旧自动/手动模式时会恢复首次调优前基线，不会留下隐式参数
 - `tcp_mem`、`min_free_kbytes`、`tcp_adv_win_scale` 及高风险全局连接参数交还内核管理；升级时恢复首次调优前基线
 - 无 sysctl 写入权限（无特权容器）自动检测并提示
 - 内核 BBR 支持检测（kernel ≥ 4.9）
@@ -300,11 +296,12 @@ X11Forwarding no
 - 切换预设时检测上一场景遗留的转发/conntrack 参数，并恢复到首次调优前基线（`ip_forward` 单独警告）
 - 中转/落地场景默认不修改内核转发；仅在用户确认路由/NAT 用途后启用，并同时设置默认与当前出口 `accept_ra=2`
 - 逐行 `sysctl -w` 应用；非核心参数不支持时注释跳过，BBR 与 `fq` 写入失败或回读不一致都会回滚
+- 拐点扫描默认拒绝覆盖 CAKE/TBF/第三方 HTB 及挂有 root filter 的 qdisc；中断或测试失败时尝试还原原始 qdisc
 
 **其他功能：**
 - tc 限速（200M / 500M / 780M / 1G / 2G / 自定义）：`htb` 聚合整形 + `fq` 叶子保留 BBR pacing；兼容不可直接删除的默认 `mq`；默认拒绝外部 QoS，输入精确确认词后可接管或删除 `tbf` / CAKE / HTB 等 root qdisc，操作前诊断快照保存到 `/var/lib/vps-tools/tc-backups/`
 - tc 限速状态保存在 `/var/lib/vps-tools/tc-fq.state`；网卡重建导致运行规则丢失时，更新脚本、应用 BBR 配置或进入 BBR 菜单会自动恢复。若默认网卡名称变化，只显示保存状态并提示人工确认，不会静默迁移
-- initcwnd（10 / 50 / 100 / 自定义），支持 IPv4/IPv6、无网关默认路由和 systemd/OpenRC/SysV 持久化
+- initcwnd（10 / **32** / 50 / 100 / 自定义），支持 IPv4/IPv6、无网关默认路由和 systemd/OpenRC/SysV 持久化
 - 备份 / 还原 sysctl（按时间戳）
 
 **代理专项参数：**
@@ -314,6 +311,8 @@ X11Forwarding no
 - 应用场景预设后自动检测代理 service 的 `LimitNOFILE`，偏低时询问写入 drop-in
 
 **写入位置：** `/etc/sysctl.d/99-vps-bbr.conf`（不污染主配置）
+
+单流 BDP 和 policer 扫描策略参考 [Kylin010/tcpfit](https://github.com/Kylin010/tcpfit) v0.5.6（MIT）；本项目保留原有回滚、qdisc 所有权与跨 init 持久化实现。详见 [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md)。
 
 ---
 
@@ -753,6 +752,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/TonyJsonson-8748/SSH-Hardeni
 tests/smoke.sh
 tests/fault-injection.sh
 tests/offline-package.sh
+tests/bbr-adaptive.sh
 ```
 
 GitHub Actions 还会在 Debian、Ubuntu、Alpine、Rocky Linux 容器中加载生成脚本并执行冒烟测试。
@@ -778,6 +778,7 @@ tests/smoke.sh
 
 | 版本 | 主要变更 |
 |------|---------|
+| **V3.52.0** | BBR 推荐向导替换为面向美国 VPS/跨境 TCP 单线程的自适应流程：缓冲上限按 `2×BDP+2MiB` 连续推导，受 RAM/32 和 256MiB 上限保护；单流起始缓冲限制在 1-8MiB，可选持久化 initcwnd/initrwnd 32。新增安全的 `iperf3` 单流 policer 拐点扫描，含低速路径基线、重传率阈值、三次复核、低样本最佳组选择、粗/细扫与分档安全余量；扫描拒绝覆盖第三方 QoS，中断时恢复 qdisc。不导入 tcpfit 中的 `tcp_mem`、`min_free_kbytes`、过时连接参数等激进全局设置；新增独立 BBR 算法回归。 |
 | **V3.51.2** | 修复 Debian 11/12/13 最小化安装使用 ifupdown 或 systemd-networkd 且没有 systemd-resolved/resolvconf 时，静态网卡 DNS 只写入后端配置却不生效的问题；现在会保留 search/options 后回退写入 `/etc/resolv.conf`，并纳入防断联快照。修复 CentOS 7 NetworkManager 1.18 不支持 `onlink=true` 路由属性导致 `/32` 异网段网关配置失败的问题，改用兼容新旧版本的网关直连主机路由；同时修复 ifupdown/networkd 切回 DHCP 与 ifcfg 路由写入在 nounset 模式下中断。新增 Debian 11/12/13 与 CentOS 7 容器测试。 |
 | **V3.51.1** | 修复 Ubuntu 22.04/24.04 上反复修改同一网卡时，`netplan set --origin-hint` 合并本工具旧路由列表，导致从普通网段切换到 `/32` 异网段网关后仍保留 `on-link: false` 的问题；现在每次更新前只替换本工具管理的网卡配置文件，再由 Netplan 重新校验生成。新增两套 Ubuntu 容器模拟，覆盖静态 IPv4、双 DNS、`/32` 异网段网关以及切回 DHCP。 |
 | **V3.51.0** | “系统与服务”新增网卡管理：查看网卡、IPv4、网关和 DNS；为指定网卡新增或修改静态 IPv4、CIDR/子网掩码、默认网关、主 DNS 与备用 DNS，并可切回 DHCP。按实际运行环境适配 Ubuntu 22.04/24.04 的 Netplan、Debian 常见的 NetworkManager/systemd-networkd/ifupdown，以及 CentOS 7/RHEL 的 NetworkManager/ifcfg；配置写入前统一快照，校验并应用后保留 180 秒防断联自动回滚。 |

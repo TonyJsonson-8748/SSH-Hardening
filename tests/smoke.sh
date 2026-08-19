@@ -1071,12 +1071,12 @@ BANNER_COMPACT=$(COLUMNS=60 NO_COLOR=1 volcano_art_banner)
 [[ "$BANNER_COMPACT" = *'██╗███╗'* && "$BANNER_COMPACT" = *'██████╗ ██████╗ ███████╗'* ]] || { echo "Compact IMPART OPS banner is missing" >&2; exit 1; }
 [[ "$(COLUMNS=40 NO_COLOR=1 volcano_art_banner)" = *'IMPART OPS'* ]] || { echo "Narrow IMPART OPS banner fallback is missing" >&2; exit 1; }
 
-for fn in bbr_preflight bbr_runtime_snapshot bbr_ensure_baseline bbr_restore_runtime_snapshot bbr_baseline_value bbr_config_has_key bbr_config_value \
-    bbr_apply_sysctl bbr_generate_config bbr_physical_memory_mb bbr_effective_memory_mb bbr_buffer_cap_bytes bbr_conntrack_max_for_memory bbr_bdp_mb bbr_buffer_target_mb bbr_recommend_profile \
+for fn in bbr_preflight bbr_runtime_snapshot bbr_ensure_baseline bbr_restore_runtime_snapshot bbr_baseline_value bbr_config_has_key bbr_config_value bbr_conditional_keys \
+    bbr_apply_sysctl bbr_generate_config bbr_generate_single_stream_config bbr_single_stream_apply bbr_physical_memory_mb bbr_effective_memory_mb bbr_buffer_cap_bytes bbr_conntrack_max_for_memory bbr_bdp_mb bbr_bdp_bytes bbr_buffer_target_mb bbr_single_buffer_max_bytes bbr_single_buffer_default_bytes bbr_sweep_range bbr_sweep_margin_mbps bbr_loss_pct bbr_loss_is_spike bbr_recommend_profile \
     bbr_tc_qdisc_safe_to_replace bbr_tc_current_rate bbr_tc_saved_values bbr_tc_saved_rate_display bbr_tc_rate_display \
     bbr_tc_topology_matches bbr_tc_managed_artifact bbr_tc_is_legacy_owned bbr_tc_persistence_current bbr_tc_reconcile_saved \
-    bbr_tc_snapshot_foreign bbr_tc_force_confirm bbr_tc_remove_confirm bbr_tc_apply_runtime bbr_default_route_info bbr_route_token \
-    bbr_route_strip_cwnd bbr_apply_initcwnd_route volcano_tcp_profile; do
+    bbr_tc_snapshot_foreign bbr_tc_force_confirm bbr_tc_remove_confirm bbr_tc_apply_runtime bbr_sweep_qdisc_save bbr_sweep_qdisc_restore bbr_run_policer_sweep bbr_parse_iperf_output bbr_default_route_info bbr_route_token \
+    bbr_route_strip_cwnd bbr_apply_initcwnd_route bbr_set_initcwnd_value volcano_tcp_profile; do
     declare -F "$fn" >/dev/null || { echo "Missing BBR function: $fn" >&2; exit 1; }
 done
 
