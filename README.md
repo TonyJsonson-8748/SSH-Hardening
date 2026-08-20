@@ -266,7 +266,7 @@ X11Forwarding no
 
 ### 4. BBR TCP 调优
 
-**跨境单线程自适应向导（推荐）** — 面向美国 VPS 等高 RTT 场景，输入套餐带宽和 VPS 到目标用户的 RTT 后连续推导：
+**TCP 单线程自适应向导（推荐）** — 输入套餐带宽和 VPS 到目标用户的 RTT 后连续推导：
 
 - BDP = 带宽 × RTT；单 socket 上限 = `2 × BDP + 2MiB`
 - socket 上限同时受物理内存 `1/32` 和 `256MiB` 绝对上限保护，下限为 `4MiB`
@@ -778,7 +778,7 @@ tests/smoke.sh
 
 | 版本 | 主要变更 |
 |------|---------|
-| **V3.52.0** | BBR 推荐向导替换为面向美国 VPS/跨境 TCP 单线程的自适应流程：缓冲上限按 `2×BDP+2MiB` 连续推导，受 RAM/32 和 256MiB 上限保护；单流起始缓冲限制在 1-8MiB，可选持久化 initcwnd/initrwnd 32。新增安全的 `iperf3` 单流 policer 拐点扫描，含低速路径基线、重传率阈值、三次复核、低样本最佳组选择、粗/细扫与分档安全余量；扫描拒绝覆盖第三方 QoS，中断时恢复 qdisc。不导入 tcpfit 中的 `tcp_mem`、`min_free_kbytes`、过时连接参数等激进全局设置；新增独立 BBR 算法回归。 |
+| **V3.52.0** | BBR 推荐向导替换为TCP 单线程的自适应流程：缓冲上限按 `2×BDP+2MiB` 连续推导，受 RAM/32 和 256MiB 上限保护；单流起始缓冲限制在 1-8MiB，可选持久化 initcwnd/initrwnd 32。新增安全的 `iperf3` 单流 policer 拐点扫描，含低速路径基线、重传率阈值、三次复核、低样本最佳组选择、粗/细扫与分档安全余量；扫描拒绝覆盖第三方 QoS，中断时恢复 qdisc。不导入 tcpfit 中的 `tcp_mem`、`min_free_kbytes`、过时连接参数等激进全局设置；新增独立 BBR 算法回归。 |
 | **V3.51.2** | 修复 Debian 11/12/13 最小化安装使用 ifupdown 或 systemd-networkd 且没有 systemd-resolved/resolvconf 时，静态网卡 DNS 只写入后端配置却不生效的问题；现在会保留 search/options 后回退写入 `/etc/resolv.conf`，并纳入防断联快照。修复 CentOS 7 NetworkManager 1.18 不支持 `onlink=true` 路由属性导致 `/32` 异网段网关配置失败的问题，改用兼容新旧版本的网关直连主机路由；同时修复 ifupdown/networkd 切回 DHCP 与 ifcfg 路由写入在 nounset 模式下中断。新增 Debian 11/12/13 与 CentOS 7 容器测试。 |
 | **V3.51.1** | 修复 Ubuntu 22.04/24.04 上反复修改同一网卡时，`netplan set --origin-hint` 合并本工具旧路由列表，导致从普通网段切换到 `/32` 异网段网关后仍保留 `on-link: false` 的问题；现在每次更新前只替换本工具管理的网卡配置文件，再由 Netplan 重新校验生成。新增两套 Ubuntu 容器模拟，覆盖静态 IPv4、双 DNS、`/32` 异网段网关以及切回 DHCP。 |
 | **V3.51.0** | “系统与服务”新增网卡管理：查看网卡、IPv4、网关和 DNS；为指定网卡新增或修改静态 IPv4、CIDR/子网掩码、默认网关、主 DNS 与备用 DNS，并可切回 DHCP。按实际运行环境适配 Ubuntu 22.04/24.04 的 Netplan、Debian 常见的 NetworkManager/systemd-networkd/ifupdown，以及 CentOS 7/RHEL 的 NetworkManager/ifcfg；配置写入前统一快照，校验并应用后保留 180 秒防断联自动回滚。 |
