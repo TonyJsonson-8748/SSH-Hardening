@@ -1111,6 +1111,14 @@ bbr_tc_root_kind() {
     bbr_tc_qdisc_type "$LINE"
 }
 
+# 内核自动挂载的默认 qdisc 固定为 handle 0:，手工 add/replace 只会拿到 8000: 以上的自动句柄。
+bbr_tc_root_handle() {
+    local DEV="$1" TC_BIN="$2" QDISCS LINE
+    QDISCS=$("$TC_BIN" qdisc show dev "$DEV" 2>/dev/null) || return 1
+    LINE=$(bbr_tc_root_line "$QDISCS")
+    bbr_tc_qdisc_handle "$LINE"
+}
+
 bbr_tc_mq_leaf_kind() {
     local DEV="$1" TC_BIN="$2" QDISCS HANDLE MAJOR KINDS COUNT
     QDISCS=$("$TC_BIN" qdisc show dev "$DEV" 2>/dev/null) || return 1
@@ -1219,6 +1227,7 @@ bbr_sweep_qdisc_save() {
         mq|fq|fq_codel|pfifo_fast)
             if [ "$BBR_SWEEP_QSAVE_OWNED" -eq 0 ] && [ -n "$HANDLE" ] && [ "$HANDLE" != "0:" ]; then
                 error "检测到非默认 handle ${HANDLE} 的 ${KIND} qdisc，拐点扫描不会覆盖它"
+                info "若确认它不是第三方 QoS，可执行 tc qdisc del dev ${DEV} root 交还内核默认 qdisc 后重试"
                 return 2
             fi
             ;;
@@ -1251,7 +1260,8 @@ bbr_sweep_qdisc_save() {
 }
 
 bbr_sweep_qdisc_restore() {
-    local DEV="$BBR_SWEEP_QSAVE_IFACE" TC_BIN="$BBR_SWEEP_QSAVE_TC" CURRENT_KIND
+    local DEV="$BBR_SWEEP_QSAVE_IFACE" TC_BIN="$BBR_SWEEP_QSAVE_TC"
+    local CURRENT_KIND CURRENT_LEAF CURRENT_HANDLE REMOVE_RC=0
     [ -n "$DEV" ] && [ -n "$TC_BIN" ] || return 0
     if [ "$BBR_SWEEP_QSAVE_OWNED" -eq 1 ]; then
         bbr_tc_remove_root_for_sweep "$DEV" "$TC_BIN" 2>/dev/null || true
@@ -1260,29 +1270,42 @@ bbr_sweep_qdisc_restore() {
         return 0
     fi
 
+    # 扫描只在内核默认 qdisc（handle 0:）之上做临时替换，因此把 root 删掉交还内核、
+    # 由它按 net.core.default_qdisc 重新挂载，才是唯一能还原出 handle 0: 的动作。
+    # 这里多做一次 qdisc replace 会拿到 8001: 之类的自动句柄，令下一次扫描被安全检查拒绝。
+    bbr_tc_remove_root_for_sweep "$DEV" "$TC_BIN" 2>/dev/null || REMOVE_RC=$?
     CURRENT_KIND=$(bbr_tc_root_kind "$DEV" "$TC_BIN" 2>/dev/null || true)
     case "$BBR_SWEEP_QSAVE_KIND" in
+        ""|noqueue) : ;;
         mq)
-            if [ "$CURRENT_KIND" != mq ]; then
-                bbr_tc_remove_root_for_sweep "$DEV" "$TC_BIN" 2>/dev/null || true
-                CURRENT_KIND=$(bbr_tc_root_kind "$DEV" "$TC_BIN" 2>/dev/null || true)
-                [ "$CURRENT_KIND" = mq ] \
-                    || "$TC_BIN" qdisc add dev "$DEV" root mq 2>/dev/null \
-                    || return 1
-            fi
-            [ -z "$BBR_SWEEP_QSAVE_LEAF_KIND" ] \
-                || bbr_tc_set_mq_leaves "$DEV" "$BBR_SWEEP_QSAVE_LEAF_KIND" "$TC_BIN" \
+            [ "$CURRENT_KIND" = mq ] \
+                || "$TC_BIN" qdisc add dev "$DEV" root mq 2>/dev/null \
                 || return 1
-            ;;
-        ""|noqueue)
-            bbr_tc_remove_root_for_sweep "$DEV" "$TC_BIN" 2>/dev/null || true
+            CURRENT_LEAF=$(bbr_tc_mq_leaf_kind "$DEV" "$TC_BIN" 2>/dev/null || true)
+            if [ -n "$BBR_SWEEP_QSAVE_LEAF_KIND" ] \
+                && [ "$CURRENT_LEAF" != "$BBR_SWEEP_QSAVE_LEAF_KIND" ]; then
+                bbr_tc_set_mq_leaves "$DEV" "$BBR_SWEEP_QSAVE_LEAF_KIND" "$TC_BIN" || return 1
+            fi
             ;;
         fq|fq_codel|pfifo_fast)
-            bbr_tc_remove_root_for_sweep "$DEV" "$TC_BIN" 2>/dev/null || true
-            "$TC_BIN" qdisc replace dev "$DEV" root "$BBR_SWEEP_QSAVE_KIND" 2>/dev/null || return 1
+            if [ -z "$CURRENT_KIND" ] || [ "$CURRENT_KIND" = noqueue ]; then
+                "$TC_BIN" qdisc replace dev "$DEV" root "$BBR_SWEEP_QSAVE_KIND" 2>/dev/null || return 1
+            elif [ "$CURRENT_KIND" != "$BBR_SWEEP_QSAVE_KIND" ]; then
+                if [ "$REMOVE_RC" -eq 0 ]; then
+                    info "${DEV} 已按当前 net.core.default_qdisc 恢复为 ${CURRENT_KIND}（扫描前为 ${BBR_SWEEP_QSAVE_KIND}）"
+                else
+                    warn "未能移除 ${DEV} 当前的 ${CURRENT_KIND} root qdisc（扫描前为 ${BBR_SWEEP_QSAVE_KIND}），请手工检查 tc qdisc"
+                    return 1
+                fi
+            fi
             ;;
         *) return 1 ;;
     esac
+    CURRENT_HANDLE=$(bbr_tc_root_handle "$DEV" "$TC_BIN" 2>/dev/null || true)
+    if [ -n "$CURRENT_HANDLE" ] && [ "$CURRENT_HANDLE" != "0:" ]; then
+        warn "${DEV} 的 root qdisc 恢复为 handle ${CURRENT_HANDLE} 而非内核默认 0:"
+        warn "再次扫描前可执行 tc qdisc del dev ${DEV} root 交还内核默认 qdisc"
+    fi
     BBR_SWEEP_QSAVE_IFACE=""
     return 0
 }
@@ -2799,6 +2822,24 @@ bbr_recommend_profile() {
     fi
 }
 
+# 跳过扫描时只汇报真实 tc 状态，不能假定机器上一定是纯 fq。
+bbr_sweep_skip_notice() {
+    local DEV="${1:-}" TC_BIN="${2:-}" RATE KIND
+    [ -n "$DEV" ] || DEV=$(default_iface 2>/dev/null || true)
+    [ -n "$TC_BIN" ] || TC_BIN=$(command -v tc 2>/dev/null || true)
+    if [ -z "$DEV" ] || [ -z "$TC_BIN" ]; then
+        info "已跳过拐点扫描；未改动任何 qdisc 与限速"
+        return 0
+    fi
+    RATE=$(bbr_tc_rate_display "$DEV" "$TC_BIN" 2>/dev/null || true)
+    KIND=$(bbr_tc_root_kind "$DEV" "$TC_BIN" 2>/dev/null || true)
+    if [ -z "$RATE" ] || [ "$RATE" = "未设置" ]; then
+        info "已跳过拐点扫描；${DEV} 当前无硬限速（qdisc: ${KIND:-未知}），未改动"
+    else
+        info "已跳过拐点扫描；${DEV} 现有限速 ${RATE}，保持不变（qdisc: ${KIND:-未知}）"
+    fi
+}
+
 bbr_smart_wizard() {
     print_header "跨境单线程 BBR 自适应向导"
     local MEM_MB KERNEL CUR_CC BW_MBPS RTT_MS APPLY_RC ANSWER
@@ -2845,7 +2886,7 @@ bbr_smart_wizard() {
     echo -e "  ${DIM}留空即跳过，不影响已应用的 BBR/缓冲配置${NC}"
     read -rp "  iperf3 对端主机名或 IP（留空跳过）: " PEER
     if [ -z "$PEER" ]; then
-        info "已跳过拐点扫描；当前保持纯 fq，不新增硬限速"
+        bbr_sweep_skip_notice
         return 0
     fi
     read -rp "  iperf3 端口（默认5201）: " PORT
@@ -2864,6 +2905,7 @@ bbr_smart_wizard() {
         [ -n "$INSTALL_IPERF" ] || INSTALL_IPERF=y
         if ! echo "$INSTALL_IPERF" | grep -qiE '^y(es)?$'; then
             warn "已跳过拐点扫描"
+            bbr_sweep_skip_notice
             return 0
         fi
         DEBIAN_FRONTEND=noninteractive pkg_install iperf3 || {
@@ -2874,7 +2916,7 @@ bbr_smart_wizard() {
     ESTIMATE=$(bbr_sweep_estimate_gb "$BW_MBPS")
     warn "拐点扫描约需 5-15 分钟；按最多 16 个样本估算，上限约 ${ESTIMATE}GiB 流量"
     read -rp "  输入 SWEEP 确认执行带流量消耗的扫描: " ANSWER
-    [ "$ANSWER" = SWEEP ] || { warn "已跳过拐点扫描"; return 0; }
+    [ "$ANSWER" = SWEEP ] || { warn "已跳过拐点扫描"; bbr_sweep_skip_notice; return 0; }
 
     SWEEP_RC=0
     bbr_run_policer_sweep "$PEER" "$PORT" "$BW_MBPS" "$FAMILY" || SWEEP_RC=$?
